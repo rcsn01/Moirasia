@@ -1,0 +1,6 @@
+.DS_Store
+.pnpm-store/
+.build/
+
+# Applications keep their own Git histories.
+/apps/

@@ -1,0 +1,45 @@
+/* Generated product overrides for LiteMaptica's always-dark workspace. */
+:root {
+  color-scheme: dark;
+  --moira-color-canvas-deep: #090d0b;
+  --moira-color-canvas: #0c110e;
+  --moira-color-surface-sunken: #0e1410;
+  --moira-color-surface: #101612;
+  --moira-color-surface-raised: #18211b;
+  --moira-color-surface-overlay: rgba(16, 23, 18, 0.85);
+  --moira-color-surface-overlay-strong: rgba(16, 22, 18, 0.95);
+  --moira-color-text-primary: #e9eee9;
+  --moira-color-text-muted: #839087;
+  --moira-color-text-subtle: #68756c;
+  --moira-color-border: #253129;
+  --moira-color-border-strong: #334139;
+  --moira-color-control: #18211b;
+  --moira-color-control-hover: #202c24;
+  --moira-color-control-selected: #2b3830;
+  --moira-color-action-primary: #5eba79;
+  --moira-color-action-primary-hover: #73cf8d;
+  --moira-color-action-primary-pressed: #4aaa67;
+  --moira-color-action-primary-border: #5eba79;
+  --moira-color-text-on-action: #0d1a11;
+  --moira-color-accent: #63cf83;
+  --moira-color-accent-muted: #bce7c8;
+  --moira-color-accent-surface: #1d3023;
+  --moira-color-accent-surface-subtle: #192720;
+  --moira-color-accent-border: #365a41;
+  --moira-color-accent-border-subtle: #314b39;
+  --moira-color-accent-soft: rgba(99, 207, 131, 0.067);
+  --moira-color-accent-glow: rgba(99, 207, 131, 0.5);
+  --moira-color-focus: #73cf8d;
+  --moira-color-focus-soft: rgba(115, 207, 141, 0.25);
+  --moira-color-backdrop: rgba(3, 6, 4, 0.72);
+  --moira-color-shadow: rgba(0, 0, 0, 0.67);
+  --moira-color-hairline-light: rgba(255, 255, 255, 0.125);
+  --moira-color-hairline-dark: rgba(0, 0, 0, 0.2);
+  --moira-radius-control: 6px;
+  --moira-radius-card: 8px;
+  --moira-radius-panel: 10px;
+  --moira-font-size-micro: 8px;
+  --moira-font-size-label: 9px;
+  --moira-font-size-detail: 10px;
+  --moira-font-size-compact: 11px;
+}

@@ -1,0 +1,21 @@
+{
+  "name": "@moirasia/ui-css",
+  "version": "0.1.0",
+  "private": true,
+  "sideEffects": [
+    "*.css",
+    "themes/*.css"
+  ],
+  "files": [
+    "*.css",
+    "themes/*.css"
+  ],
+  "exports": {
+    "./foundation.css": "./foundation.css",
+    "./amove.css": "./amove.css",
+    "./litemaptica.css": "./litemaptica.css",
+    "./exithibition.css": "./exithibition.css",
+    "./openagent.css": "./openagent.css",
+    "./mini-nsw.css": "./mini-nsw.css"
+  }
+}

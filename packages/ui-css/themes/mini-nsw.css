@@ -1,0 +1,25 @@
+/* Generated product overrides for Mini NSW's light map workspace. */
+:root {
+  color-scheme: light;
+  --moira-color-canvas: #ffffff;
+  --moira-color-surface: #f7f7f8;
+  --moira-color-surface-raised: rgba(255, 255, 255, 0.95);
+  --moira-color-text-primary: #24282f;
+  --moira-color-text-muted: #5f6670;
+  --moira-color-text-subtle: #747b85;
+  --moira-color-border: #d8dbe0;
+  --moira-color-border-strong: #b9bec6;
+  --moira-color-control: #ffffff;
+  --moira-color-control-hover: #eceef1;
+  --moira-color-control-selected: #334155;
+  --moira-color-action-primary: #334155;
+  --moira-color-action-primary-hover: #253247;
+  --moira-color-action-primary-pressed: #1e293b;
+  --moira-color-action-primary-border: #334155;
+  --moira-color-text-on-action: #ffffff;
+  --moira-color-focus: #2563a6;
+  --moira-color-focus-soft: rgba(37, 99, 166, 0.22);
+  --moira-color-overlay: rgba(255, 255, 255, 0.95);
+  --moira-color-overlay-subtle: rgba(255, 255, 255, 0.76);
+  --moira-color-shadow: rgba(15, 23, 42, 0.10);
+}

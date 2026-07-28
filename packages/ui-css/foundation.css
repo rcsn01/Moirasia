@@ -1,0 +1,117 @@
+/* Generated from @moirasia/design-tokens. Do not edit directly. */
+:root {
+  color-scheme: light dark;
+  --moira-color-neutral-0: #ffffff;
+  --moira-color-neutral-25: #f8f9fa;
+  --moira-color-neutral-50: #f7f7f8;
+  --moira-color-neutral-100: #eceef1;
+  --moira-color-neutral-200: #d8dbe0;
+  --moira-color-neutral-300: #c8ccd1;
+  --moira-color-neutral-500: #74787e;
+  --moira-color-neutral-600: #666b72;
+  --moira-color-neutral-700: #3d4147;
+  --moira-color-neutral-800: #25282c;
+  --moira-color-neutral-900: #17181b;
+  --moira-color-neutral-dark-100: #aeb2b9;
+  --moira-color-neutral-dark-300: #4c5057;
+  --moira-color-neutral-dark-500: #313338;
+  --moira-color-neutral-dark-600: #292b2f;
+  --moira-color-neutral-dark-700: #24262a;
+  --moira-color-neutral-dark-800: #1c1d20;
+  --moira-color-status-success-light: #dff3e7;
+  --moira-color-status-success-dark: #176237;
+  --moira-color-status-warning-light: #fff6d5;
+  --moira-color-status-warning-border: #e6c15a;
+  --moira-color-status-warning-dark: #765500;
+  --moira-color-status-danger-light: #f9e0e0;
+  --moira-color-status-danger-dark: #9f2f2f;
+  --moira-space-0: 0px;
+  --moira-space-1: 4px;
+  --moira-space-2: 8px;
+  --moira-space-3: 12px;
+  --moira-space-4: 16px;
+  --moira-space-5: 20px;
+  --moira-space-6: 24px;
+  --moira-space-7: 28px;
+  --moira-space-8: 32px;
+  --moira-space-10: 40px;
+  --moira-font-family-sans: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  --moira-font-family-mono: ui-monospace, SFMono-Regular, Consolas, monospace;
+  --moira-font-size-caption: 12px;
+  --moira-font-size-small: 13px;
+  --moira-font-size-body: 15px;
+  --moira-font-size-body-large: 16px;
+  --moira-font-size-title-small: 19px;
+  --moira-font-size-title-medium: 20px;
+  --moira-font-size-title-large: 31px;
+  --moira-radius-control: 8px;
+  --moira-radius-card: 12px;
+  --moira-radius-panel: 16px;
+  --moira-radius-overlay: 20px;
+  --moira-radius-pill: 999px;
+  --moira-control-height-small: 34px;
+  --moira-control-height-medium: 36px;
+  --moira-motion-fast: 100ms;
+  --moira-motion-normal: 180ms;
+  --moira-motion-deliberate: 280ms;
+  --moira-color-canvas: var(--moira-color-neutral-50);
+  --moira-color-surface: var(--moira-color-neutral-25);
+  --moira-color-surface-raised: var(--moira-color-neutral-0);
+  --moira-color-text-primary: var(--moira-color-neutral-900);
+  --moira-color-text-muted: var(--moira-color-neutral-600);
+  --moira-color-text-subtle: var(--moira-color-neutral-500);
+  --moira-color-border: var(--moira-color-neutral-300);
+  --moira-color-border-strong: var(--moira-color-neutral-500);
+  --moira-color-control: var(--moira-color-neutral-25);
+  --moira-color-control-hover: var(--moira-color-neutral-100);
+  --moira-color-control-selected: var(--moira-color-neutral-0);
+  --moira-color-success-surface: var(--moira-color-status-success-light);
+  --moira-color-success-text: var(--moira-color-status-success-dark);
+  --moira-color-warning-surface: var(--moira-color-status-warning-light);
+  --moira-color-warning-border: var(--moira-color-status-warning-border);
+  --moira-color-warning-text: var(--moira-color-status-warning-dark);
+  --moira-color-danger-surface: var(--moira-color-status-danger-light);
+  --moira-color-danger-text: var(--moira-color-status-danger-dark);
+  --moira-color-danger-action: #c84343;
+  --moira-color-danger-action-hover: #b33a3a;
+  --moira-color-text-on-danger: var(--moira-color-neutral-0);
+  --moira-opacity-disabled: 0.5;
+  --moira-shadow-control: 0 1px 4px rgba(0, 0, 0, 0.12);
+  --moira-shadow-hairline: 0 0 0 1px rgba(0, 0, 0, 0.08);
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+  --moira-color-canvas: var(--moira-color-neutral-dark-800);
+  --moira-color-surface: var(--moira-color-neutral-dark-700);
+  --moira-color-surface-raised: var(--moira-color-neutral-dark-500);
+  --moira-color-text-primary: var(--moira-color-neutral-100);
+  --moira-color-text-muted: var(--moira-color-neutral-dark-100);
+  --moira-color-text-subtle: var(--moira-color-neutral-dark-100);
+  --moira-color-border: var(--moira-color-neutral-dark-300);
+  --moira-color-border-strong: var(--moira-color-neutral-dark-100);
+  --moira-color-control: var(--moira-color-neutral-dark-500);
+  --moira-color-control-hover: var(--moira-color-neutral-dark-300);
+  --moira-color-control-selected: var(--moira-color-neutral-dark-300);
+  --moira-color-success-surface: #173b28;
+  --moira-color-success-text: #8bd8a9;
+  --moira-color-warning-surface: #4b3a08;
+  --moira-color-warning-border: #725c1d;
+  --moira-color-warning-text: #f5d571;
+  --moira-color-danger-surface: #4c2528;
+  --moira-color-danger-text: #f3a4a9;
+  --moira-color-danger-action: #c9545c;
+  --moira-color-danger-action-hover: #db6670;
+  --moira-color-text-on-danger: var(--moira-color-neutral-0);
+    --moira-shadow-control: 0 1px 4px rgba(0, 0, 0, 0.32);
+    --moira-shadow-hairline: 0 0 0 1px rgba(255, 255, 255, 0.1);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  :root {
+    --moira-motion-fast: 0ms;
+    --moira-motion-normal: 0ms;
+    --moira-motion-deliberate: 0ms;
+  }
+}

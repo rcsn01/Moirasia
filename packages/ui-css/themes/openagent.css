@@ -1,0 +1,22 @@
+/* Generated product overrides for OpenAgent's adaptive workspace. */
+:root {
+  --moira-color-action-primary: #034cff;
+  --moira-color-action-primary-hover: #003fd6;
+  --moira-color-action-primary-pressed: #0035b5;
+  --moira-color-action-primary-border: #034cff;
+  --moira-color-text-on-action: #ffffff;
+  --moira-color-focus: #034cff;
+  --moira-color-focus-soft: rgba(3, 76, 255, 0.24);
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+  --moira-color-action-primary: #9dbefe;
+  --moira-color-action-primary-hover: #b5ceff;
+  --moira-color-action-primary-pressed: #7ea9ff;
+  --moira-color-action-primary-border: #9dbefe;
+  --moira-color-text-on-action: #101010;
+  --moira-color-focus: #9dbefe;
+  --moira-color-focus-soft: rgba(157, 190, 254, 0.28);
+  }
+}

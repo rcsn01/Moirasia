@@ -1,0 +1,22 @@
+/* Generated product overrides for Exithibition's monochrome telemetry workspace. */
+:root {
+  color-scheme: dark;
+  --moira-color-canvas: #000000;
+  --moira-color-surface: #080808;
+  --moira-color-surface-raised: #121212;
+  --moira-color-text-primary: #ffffff;
+  --moira-color-text-muted: rgba(255, 255, 255, 0.58);
+  --moira-color-text-subtle: rgba(255, 255, 255, 0.42);
+  --moira-color-border: rgba(255, 255, 255, 0.15);
+  --moira-color-border-strong: rgba(255, 255, 255, 0.24);
+  --moira-color-control: rgba(255, 255, 255, 0.06);
+  --moira-color-control-hover: rgba(255, 255, 255, 0.10);
+  --moira-color-control-selected: rgba(255, 255, 255, 0.10);
+  --moira-color-action-primary: #ffffff;
+  --moira-color-action-primary-hover: #eceef1;
+  --moira-color-action-primary-pressed: #d8dbe0;
+  --moira-color-action-primary-border: rgba(255, 255, 255, 0.24);
+  --moira-color-text-on-action: #000000;
+  --moira-color-focus: #ffffff;
+  --moira-color-focus-soft: rgba(255, 255, 255, 0.28);
+}

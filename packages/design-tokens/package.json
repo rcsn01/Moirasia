@@ -1,0 +1,16 @@
+{
+  "name": "@moirasia/design-tokens",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "files": [
+    "tokens.json"
+  ],
+  "exports": {
+    "./tokens": "./tokens.json"
+  },
+  "scripts": {
+    "build": "node scripts/build-css.mjs",
+    "check": "node scripts/build-css.mjs --check"
+  }
+}
