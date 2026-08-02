@@ -1,0 +1,24 @@
+appId: com.moirasia.desktop
+productName: Moirasia
+afterPack: scripts/sign-after-pack.mjs
+directories:
+  output: release
+files:
+  - out/**
+  - package.json
+extraResources:
+  - from: native/staged/native-view-bridge.node
+    to: native/native-view-bridge.node
+mac:
+  target:
+    - target: dmg
+      arch:
+        - arm64
+  category: public.app-category.productivity
+  minimumSystemVersion: "14.0"
+  identity: null
+  hardenedRuntime: false
+  gatekeeperAssess: false
+  extendInfo:
+    LSMinimumSystemVersion: "14.0"
+asar: true

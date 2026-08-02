@@ -1,6 +1,22 @@
+# Finder metadata
 .DS_Store
-.pnpm-store/
-.build/
 
-# Applications keep their own Git histories.
+# Applications under apps/ remain independent, ignored repositories.
 /apps/
+
+# Root JavaScript dependencies and build output
+/.pnpm-store/
+/node_modules/
+/out/
+/release/
+/coverage/
+/test-results/
+/playwright-report/
+
+# Root native staged binaries
+/native/staged/
+
+# Shared Swift package build cache
+/packages/ui-swift/.build/
+
+*.log
