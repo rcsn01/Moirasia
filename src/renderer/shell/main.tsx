@@ -8,7 +8,6 @@ import {
   type ShellSettings,
   type ShellSettingsPatch
 } from '../../shared/contracts'
-import './styles.css'
 
 const EMPTY_SNAPSHOT: ModuleSnapshot = {
   activeModuleId: null,
