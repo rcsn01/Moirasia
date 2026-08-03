@@ -12,7 +12,7 @@
     "native:bridge:build": "node scripts/build-native-view-bridge.mjs",
     "test:native-view-gate": "electron scripts/native-view-gate.mjs",
     "preview": "electron-vite preview",
-    "typecheck": "tsc -p tsconfig.node.json --noEmit && tsc -p tsconfig.react.json --noEmit",
+    "typecheck": "tsc -p tsconfig.node.json --noEmit && tsc -p tsconfig.react.json --noEmit && tsc -p packages/ui-react/tsconfig.json --noEmit",
     "test": "vitest run",
     "test:ownership": "node scripts/check-root-ownership.mjs",
     "test:watch": "vitest",
@@ -22,6 +22,7 @@
   "dependencies": {
     "@moirasia/module-sdk": "file:packages/module-sdk",
     "@moirasia/ui-css": "file:packages/ui-css",
+    "@moirasia/ui-react": "workspace:*",
     "react": "^19.2.4",
     "react-dom": "^19.2.4",
     "zod": "3.25.76"
@@ -30,6 +31,9 @@
     "@playwright/test": "^1.58.2",
     "@testing-library/jest-dom": "^7.0.0",
     "@testing-library/react": "^16.3.2",
+    "@testing-library/user-event": "^14.6.1",
+    "@tailwindcss/vite": "^4.1.14",
+    "axe-core": "^4.10.3",
     "@types/node": "^25.3.5",
     "@types/react": "^19.2.14",
     "@types/react-dom": "^19.2.3",
@@ -39,6 +43,7 @@
     "electron-vite": "^5.0.0",
     "jsdom": "^30.0.1",
     "typescript": "^5.9.3",
+    "tailwindcss": "^4.1.14",
     "vite": "^7.3.1",
     "vitest": "^4.0.18"
   },
