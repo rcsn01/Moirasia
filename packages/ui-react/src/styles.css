@@ -4,7 +4,6 @@
 @import "@fontsource-variable/geist";
 
 @source "./components/**/*.{ts,tsx}";
-@source "../../../src/renderer/shell/**/*.{ts,tsx}";
 
 @custom-variant dark (&:is(.dark *));
 
