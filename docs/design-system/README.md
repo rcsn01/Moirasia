@@ -1,14 +1,29 @@
 # Moirasia design system
 
 Moirasia shares design decisions without forcing web and native applications
-through one component implementation. The foundation has three layers:
+through one component implementation. React applications now have a canonical
+component layer:
 
-1. `packages/design-tokens/tokens.json` is the DTCG-compatible source for
+- `@moirasia/ui-react` is the source-owned shadcn package for React 19. It uses
+  Tailwind CSS 4, Base UI, the Nova preset, neutral CSS-variable themes, Lucide
+  icons, and a locally bundled Geist Sans variable font.
+- Generic React controls belong in `@moirasia/ui-react`; application layouts,
+  product-specific status presentations, and workflows remain app-owned.
+
+The earlier cross-platform token foundation remains transitional infrastructure
+for applications that have not migrated:
+
+1. `packages/design-tokens/tokens.json` is the DTCG-compatible legacy source for
    primitive, semantic, and product tokens.
 2. `packages/ui-css` exposes generated CSS variables for web applications.
 3. `packages/ui-swift` exposes generated SwiftUI constants for native Apple
    applications. Other framework adapters should be added only when repeated
    real usage justifies them.
+
+Do not bridge those legacy variables into the React theme. React applications
+should import `@moirasia/ui-react/styles.css` once and migrate screen-by-screen.
+The existing CSS and Swift adapters remain available until their owning
+applications move independently.
 
 Run `npm run build` from `packages/design-tokens` after changing tokens. The
 generator updates both the CSS themes and

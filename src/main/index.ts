@@ -11,7 +11,7 @@ import { createModuleRegistry } from './modules/registry'
 import type { ModuleView, ModuleViewHost } from './modules/types'
 import { paths } from './paths'
 import { ShellSettingsStore } from './settings'
-import type { ModuleId } from '../shared/contracts'
+import { SHELL_RAIL_WIDTHS, type ModuleId } from '../shared/contracts'
 import { isNativeViewSurface } from './modules/native-view-bridge'
 import { DirectoryLockConflictError } from '@moirasia/module-sdk'
 import { MODULE_CATALOG } from './modules/catalog'
@@ -33,7 +33,7 @@ async function createApplication(): Promise<void> {
     app.setLoginItemSettings({ openAtLogin: current.launchAtLogin })
   }
   applySettings()
-  let railWidth = settings.get().compactRail ? 76 : 232
+  let railWidth: number = settings.get().compactRail ? SHELL_RAIL_WIDTHS.compact : SHELL_RAIL_WIDTHS.expanded
   let attached: ModuleView | undefined
   const focusHandlersInstalled = new WeakSet<WebContentsView>()
   let shutdownCommitted = false

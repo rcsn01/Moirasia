@@ -41,6 +41,11 @@ export type ShellSettingsPatch = Partial<Omit<ShellSettings, 'version' | 'autoSt
   readonly autoStart?: Partial<Record<ModuleId, boolean>>
 }
 
+export const SHELL_RAIL_WIDTHS = {
+  expanded: 256,
+  compact: 48
+} as const
+
 export const IPC = {
   getSnapshot: 'shell:get-snapshot',
   getSettings: 'shell:get-settings',
@@ -78,5 +83,5 @@ export function isShellPage(value: unknown): value is ShellPage {
 }
 
 export function isRailWidth(value: unknown): value is number {
-  return typeof value === 'number' && Number.isInteger(value) && value >= 64 && value <= 320
+  return typeof value === 'number' && Number.isInteger(value) && value >= SHELL_RAIL_WIDTHS.compact && value <= 320
 }
