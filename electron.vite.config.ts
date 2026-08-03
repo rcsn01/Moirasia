@@ -5,7 +5,7 @@ import { defineConfig, externalizeDepsPlugin } from 'electron-vite'
 
 export default defineConfig({
   main: {
-    plugins: [externalizeDepsPlugin({ exclude: ['@moirasia/module-sdk'] })],
+    plugins: [externalizeDepsPlugin({ exclude: ['@moirasia/module-sdk', '@moirasia/ui-react'] })],
     build: {
       rollupOptions: {
         input: resolve(import.meta.dirname, 'src/main/index.ts')

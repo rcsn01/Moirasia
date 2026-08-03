@@ -1,0 +1,13 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "required": ["code", "primitiveBase", "tailwindVersion", "cssVariables", "shadcnVersion"],
+  "properties": {
+    "code": { "type": "string", "pattern": "^[ab][0-9A-Za-z]{1,9}$" },
+    "primitiveBase": { "const": "base-ui" },
+    "tailwindVersion": { "const": 4 },
+    "cssVariables": { "const": true },
+    "shadcnVersion": { "const": "4.16.1" }
+  },
+  "additionalProperties": true
+}

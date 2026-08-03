@@ -20,7 +20,7 @@ function SelectContent({ className, children, ...props }: React.ComponentProps<t
   return (
     <SelectPrimitive.Portal>
       <SelectPrimitive.Positioner sideOffset={4} className="z-50 outline-none">
-        <SelectPrimitive.Popup data-slot="select-content" className={cn('min-w-[var(--anchor-width)] origin-[var(--transform-origin)] overflow-hidden rounded-lg border bg-popover text-popover-foreground shadow-md transition-[transform,opacity] data-starting-style:scale-95 data-starting-style:opacity-0 data-ending-style:scale-95 data-ending-style:opacity-0', className)} {...props}>
+        <SelectPrimitive.Popup data-slot="select-content" className={cn('min-w-[var(--anchor-width)] origin-[var(--transform-origin)] overflow-hidden rounded-lg border border-[var(--menu-border)] bg-[var(--menu-background)] text-popover-foreground shadow-[var(--menu-shadow)] [backdrop-filter:var(--menu-backdrop-filter)] transition-[transform,opacity] data-starting-style:scale-95 data-starting-style:opacity-0 data-ending-style:scale-95 data-ending-style:opacity-0', className)} {...props}>
           <SelectPrimitive.List className="max-h-[var(--available-height)] overflow-y-auto p-1">{children}</SelectPrimitive.List>
         </SelectPrimitive.Popup>
       </SelectPrimitive.Positioner>

@@ -1,0 +1,19 @@
+{
+  "name": "@moirasia/design-system",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "files": [
+    "preset.source.json",
+    "product-tokens.json",
+    "preset.lock.json"
+  ],
+  "scripts": {
+    "sync": "node scripts/preset.mjs sync",
+    "check": "node scripts/preset.mjs check",
+    "test": "node --test test/*.test.mjs"
+  },
+  "dependencies": {
+    "shadcn": "4.16.1"
+  }
+}

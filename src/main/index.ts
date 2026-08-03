@@ -15,6 +15,7 @@ import { SHELL_RAIL_WIDTHS, type ModuleId } from '../shared/contracts'
 import { isNativeViewSurface } from './modules/native-view-bridge'
 import { DirectoryLockConflictError } from '@moirasia/module-sdk'
 import { MODULE_CATALOG } from './modules/catalog'
+import { windowBackgrounds } from '@moirasia/ui-react/tokens'
 
 const execFile = promisify(execFileCallback)
 
@@ -47,7 +48,7 @@ async function createApplication(): Promise<void> {
     minHeight: 520,
     show: false,
     title: 'Moirasia',
-    backgroundColor: '#101216',
+    backgroundColor: nativeTheme.shouldUseDarkColors ? windowBackgrounds.moirasia.dark : windowBackgrounds.moirasia.light,
     webPreferences: {
       preload: paths.preload('shell'),
       contextIsolation: true,

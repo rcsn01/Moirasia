@@ -8,6 +8,7 @@
 /.pnpm-store/
 /node_modules/
 /packages/ui-react/node_modules/
+/packages/design-system/node_modules/
 /out/
 /release/
 /coverage/

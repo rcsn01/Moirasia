@@ -1,0 +1,8 @@
+{
+  "$schema": "./schemas/preset-source.schema.json",
+  "code": "bKZTOcpW",
+  "primitiveBase": "base-ui",
+  "tailwindVersion": 4,
+  "cssVariables": true,
+  "shadcnVersion": "4.16.1"
+}
