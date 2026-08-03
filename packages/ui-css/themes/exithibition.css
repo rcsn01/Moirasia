@@ -1,22 +1,21 @@
 /* Generated product overrides for Exithibition's monochrome telemetry workspace. */
 :root {
   color-scheme: dark;
-  --moira-color-canvas: #000000;
-  --moira-color-surface: #080808;
-  --moira-color-surface-raised: #121212;
-  --moira-color-text-primary: #ffffff;
-  --moira-color-text-muted: rgba(255, 255, 255, 0.58);
-  --moira-color-text-subtle: rgba(255, 255, 255, 0.42);
-  --moira-color-border: rgba(255, 255, 255, 0.15);
-  --moira-color-border-strong: rgba(255, 255, 255, 0.24);
-  --moira-color-control: rgba(255, 255, 255, 0.06);
-  --moira-color-control-hover: rgba(255, 255, 255, 0.10);
-  --moira-color-control-selected: rgba(255, 255, 255, 0.10);
-  --moira-color-action-primary: #ffffff;
-  --moira-color-action-primary-hover: #eceef1;
-  --moira-color-action-primary-pressed: #d8dbe0;
-  --moira-color-action-primary-border: rgba(255, 255, 255, 0.24);
-  --moira-color-text-on-action: #000000;
-  --moira-color-focus: #ffffff;
-  --moira-color-focus-soft: rgba(255, 255, 255, 0.28);
+  --moira-color-canvas: #0c0a09;
+  --moira-color-surface: #1c1917;
+  --moira-color-surface-raised: #292524;
+  --moira-color-text-primary: #fafaf9;
+  --moira-color-text-muted: #a8a29e;
+  --moira-color-border: rgba(255, 255, 255, 0.1);
+  --moira-color-cool: #173e36;
+  --moira-color-warm: #55e6a5;
+  --moira-color-hot: #ff744d;
+  --moira-color-load-low: #14362d;
+  --moira-color-load-high: #38d995;
+  --moira-color-focus: #7ef6c2;
+  --moira-color-selected: #baffdc;
+  --moira-color-battery: #63cf78;
+  --moira-color-storage: #51a8e8;
+  --moira-color-fan: #bd8aff;
+  --moira-color-window-background: #0c0a09;
 }

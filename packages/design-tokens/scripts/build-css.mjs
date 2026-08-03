@@ -5,6 +5,11 @@ import { fileURLToPath } from "node:url";
 const packageDir = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const workspaceDir = resolve(packageDir, "../..");
 const tokens = JSON.parse(await readFile(resolve(packageDir, "tokens.json"), "utf8"));
+const migratedProducts = JSON.parse(
+  await readFile(resolve(workspaceDir, "packages/design-system/product-tokens.json"), "utf8")
+).product;
+tokens.product.amove = migratedProducts.amove;
+tokens.product.exithibition = migratedProducts.exithibition;
 const checkOnly = process.argv.includes("--check");
 
 function tokenValue(value) {

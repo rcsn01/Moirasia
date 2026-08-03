@@ -1,11 +1,11 @@
 {
   "$schema": "https://ui.shadcn.com/schema.json",
-  "style": "base-nova",
+  "style": "base-mira",
   "rsc": false,
   "tsx": true,
   "tailwind": {
     "css": "src/styles.css",
-    "baseColor": "neutral",
+    "baseColor": "stone",
     "cssVariables": true,
     "prefix": ""
   },
@@ -17,5 +17,8 @@
     "lib": "#lib",
     "hooks": "#lib/hooks"
   },
+  "rtl": false,
+  "menuColor": "default-translucent",
+  "menuAccent": "subtle",
   "registries": {}
 }

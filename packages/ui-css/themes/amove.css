@@ -1,22 +1,24 @@
 /* Generated product overrides. Status colors remain shared semantic tokens. */
 :root {
   --moira-color-action-primary: #3883a2;
-  --moira-color-text-on-action: var(--moira-color-neutral-0);
+  --moira-color-text-on-action: #ffffff;
   --moira-color-action-primary-hover: #2e718d;
   --moira-color-action-primary-pressed: #275f77;
   --moira-color-action-primary-border: #4c92ae;
   --moira-color-focus: #268db8;
   --moira-color-focus-soft: rgba(38, 141, 184, 0.2);
+  --moira-color-window-background: #f3f4f6;
 }
 
 @media (prefers-color-scheme: dark) {
   :root {
   --moira-color-action-primary: #3e91b2;
-  --moira-color-text-on-action: var(--moira-color-neutral-0);
+  --moira-color-text-on-action: #ffffff;
   --moira-color-action-primary-hover: #50a2c1;
   --moira-color-action-primary-pressed: #327b98;
   --moira-color-action-primary-border: #66abc5;
   --moira-color-focus: #52add0;
   --moira-color-focus-soft: rgba(82, 173, 208, 0.28);
+  --moira-color-window-background: #1c1917;
   }
 }

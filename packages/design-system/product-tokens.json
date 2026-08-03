@@ -1,0 +1,20 @@
+{
+  "$schema": "https://www.designtokens.org/schemas/2025.10/format.json",
+  "product": {
+    "amove": {
+      "$extensions": { "moirasia.themePolicy": "system" },
+      "light": { "color": { "$type": "color", "action-primary": { "$value": "#3883a2" }, "text-on-action": { "$value": "#ffffff" }, "action-primary-hover": { "$value": "#2e718d" }, "action-primary-pressed": { "$value": "#275f77" }, "action-primary-border": { "$value": "#4c92ae" }, "focus": { "$value": "#268db8" }, "focus-soft": { "$value": "rgba(38, 141, 184, 0.2)" }, "window-background": { "$value": "#f3f4f6" } } },
+      "dark": { "color": { "$type": "color", "action-primary": { "$value": "#3e91b2" }, "text-on-action": { "$value": "#ffffff" }, "action-primary-hover": { "$value": "#50a2c1" }, "action-primary-pressed": { "$value": "#327b98" }, "action-primary-border": { "$value": "#66abc5" }, "focus": { "$value": "#52add0" }, "focus-soft": { "$value": "rgba(82, 173, 208, 0.28)" }, "window-background": { "$value": "#1c1917" } } },
+      "shelf": { "color": { "$type": "color", "canvas": { "$value": "#1c1917" }, "surface": { "$value": "#292524" }, "surface-raised": { "$value": "#44403c" }, "surface-overlay": { "$value": "rgba(28, 25, 23, 0.92)" }, "text-primary": { "$value": "#fafaf9" }, "text-muted": { "$value": "#d6d3d1" }, "border": { "$value": "rgba(255, 255, 255, 0.14)" }, "control": { "$value": "rgba(255, 255, 255, 0.07)" }, "control-hover": { "$value": "rgba(255, 255, 255, 0.15)" }, "selection": { "$value": "rgba(56, 131, 162, 0.52)" }, "focus": { "$value": "#52add0" }, "close": { "$value": "#ff5f57" }, "close-mark": { "$value": "#6f1714" }, "document": { "$value": "#f5f5f4" }, "document-fold": { "$value": "#a8a29e" }, "shadow": { "$value": "rgba(0, 0, 0, 0.4)" } } }
+    },
+    "vox": {
+      "$extensions": { "moirasia.themePolicy": "light-dark-system" },
+      "light": { "color": { "$type": "color", "canvas": { "$value": "#fafaf9" }, "panel": { "$value": "#f5f5f4" }, "panel-raised": { "$value": "#ffffff" }, "line": { "$value": "rgba(28, 25, 23, 0.12)" }, "text-muted": { "$value": "#57534e" }, "signal": { "$value": "#65a30d" }, "signal-strong": { "$value": "#15803d" }, "signal-soft": { "$value": "rgba(101, 163, 13, 0.08)" }, "signal-glow": { "$value": "rgba(101, 163, 13, 0.22)" }, "overlay": { "$value": "rgba(250, 250, 249, 0.94)" }, "danger": { "$value": "#dc2626" }, "window-background": { "$value": "#fafaf9" } } },
+      "dark": { "color": { "$type": "color", "canvas": { "$value": "#0c0a09" }, "panel": { "$value": "#1c1917" }, "panel-raised": { "$value": "#292524" }, "line": { "$value": "rgba(255, 255, 255, 0.09)" }, "text-muted": { "$value": "#a8a29e" }, "signal": { "$value": "#a3e635" }, "signal-strong": { "$value": "#86efac" }, "signal-soft": { "$value": "rgba(163, 230, 53, 0.07)" }, "signal-glow": { "$value": "rgba(163, 230, 53, 0.48)" }, "overlay": { "$value": "rgba(28, 25, 23, 0.92)" }, "danger": { "$value": "#fb7185" }, "window-background": { "$value": "#0c0a09" } } }
+    },
+    "exithibition": {
+      "$extensions": { "moirasia.themePolicy": "dark-only" },
+      "base": { "color": { "$type": "color", "canvas": { "$value": "#0c0a09" }, "surface": { "$value": "#1c1917" }, "surface-raised": { "$value": "#292524" }, "text-primary": { "$value": "#fafaf9" }, "text-muted": { "$value": "#a8a29e" }, "border": { "$value": "rgba(255, 255, 255, 0.1)" }, "cool": { "$value": "#173e36" }, "warm": { "$value": "#55e6a5" }, "hot": { "$value": "#ff744d" }, "load-low": { "$value": "#14362d" }, "load-high": { "$value": "#38d995" }, "focus": { "$value": "#7ef6c2" }, "selected": { "$value": "#baffdc" }, "battery": { "$value": "#63cf78" }, "storage": { "$value": "#51a8e8" }, "fan": { "$value": "#bd8aff" }, "window-background": { "$value": "#0c0a09" } } }
+    }
+  }
+}

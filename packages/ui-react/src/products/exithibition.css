@@ -1,0 +1,21 @@
+/* Generated exithibition product tokens. Do not edit. */
+:root {
+  color-scheme: dark;
+  --exithibition-color-canvas: #0c0a09;
+  --exithibition-color-surface: #1c1917;
+  --exithibition-color-surface-raised: #292524;
+  --exithibition-color-text-primary: #fafaf9;
+  --exithibition-color-text-muted: #a8a29e;
+  --exithibition-color-border: rgba(255, 255, 255, 0.1);
+  --exithibition-color-cool: #173e36;
+  --exithibition-color-warm: #55e6a5;
+  --exithibition-color-hot: #ff744d;
+  --exithibition-color-load-low: #14362d;
+  --exithibition-color-load-high: #38d995;
+  --exithibition-color-focus: #7ef6c2;
+  --exithibition-color-selected: #baffdc;
+  --exithibition-color-battery: #63cf78;
+  --exithibition-color-storage: #51a8e8;
+  --exithibition-color-fan: #bd8aff;
+  --exithibition-color-window-background: #0c0a09;
+}
