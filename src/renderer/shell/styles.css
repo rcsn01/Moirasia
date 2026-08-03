@@ -1,4 +1,5 @@
 @import "@moirasia/ui-react/styles.css";
+@source "./**/*.{ts,tsx}";
 
 html,
 body,

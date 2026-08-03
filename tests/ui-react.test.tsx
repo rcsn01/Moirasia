@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 
 import React from 'react'
-import { cleanup, render, screen } from '@testing-library/react'
+import { cleanup, fireEvent, render, screen } from '@testing-library/react'
 import { afterEach, describe, expect, it } from 'vitest'
 import { Alert, AlertDescription, AlertTitle } from '@moirasia/ui-react/components/alert'
 import { Badge } from '@moirasia/ui-react/components/badge'
@@ -13,6 +13,12 @@ import { Separator } from '@moirasia/ui-react/components/separator'
 import { Skeleton } from '@moirasia/ui-react/components/skeleton'
 import { Switch } from '@moirasia/ui-react/components/switch'
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@moirasia/ui-react/components/tooltip'
+import { Dialog, DialogContent, DialogDescription, DialogTitle, DialogTrigger } from '@moirasia/ui-react/components/dialog'
+import { Input } from '@moirasia/ui-react/components/input'
+import { Progress } from '@moirasia/ui-react/components/progress'
+import { RadioGroup, RadioGroupItem } from '@moirasia/ui-react/components/radio-group'
+import { Tabs, TabsContent, TabsList, TabsTrigger } from '@moirasia/ui-react/components/tabs'
+import { Textarea } from '@moirasia/ui-react/components/textarea'
 
 afterEach(cleanup)
 
@@ -46,5 +52,21 @@ describe('@moirasia/ui-react', () => {
     for (const slot of ['card', 'badge', 'separator', 'switch', 'select-trigger', 'alert', 'skeleton']) {
       expect(view.container.querySelector(`[data-slot="${slot}"]`)).not.toBeNull()
     }
+  })
+
+  it('provides accessible form, progress, tabs, radio, and portal primitives', () => {
+    render(<>
+      <Label htmlFor="name">Name</Label><Input id="name" />
+      <Label htmlFor="notes">Notes</Label><Textarea id="notes" />
+      <Progress value={42} aria-label="Download" />
+      <RadioGroup defaultValue="one" aria-label="Choice"><RadioGroupItem value="one" aria-label="One" /><RadioGroupItem value="two" aria-label="Two" /></RadioGroup>
+      <Tabs defaultValue="one"><TabsList><TabsTrigger value="one">First</TabsTrigger><TabsTrigger value="two">Second</TabsTrigger></TabsList><TabsContent value="one">First panel</TabsContent><TabsContent value="two">Second panel</TabsContent></Tabs>
+      <Dialog><DialogTrigger><Button>Open dialog</Button></DialogTrigger><DialogContent><DialogTitle>Confirm action</DialogTitle><DialogDescription>Accessible portal content.</DialogDescription></DialogContent></Dialog>
+    </>)
+    expect(screen.getByRole('progressbar', { name: 'Download' })).toHaveAttribute('aria-valuenow', '42')
+    fireEvent.click(screen.getByRole('tab', { name: 'Second' }))
+    expect(screen.getByText('Second panel')).toBeVisible()
+    fireEvent.click(screen.getByRole('button', { name: 'Open dialog' }))
+    expect(screen.getByRole('dialog', { name: 'Confirm action' })).toBeVisible()
   })
 })

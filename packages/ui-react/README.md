@@ -4,7 +4,17 @@ The source-owned shadcn component layer for Moirasia React applications. It uses
 the Base UI Nova preset, neutral CSS-variable theming, Lucide icons, and a local
 Geist Sans font. Consumers import component source through the published
 subpaths and include `@moirasia/ui-react/styles.css` once at their renderer
-entry point.
+entry point. Each renderer must also declare its own Tailwind source paths and
+enable Tailwind 4's Vite plugin:
+
+```css
+@import "@moirasia/ui-react/styles.css";
+@source "./**/*.{ts,tsx}";
+```
+
+Renderer HTML should load that CSS through a stylesheet link. Keeping the CSS
+out of the JavaScript entry also keeps Electron development compatible with a
+strict `style-src 'self'` content-security policy.
 
 ## Updating components
 
