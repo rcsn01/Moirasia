@@ -11,7 +11,7 @@
     "src/main/**/*.ts",
     "src/preload/**/*.ts",
     "src/shared/**/*.ts",
-    "packages/module-sdk/src/**/*.ts",
+    "packages/desktop-shell/src/**/*.ts",
     "tests/**/*.ts"
   ]
 }

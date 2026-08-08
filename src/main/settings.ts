@@ -1,106 +1,49 @@
 import { copyFile, mkdir, open, readFile, rename } from 'node:fs/promises'
 import { dirname } from 'node:path'
-import { z } from 'zod'
-import { MODULE_IDS, type ModuleId, type ShellPage } from '../shared/contracts'
+import { APPLICATION_IDS, type ApplicationId, type ShellSettings } from '../shared/contracts'
 
-const selectionSchema = z.union([
-  z.literal('home'),
-  z.literal('settings'),
-  ...MODULE_IDS.map((id) => z.literal(id))
-])
-
-export const shellSettingsSchema = z.object({
-  version: z.literal(1),
-  appearance: z.enum(['system', 'light', 'dark']),
-  launchAtLogin: z.boolean(),
-  autoStart: z.object({
-    amove: z.boolean(),
-    vox: z.boolean(),
-    exithibition: z.boolean()
-  }).strict(),
-  restoreLastSelection: z.boolean(),
-  compactRail: z.boolean(),
-  priorSelection: selectionSchema
-}).strict()
-
-export type ShellAppearance = 'system' | 'light' | 'dark'
-export type ShellSelection = ShellPage | ModuleId
-export type ShellSettings = z.infer<typeof shellSettingsSchema>
-export type ShellSettingsPatch = Partial<Omit<ShellSettings, 'version' | 'autoStart'>> & {
-  readonly autoStart?: Partial<Record<ModuleId, boolean>>
-}
-
-export const DEFAULT_SHELL_SETTINGS: ShellSettings = {
-  version: 1,
-  appearance: 'system',
-  launchAtLogin: false,
-  autoStart: { amove: false, vox: false, exithibition: false },
-  restoreLastSelection: true,
-  compactRail: false,
-  priorSelection: 'home'
-}
+export const DEFAULT_SHELL_SETTINGS: ShellSettings = { version: 2, launchAtLogin: false, pendingLoginItems: {} }
 
 export class ShellSettingsStore {
-  readonly filePath: string
   #settings: ShellSettings = structuredClone(DEFAULT_SHELL_SETTINGS)
-  #writeQueue: Promise<void> = Promise.resolve()
-
-  constructor(filePath: string) {
-    this.filePath = filePath
-  }
+  #queue: Promise<void> = Promise.resolve()
+  constructor(readonly filePath: string) {}
 
   async load(): Promise<ShellSettings> {
-    const primary = await readValid(this.filePath)
-    const backup = primary ?? await readValid(`${this.filePath}.backup`)
-    this.#settings = backup ?? structuredClone(DEFAULT_SHELL_SETTINGS)
-    if (primary === undefined) await this.#persist()
-    return this.get()
-  }
-
-  get(): ShellSettings {
-    return structuredClone(this.#settings)
-  }
-
-  async update(patch: ShellSettingsPatch): Promise<ShellSettings> {
-    const next = {
-      ...this.#settings,
-      ...patch,
-      version: 1 as const,
-      autoStart: { ...this.#settings.autoStart, ...patch.autoStart }
-    }
-    this.#settings = shellSettingsSchema.parse(next)
+    const raw = await readJson(this.filePath) ?? await readJson(`${this.filePath}.backup`)
+    this.#settings = migrate(raw)
     await this.#persist()
     return this.get()
   }
-
+  get(): ShellSettings { return structuredClone(this.#settings) }
+  async update(patch: Partial<Omit<ShellSettings, 'version'>>): Promise<ShellSettings> {
+    this.#settings = { ...this.#settings, ...patch, version: 2, pendingLoginItems: { ...this.#settings.pendingLoginItems, ...patch.pendingLoginItems } }
+    await this.#persist(); return this.get()
+  }
+  async clearPending(id: ApplicationId): Promise<ShellSettings> {
+    const pending = { ...this.#settings.pendingLoginItems }; delete pending[id]
+    this.#settings = { ...this.#settings, pendingLoginItems: pending }
+    await this.#persist(); return this.get()
+  }
   #persist(): Promise<void> {
-    this.#writeQueue = this.#writeQueue.then(async () => {
+    this.#queue = this.#queue.then(async () => {
       await mkdir(dirname(this.filePath), { recursive: true })
-      const temporaryPath = `${this.filePath}.tmp`
-      const handle = await open(temporaryPath, 'w', 0o600)
-      try {
-        await handle.writeFile(`${JSON.stringify(this.#settings, null, 2)}\n`, 'utf8')
-        await handle.sync()
-      } finally {
-        await handle.close()
-      }
-      await rename(temporaryPath, this.filePath)
-      await copyFile(this.filePath, `${this.filePath}.backup`)
-      try {
-        const directory = await open(dirname(this.filePath), 'r')
-        try { await directory.sync() } finally { await directory.close() }
-      } catch {
-        // Directory fsync is unavailable on some filesystems.
-      }
-    })
-    return this.#writeQueue
+      const temporary = `${this.filePath}.${process.pid}.tmp`; const handle = await open(temporary, 'w', 0o600)
+      try { await handle.writeFile(`${JSON.stringify(this.#settings, null, 2)}\n`); await handle.sync() } finally { await handle.close() }
+      await rename(temporary, this.filePath); await copyFile(this.filePath, `${this.filePath}.backup`)
+    }); return this.#queue
   }
 }
 
-async function readValid(path: string): Promise<ShellSettings | undefined> {
-  try {
-    return shellSettingsSchema.parse(JSON.parse(await readFile(path, 'utf8')))
-  } catch {
-    return undefined
+function migrate(value: unknown): ShellSettings {
+  if (!value || typeof value !== 'object') return structuredClone(DEFAULT_SHELL_SETTINGS)
+  const object = value as Record<string, unknown>
+  if (object.version === 2) {
+    const pending = object.pendingLoginItems && typeof object.pendingLoginItems === 'object' ? object.pendingLoginItems as Record<string, unknown> : {}
+    return { version: 2, launchAtLogin: object.launchAtLogin === true, pendingLoginItems: Object.fromEntries(APPLICATION_IDS.filter((id) => pending[id] === true).map((id) => [id, true])) }
   }
+  const legacy = object.autoStart && typeof object.autoStart === 'object' ? object.autoStart as Record<string, unknown> : {}
+  return { version: 2, launchAtLogin: object.launchAtLogin === true, pendingLoginItems: Object.fromEntries(APPLICATION_IDS.filter((id) => legacy[id] === true).map((id) => [id, true])) }
 }
+
+async function readJson(path: string): Promise<unknown> { try { return JSON.parse(await readFile(path, 'utf8')) } catch { return undefined } }

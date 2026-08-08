@@ -1,8 +1,8 @@
-import type { ShellApi } from '../../shared/contracts'
+import type { ControllerApi } from '../../shared/contracts'
 
 declare global {
   interface Window {
-    readonly moirasia: ShellApi
+    readonly moirasia: ControllerApi
   }
 }
 

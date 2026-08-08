@@ -1,0 +1,12 @@
+.desktop-app-frame { width: 100%; height: 100%; overflow: hidden; background: var(--background); color: var(--foreground); }
+.desktop-app-bar { position: relative; z-index: 20; height: 52px; min-height: 52px; border-bottom: 1px solid var(--border); background: color-mix(in oklab, var(--background), transparent 5%); -webkit-app-region: drag; }
+.desktop-app-bar button, .desktop-app-bar input, .desktop-app-bar select, .desktop-app-bar a, .desktop-page-actions { -webkit-app-region: no-drag; }
+.desktop-app-content { height: calc(100% - 52px); overflow: auto; }
+.desktop-page-header { display: flex; height: 52px; min-height: 52px; align-items: center; justify-content: space-between; gap: 16px; padding: 0 16px 0 80px; }
+.desktop-page-identity { display: flex; min-width: 0; align-items: baseline; gap: 9px; white-space: nowrap; }
+.desktop-page-identity > span { font-size: 13px; font-weight: 650; letter-spacing: -.01em; }
+.desktop-page-identity > strong { overflow: hidden; color: var(--foreground); font-size: 12px; font-weight: 500; text-overflow: ellipsis; }
+.desktop-page-identity > small { overflow: hidden; color: var(--muted-foreground); font-size: 10px; text-overflow: ellipsis; }
+.desktop-page-actions { display: flex; align-items: center; gap: 8px; }
+.appearance-control select { height: 28px; border: 1px solid var(--input); border-radius: 7px; padding: 0 8px; color: var(--foreground); background: var(--background); font: inherit; font-size: 11px; }
+.desktop-page-header:not(.macos) { padding-left: 16px; }

@@ -1,87 +1,54 @@
-export const MODULE_IDS = ['amove', 'vox', 'exithibition'] as const
-export type ModuleId = (typeof MODULE_IDS)[number]
+import type { Appearance, AppearanceSnapshot, LoginItemControlResult } from '@moirasia/desktop-shell'
 
-export type ModuleState =
-  | 'stopped'
-  | 'starting'
-  | 'running'
-  | 'stopping'
-  | 'failed'
+export const APPLICATION_IDS = ['amove', 'vox', 'exithibition'] as const
+export type ApplicationId = (typeof APPLICATION_IDS)[number]
+export type ControllerPage = 'apps' | 'settings'
 
-export interface ModuleStatus {
-  readonly id: ModuleId
+export interface ApplicationStatus {
+  readonly id: ApplicationId
   readonly label: string
-  readonly state: ModuleState
-  readonly active: boolean
-  readonly available: boolean
-  readonly unavailableReason?: string
+  readonly bundleId: string
+  readonly installed: boolean
+  readonly running: boolean
+  readonly path?: string
+  readonly loginItem?: LoginItemControlResult
+  readonly busy?: 'opening' | 'quitting' | 'login-item'
   readonly error?: string
 }
 
-export interface ModuleSnapshot {
-  readonly modules: readonly ModuleStatus[]
-  readonly activeModuleId: ModuleId | null
+export interface ControllerSnapshot {
+  readonly applications: readonly ApplicationStatus[]
+  readonly appearances: AppearanceSnapshot
 }
-
-export type ShellPage = 'home' | 'settings'
-export type ShellAppearance = 'system' | 'light' | 'dark'
-export type ShellSelection = ShellPage | ModuleId
 
 export interface ShellSettings {
-  readonly version: 1
-  readonly appearance: ShellAppearance
+  readonly version: 2
   readonly launchAtLogin: boolean
-  readonly autoStart: Readonly<Record<ModuleId, boolean>>
-  readonly restoreLastSelection: boolean
-  readonly compactRail: boolean
-  readonly priorSelection: ShellSelection
+  readonly pendingLoginItems: Readonly<Partial<Record<ApplicationId, true>>>
 }
 
-export type ShellSettingsPatch = Partial<Omit<ShellSettings, 'version' | 'autoStart'>> & {
-  readonly autoStart?: Partial<Record<ModuleId, boolean>>
+export interface ControllerApi {
+  getSnapshot(): Promise<ControllerSnapshot>
+  refresh(): Promise<ControllerSnapshot>
+  getSettings(): Promise<ShellSettings>
+  openApplication(id: ApplicationId): Promise<ControllerSnapshot>
+  quitApplication(id: ApplicationId): Promise<ControllerSnapshot>
+  setAppearance(product: ApplicationId | 'moirasia', appearance: Appearance): Promise<ControllerSnapshot>
+  setAllAppearances(appearance: Appearance): Promise<ControllerSnapshot>
+  setLaunchAtLogin(enabled: boolean): Promise<ShellSettings>
+  setApplicationLoginItem(id: ApplicationId, enabled: boolean): Promise<ControllerSnapshot>
+  openLoginItemsSettings(): Promise<void>
+  onSnapshot(listener: (snapshot: ControllerSnapshot) => void): () => void
+  onNavigate(listener: (page: ControllerPage) => void): () => void
 }
-
-export const SHELL_RAIL_WIDTHS = {
-  expanded: 256,
-  compact: 48
-} as const
 
 export const IPC = {
-  getSnapshot: 'shell:get-snapshot',
-  getSettings: 'shell:get-settings',
-  updateSettings: 'shell:update-settings',
-  startModule: 'shell:start-module',
-  activateModule: 'shell:activate-module',
-  stopModule: 'shell:stop-module',
-  showPage: 'shell:show-page',
-  setRailWidth: 'shell:set-rail-width',
-  quit: 'shell:quit',
-  snapshot: 'shell:snapshot',
-  navigate: 'shell:navigate'
+  getSnapshot: 'controller:get-snapshot', refresh: 'controller:refresh', getSettings: 'controller:get-settings',
+  openApplication: 'controller:open-application', quitApplication: 'controller:quit-application',
+  setAppearance: 'controller:set-appearance', setAllAppearances: 'controller:set-all-appearances',
+  setLaunchAtLogin: 'controller:set-launch-at-login', setApplicationLoginItem: 'controller:set-application-login-item',
+  openLoginItemsSettings: 'controller:open-login-items-settings', snapshot: 'controller:snapshot', navigate: 'controller:navigate'
 } as const
 
-export interface ShellApi {
-  getSnapshot(): Promise<ModuleSnapshot>
-  getSettings(): Promise<ShellSettings>
-  updateSettings(patch: ShellSettingsPatch): Promise<ShellSettings>
-  startModule(id: ModuleId): Promise<ModuleSnapshot>
-  activateModule(id: ModuleId): Promise<ModuleSnapshot>
-  stopModule(id: ModuleId): Promise<ModuleSnapshot>
-  showPage(page: ShellPage): Promise<ModuleSnapshot>
-  setRailWidth(width: number): void
-  quit(): void
-  onSnapshot(listener: (snapshot: ModuleSnapshot) => void): () => void
-  onNavigate(listener: (destination: ShellPage | ModuleId) => void): () => void
-}
-
-export function isModuleId(value: unknown): value is ModuleId {
-  return typeof value === 'string' && MODULE_IDS.some((id) => id === value)
-}
-
-export function isShellPage(value: unknown): value is ShellPage {
-  return value === 'home' || value === 'settings'
-}
-
-export function isRailWidth(value: unknown): value is number {
-  return typeof value === 'number' && Number.isInteger(value) && value >= SHELL_RAIL_WIDTHS.compact && value <= 320
-}
+export function isApplicationId(value: unknown): value is ApplicationId { return typeof value === 'string' && APPLICATION_IDS.some((id) => id === value) }
+export function isControllerPage(value: unknown): value is ControllerPage { return value === 'apps' || value === 'settings' }
