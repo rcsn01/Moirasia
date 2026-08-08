@@ -8,7 +8,7 @@ export default defineConfig({
     include: ['tests/**/*.test.{ts,tsx}'],
     setupFiles: ['tests/setup.ts'],
     coverage: {
-      include: ['src/main/modules/manager.ts']
+      include: ['src/main/application-controller.ts', 'src/main/settings.ts', 'packages/desktop-shell/src/**/*.ts']
     }
   }
 })

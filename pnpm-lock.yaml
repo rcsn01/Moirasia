@@ -8,9 +8,9 @@ importers:
 
   .:
     dependencies:
-      '@moirasia/module-sdk':
-        specifier: file:packages/module-sdk
-        version: link:packages/module-sdk
+      '@moirasia/desktop-shell':
+        specifier: workspace:*
+        version: link:packages/desktop-shell
       '@moirasia/ui-css':
         specifier: file:packages/ui-css
         version: link:packages/ui-css
@@ -90,7 +90,14 @@ importers:
 
   packages/design-tokens: {}
 
-  packages/module-sdk: {}
+  packages/desktop-shell:
+    dependencies:
+      electron:
+        specifier: '>=41 <44'
+        version: 43.1.0
+      react:
+        specifier: '>=19 <20'
+        version: 19.2.8
 
   packages/ui-css: {}
 

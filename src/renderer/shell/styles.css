@@ -1,40 +1,9 @@
 @import "@moirasia/ui-react/styles.css";
+@import "@moirasia/desktop-shell/styles.css";
 @source "./**/*.{ts,tsx}";
-
-html,
-body,
-#root {
-  width: 100%;
-  height: 100%;
-  margin: 0;
-  overflow: hidden;
-}
-
-* { box-sizing: border-box; }
-button { font: inherit; }
-
-.shell-rail {
-  width: 256px;
-  min-width: 256px;
-  -webkit-app-region: drag;
-  transition: width 180ms ease, min-width 180ms ease;
-}
-
-.shell-rail[data-compact="true"] {
-  width: 48px;
-  min-width: 48px;
-}
-
-.shell-rail button,
-.shell-rail [role="button"] {
-  -webkit-app-region: no-drag;
-}
-
-.shell-main {
-  min-width: 0;
-  contain: layout paint;
-}
-
-@media (prefers-reduced-motion: reduce) {
-  .shell-rail { transition: none; }
-}
+* { box-sizing: border-box; } html, body, #root { width:100%; height:100%; margin:0; overflow:hidden; background:var(--background); }
+.controller-main { height:100%; overflow:auto; padding:42px 36px; }
+.controller-page { width:100%; max-width:960px; margin:0 auto; }.controller-page > h1 { margin:4px 0 8px; font-size:34px; letter-spacing:-.035em; }.eyebrow { margin:0; color:var(--muted-foreground); font-size:10px; font-weight:650; letter-spacing:.16em; }.lede { max-width:620px; margin:0 0 28px; color:var(--muted-foreground); }
+.application-grid { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:14px; }.application-grid [data-slot="card"] { min-height:190px; }.application-grid [data-slot="card-footer"] { margin-top:auto; gap:8px; }.card-title-row { display:flex; align-items:center; justify-content:space-between; gap:12px; }.application-error { color:var(--destructive); font-size:12px; }
+.controller-page > [data-slot="card"] { margin-top:16px; gap:0; }.setting-row { display:flex; min-height:70px; align-items:center; justify-content:space-between; gap:24px; padding:12px 0; }.setting-row strong,.setting-row small { display:block; }.setting-row small { margin-top:3px; color:var(--muted-foreground); font-size:12px; }.settings-link { padding-top:16px; }.controller-error { position:fixed; right:20px; bottom:20px; z-index:50; max-width:420px; background:var(--background); box-shadow:0 12px 36px rgb(0 0 0/.2); }
+nav { display:flex; gap:4px; } @media(max-width:800px){.application-grid{grid-template-columns:1fr}.controller-main{padding:30px 20px}}

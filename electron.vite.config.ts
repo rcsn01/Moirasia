@@ -5,7 +5,7 @@ import { defineConfig, externalizeDepsPlugin } from 'electron-vite'
 
 export default defineConfig({
   main: {
-    plugins: [externalizeDepsPlugin({ exclude: ['@moirasia/module-sdk', '@moirasia/ui-react'] })],
+    plugins: [externalizeDepsPlugin({ exclude: ['@moirasia/desktop-shell', '@moirasia/ui-react'] })],
     build: {
       rollupOptions: {
         input: resolve(import.meta.dirname, 'src/main/index.ts')
@@ -17,8 +17,7 @@ export default defineConfig({
     build: {
       rollupOptions: {
         input: {
-          shell: resolve(import.meta.dirname, 'src/preload/shell.ts'),
-          module: resolve(import.meta.dirname, 'src/preload/module.ts')
+          shell: resolve(import.meta.dirname, 'src/preload/shell.ts')
         },
         output: {
           format: 'cjs',
@@ -29,12 +28,12 @@ export default defineConfig({
   },
   renderer: {
     root: resolve(import.meta.dirname, 'src/renderer'),
+    resolve: { dedupe: ['react', 'react-dom'] },
     plugins: [react(), tailwindcss()],
     build: {
       rollupOptions: {
         input: {
-          shell: resolve(import.meta.dirname, 'src/renderer/shell.html'),
-          module: resolve(import.meta.dirname, 'src/renderer/module.html')
+          shell: resolve(import.meta.dirname, 'src/renderer/shell.html')
         }
       }
     }

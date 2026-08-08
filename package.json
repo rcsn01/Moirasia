@@ -8,10 +8,9 @@
   "scripts": {
     "predev": "pnpm test:dev-ready",
     "dev": "electron-vite dev",
-    "build": "pnpm native:bridge:build && pnpm build:app",
+    "build": "pnpm agent:build && pnpm build:app",
     "build:app": "electron-vite build",
-    "native:bridge:build": "node scripts/build-native-view-bridge.mjs",
-    "test:native-view-gate": "electron scripts/native-view-gate.mjs",
+    "agent:build": "node scripts/build-application-agent.mjs",
     "preview": "electron-vite preview",
     "typecheck": "tsc -p tsconfig.node.json --noEmit && tsc -p tsconfig.react.json --noEmit && tsc -p packages/ui-react/tsconfig.json --noEmit",
     "test": "vitest run",
@@ -27,7 +26,7 @@
     "dist:mac": "pnpm build && electron-builder --mac --arm64"
   },
   "dependencies": {
-    "@moirasia/module-sdk": "file:packages/module-sdk",
+    "@moirasia/desktop-shell": "workspace:*",
     "@moirasia/ui-css": "file:packages/ui-css",
     "@moirasia/ui-react": "workspace:*",
     "react": "^19.2.4",

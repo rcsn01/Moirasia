@@ -1,14 +1,9 @@
 import { describe, expect, it } from 'vitest'
-import { isRailWidth, SHELL_RAIL_WIDTHS } from '../src/shared/contracts'
-
-describe('shell rail width contract', () => {
-  it('accepts compact, expanded, and animated widths without widening the IPC surface', () => {
-    expect(SHELL_RAIL_WIDTHS).toEqual({ expanded: 256, compact: 48 })
-    expect(isRailWidth(48)).toBe(true)
-    expect(isRailWidth(180)).toBe(true)
-    expect(isRailWidth(256)).toBe(true)
-    expect(isRailWidth(47)).toBe(false)
-    expect(isRailWidth(48.5)).toBe(false)
-    expect(isRailWidth(321)).toBe(false)
+import { APPLICATION_IDS, isApplicationId, isControllerPage } from '../src/shared/contracts'
+describe('controller contracts', () => {
+  it('exposes only standalone applications and two pages', () => {
+    expect(APPLICATION_IDS).toEqual(['amove', 'vox', 'exithibition'])
+    expect(isApplicationId('vox')).toBe(true); expect(isApplicationId('module')).toBe(false)
+    expect(isControllerPage('apps')).toBe(true); expect(isControllerPage('settings')).toBe(true); expect(isControllerPage('home')).toBe(false)
   })
 })

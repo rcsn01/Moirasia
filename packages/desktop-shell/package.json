@@ -1,0 +1,16 @@
+{
+  "name": "@moirasia/desktop-shell",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts",
+    "./main": "./src/main.ts",
+    "./react": "./src/react.tsx",
+    "./styles.css": "./src/styles.css"
+  },
+  "peerDependencies": {
+    "electron": ">=41 <44",
+    "react": ">=19 <20"
+  }
+}
