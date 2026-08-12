@@ -1,30 +1,18 @@
 /* Generated vox product tokens. Do not edit. */
 :root {
-  --vox-color-canvas: #fafaf9;
-  --vox-color-panel: #f5f5f4;
-  --vox-color-panel-raised: #ffffff;
-  --vox-color-line: rgba(28, 25, 23, 0.12);
-  --vox-color-text-muted: #57534e;
   --vox-color-signal: #65a30d;
   --vox-color-signal-strong: #15803d;
   --vox-color-signal-soft: rgba(101, 163, 13, 0.08);
   --vox-color-signal-glow: rgba(101, 163, 13, 0.22);
   --vox-color-overlay: rgba(250, 250, 249, 0.94);
   --vox-color-danger: #dc2626;
-  --vox-color-window-background: #fafaf9;
 }
 
 .dark {
-  --vox-color-canvas: #0c0a09;
-  --vox-color-panel: #1c1917;
-  --vox-color-panel-raised: #292524;
-  --vox-color-line: rgba(255, 255, 255, 0.09);
-  --vox-color-text-muted: #a8a29e;
   --vox-color-signal: #a3e635;
   --vox-color-signal-strong: #86efac;
   --vox-color-signal-soft: rgba(163, 230, 53, 0.07);
   --vox-color-signal-glow: rgba(163, 230, 53, 0.48);
   --vox-color-overlay: rgba(28, 25, 23, 0.92);
   --vox-color-danger: #fb7185;
-  --vox-color-window-background: #0c0a09;
 }

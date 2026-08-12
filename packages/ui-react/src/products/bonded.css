@@ -1,0 +1,20 @@
+/* Generated bonded product tokens. Do not edit. */
+:root {
+  --bonded-color-status-active: #168451;
+  --bonded-color-status-warning: #855d19;
+  --bonded-color-status-inactive: #737d8e;
+  --bonded-color-status-danger: #8f312e;
+  --bonded-color-protocol-tcp: #1d64bf;
+  --bonded-color-protocol-udp: #7f581c;
+  --bonded-color-protocol-quic: #6550a6;
+}
+
+.dark {
+  --bonded-color-status-active: #63cf78;
+  --bonded-color-status-warning: #e3c37d;
+  --bonded-color-status-inactive: #aab2bf;
+  --bonded-color-status-danger: #f0a9a5;
+  --bonded-color-protocol-tcp: #78b7ff;
+  --bonded-color-protocol-udp: #e3c37d;
+  --bonded-color-protocol-quic: #bba8ff;
+}

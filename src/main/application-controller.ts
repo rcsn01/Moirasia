@@ -8,7 +8,7 @@ import type { ShellSettingsStore } from './settings'
 
 const execFile = promisify(execFileCallback)
 const CATALOG: Readonly<Record<ApplicationId, { label: string; bundleId: string }>> = {
-  amove: { label: 'Amove', bundleId: 'com.opense.Amove' }, vox: { label: 'Vox', bundleId: 'com.moirasia.vox' }, exithibition: { label: 'Exithibition', bundleId: 'com.local.Exithibition' }
+  amove: { label: 'Amove', bundleId: 'com.opense.Amove' }, vox: { label: 'Vox', bundleId: 'com.moirasia.vox' }, exithibition: { label: 'Exithibition', bundleId: 'com.local.Exithibition' }, bonded: { label: 'Bonded', bundleId: 'com.opense.Bonded' }
 }
 
 interface AgentRecord { id: ApplicationId; installed: boolean; running: boolean; path?: string }

@@ -15,7 +15,7 @@
     "typecheck": "tsc -p tsconfig.node.json --noEmit && tsc -p tsconfig.react.json --noEmit && tsc -p packages/ui-react/tsconfig.json --noEmit",
     "test": "vitest run",
     "test:dev-ready": "node scripts/check-electron-install.mjs .",
-    "test:dev-ready:all": "node scripts/check-electron-install.mjs . && node scripts/check-electron-install.mjs apps/Amove && node scripts/check-electron-install.mjs apps/Vox && node scripts/check-electron-install.mjs apps/Exithibition",
+    "test:dev-ready:all": "node scripts/check-electron-install.mjs . && node scripts/check-electron-install.mjs apps/Amove && node scripts/check-electron-install.mjs apps/Vox && node scripts/check-electron-install.mjs apps/Exithibition && node scripts/check-electron-install.mjs apps/Bonded",
     "test:ownership": "node scripts/check-root-ownership.mjs",
     "ui:preset:set": "node packages/design-system/scripts/preset.mjs set",
     "ui:preset:sync": "node packages/design-system/scripts/preset.mjs sync",

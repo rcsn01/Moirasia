@@ -1,8 +1,7 @@
 import { app, BrowserWindow, nativeTheme } from 'electron'
 import { join } from 'node:path'
 import { pathToFileURL } from 'node:url'
-import { AppearanceRegistry, applyAppearance } from '@moirasia/desktop-shell/main'
-import { windowBackgrounds } from '@moirasia/ui-react/tokens'
+import { AppearanceRegistry, applyAppearance, applyWindowAppearance, desktopWindowChromeOptions, neutralWindowBackground } from '@moirasia/desktop-shell/main'
 import { ApplicationController } from './application-controller'
 import { registerControllerIpc } from './ipc'
 import { installApplicationMenu } from './menu'
@@ -20,14 +19,15 @@ async function createApplication(): Promise<void> {
   applyAppearance(nativeTheme, appearances.get().values.moirasia)
   app.setLoginItemSettings({ openAtLogin: settings.get().launchAtLogin })
   const controller = new ApplicationController(appearances, settings)
-  const macChrome = process.platform === 'darwin' ? { titleBarStyle: 'hiddenInset' as const, trafficLightPosition: { x: 16, y: 18 } } : {}
   const window = new BrowserWindow({
     title: 'Moirasia', width: 980, height: 700, minWidth: 760, minHeight: 560, show: false,
-    ...macChrome,
-    backgroundColor: nativeTheme.shouldUseDarkColors ? windowBackgrounds.moirasia.dark : windowBackgrounds.moirasia.light,
+    ...desktopWindowChromeOptions(),
+    backgroundColor: neutralWindowBackground(appearances.get().values.moirasia, nativeTheme.shouldUseDarkColors),
     webPreferences: { preload: paths.preload('shell'), contextIsolation: true, nodeIntegration: false, sandbox: true }
   })
-  const applyShellAppearance = (): void => applyAppearance(nativeTheme, appearances.get().values.moirasia)
+  const applyShellAppearance = (): void => applyWindowAppearance(nativeTheme, window, appearances.get().values.moirasia)
+  const updateSystemBackground = (): void => { if (appearances.get().values.moirasia === 'system') window.setBackgroundColor(neutralWindowBackground('system', nativeTheme.shouldUseDarkColors)) }
+  nativeTheme.on('updated', updateSystemBackground)
   const disposeIpc = registerControllerIpc({ window, controller, settings, applyShellAppearance })
   installApplicationMenu(window, (id) => void controller.open(id).catch((error) => console.error(error)))
   window.webContents.setWindowOpenHandler(() => ({ action: 'deny' })); window.webContents.on('will-navigate', (event) => event.preventDefault())
@@ -40,7 +40,7 @@ async function createApplication(): Promise<void> {
   window.on('show', updatePolling); window.on('hide', updatePolling); updatePolling()
   app.on('second-instance', () => { if (window.isMinimized()) window.restore(); window.show(); window.focus() })
   app.on('activate', () => { window.show(); window.focus() })
-  app.on('before-quit', () => { if (timer) clearInterval(timer); disposeIpc(); controller.close() })
+  app.on('before-quit', () => { if (timer) clearInterval(timer); nativeTheme.removeListener('updated', updateSystemBackground); disposeIpc(); controller.close() })
 }
 
 async function legacyShellAppearance(path: string): Promise<'system' | 'light' | 'dark' | undefined> {

@@ -5,7 +5,7 @@ import { dirname, join } from 'node:path'
 import { tmpdir } from 'node:os'
 import { APPEARANCES, PRODUCT_IDS, isAppearance, isProductId, type Appearance, type AppearanceSnapshot, type LoginItemControlResult, type ProductId } from './index'
 
-const DEFAULTS: Record<ProductId, Appearance> = { moirasia: 'system', amove: 'system', vox: 'system', exithibition: 'dark' }
+const DEFAULTS: Record<ProductId, Appearance> = { moirasia: 'system', amove: 'system', vox: 'system', exithibition: 'dark', bonded: 'system' }
 const EMPTY: AppearanceSnapshot = { version: 1, revision: 0, values: DEFAULTS }
 
 export function appearanceRegistryPath(appData = app.getPath('appData')): string {
@@ -109,24 +109,32 @@ export function applyAppearance(nativeTheme: NativeTheme, appearance: Appearance
   nativeTheme.themeSource = appearance
 }
 
+export const NEUTRAL_WINDOW_BACKGROUNDS = { light: '#ffffff', dark: '#1c1917' } as const
+
+export function neutralWindowBackground(appearance: Appearance, systemDark = nativeTheme.shouldUseDarkColors): string {
+  return appearance === 'dark' || (appearance === 'system' && systemDark) ? NEUTRAL_WINDOW_BACKGROUNDS.dark : NEUTRAL_WINDOW_BACKGROUNDS.light
+}
+
+export function applyWindowAppearance(theme: NativeTheme, window: BrowserWindow, appearance: Appearance): void {
+  applyAppearance(theme, appearance)
+  if (!window.isDestroyed()) window.setBackgroundColor(neutralWindowBackground(appearance, theme.shouldUseDarkColors))
+}
+
 export async function registerProductAppearance(product: ProductId, window: BrowserWindow, legacy?: Appearance): Promise<() => void> {
   const registry = new AppearanceRegistry(); await registry.load(legacy ? { [product]: legacy } : {})
   const getChannel = `desktop-shell:${product}:appearance:get`, setChannel = `desktop-shell:${product}:appearance:set`, changedChannel = `desktop-shell:${product}:appearance:changed`
-  const apply = (snapshot = registry.get()) => { const value = snapshot.values[product]; applyAppearance(nativeTheme, value); if (!window.isDestroyed()) window.webContents.send(changedChannel, value) }
+  const apply = (snapshot = registry.get()) => { const value = snapshot.values[product]; applyWindowAppearance(nativeTheme, window, value); if (!window.isDestroyed()) window.webContents.send(changedChannel, value) }
+  const updateSystemBackground = () => { const value = registry.get().values[product]; if (value === 'system' && !window.isDestroyed()) window.setBackgroundColor(neutralWindowBackground(value, nativeTheme.shouldUseDarkColors)) }
   apply()
+  nativeTheme.on('updated', updateSystemBackground)
   ipcMain.handle(getChannel, () => registry.get().values[product])
   ipcMain.handle(setChannel, async (_event, value: unknown) => { if (!isAppearance(value)) throw new TypeError('Invalid appearance'); const result = await registry.set(product, value); return result.values[product] })
   const unsubscribe = registry.subscribe(apply)
-  return () => { unsubscribe(); registry.close(); ipcMain.removeHandler(getChannel); ipcMain.removeHandler(setChannel) }
+  return () => { unsubscribe(); registry.close(); nativeTheme.removeListener('updated', updateSystemBackground); ipcMain.removeHandler(getChannel); ipcMain.removeHandler(setChannel) }
 }
 
-export function primaryWindowOptions(product: Exclude<ProductId, 'moirasia'>, platform = process.platform): BrowserWindowConstructorOptions {
-  const minimums = { amove: [980, 700], vox: [920, 640], exithibition: [1080, 690] } as const
-  const [minWidth, minHeight] = minimums[product]
-  return {
-    width: 1180, height: 760, minWidth, minHeight,
-    ...(platform === 'darwin' ? { titleBarStyle: 'hiddenInset' as const, trafficLightPosition: { x: 16, y: 18 } } : {})
-  }
+export function desktopWindowChromeOptions(platform = process.platform): BrowserWindowConstructorOptions {
+  return platform === 'darwin' ? { titleBarStyle: 'hiddenInset', trafficLightPosition: { x: 16, y: 13 } } : {}
 }
 
 export async function runLoginItemControl(appId: string, argv = process.argv): Promise<boolean> {
@@ -158,8 +166,9 @@ async function readSnapshot(path: string): Promise<AppearanceSnapshot | undefine
   try {
     const value = JSON.parse(await readFile(path, 'utf8')) as Partial<AppearanceSnapshot>
     if (value.version !== 1 || !Number.isSafeInteger(value.revision) || !value.values) return undefined
-    if (!PRODUCT_IDS.every((id) => isAppearance(value.values?.[id]))) return undefined
-    return { version: 1, revision: value.revision!, values: Object.fromEntries(PRODUCT_IDS.map((id) => [id, value.values![id]])) as Record<ProductId, Appearance> }
+    const values = value.values as Partial<Record<ProductId, Appearance>>
+    if (!PRODUCT_IDS.filter((id) => id !== 'bonded').every((id) => isAppearance(values[id]))) return undefined
+    return { version: 1, revision: value.revision!, values: { ...DEFAULTS, ...Object.fromEntries(PRODUCT_IDS.filter((id) => isAppearance(values[id])).map((id) => [id, values[id]])) } }
   } catch { return undefined }
 }
 

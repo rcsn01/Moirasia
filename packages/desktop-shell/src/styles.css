@@ -1,12 +1,36 @@
-.desktop-app-frame { width: 100%; height: 100%; overflow: hidden; background: var(--background); color: var(--foreground); }
-.desktop-app-bar { position: relative; z-index: 20; height: 52px; min-height: 52px; border-bottom: 1px solid var(--border); background: color-mix(in oklab, var(--background), transparent 5%); -webkit-app-region: drag; }
-.desktop-app-bar button, .desktop-app-bar input, .desktop-app-bar select, .desktop-app-bar a, .desktop-page-actions { -webkit-app-region: no-drag; }
-.desktop-app-content { height: calc(100% - 52px); overflow: auto; }
-.desktop-page-header { display: flex; height: 52px; min-height: 52px; align-items: center; justify-content: space-between; gap: 16px; padding: 0 16px 0 80px; }
-.desktop-page-identity { display: flex; min-width: 0; align-items: baseline; gap: 9px; white-space: nowrap; }
-.desktop-page-identity > span { font-size: 13px; font-weight: 650; letter-spacing: -.01em; }
-.desktop-page-identity > strong { overflow: hidden; color: var(--foreground); font-size: 12px; font-weight: 500; text-overflow: ellipsis; }
-.desktop-page-identity > small { overflow: hidden; color: var(--muted-foreground); font-size: 10px; text-overflow: ellipsis; }
-.desktop-page-actions { display: flex; align-items: center; gap: 8px; }
-.appearance-control select { height: 28px; border: 1px solid var(--input); border-radius: 7px; padding: 0 8px; color: var(--foreground); background: var(--background); font: inherit; font-size: 11px; }
-.desktop-page-header:not(.macos) { padding-left: 16px; }
+:root {
+  --desktop-chrome-height: 40px;
+  --desktop-chrome-background: var(--background);
+  --desktop-chrome-foreground: var(--foreground);
+  --desktop-chrome-muted: var(--muted-foreground);
+  --desktop-chrome-border: var(--border);
+  --desktop-chrome-control-background: var(--card);
+  --desktop-chrome-control-border: var(--input);
+}
+.desktop-shell, .desktop-shell * { box-sizing:border-box; }
+.desktop-shell { width:100%; height:100%; overflow:hidden; background:var(--background); color:var(--foreground); }
+.desktop-shell__chrome { position:relative; z-index:20; display:flex; height:var(--desktop-chrome-height); min-height:var(--desktop-chrome-height); align-items:center; justify-content:space-between; gap:12px; padding:0 10px 0 12px; border-bottom:1px solid var(--desktop-chrome-border); background:var(--desktop-chrome-background); color:var(--desktop-chrome-foreground); font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif; -webkit-app-region:drag; }
+.desktop-shell__chrome--macos { padding-left:76px; }
+.desktop-shell__product { overflow:hidden; font-size:12px; font-weight:650; letter-spacing:-.01em; line-height:1; text-overflow:ellipsis; white-space:nowrap; }
+.desktop-appearance-control { display:block; flex:0 0 auto; line-height:normal; -webkit-app-region:no-drag; }
+.desktop-appearance-control select { box-sizing:border-box; width:auto; min-width:76px; height:24px; margin:0; border:1px solid var(--desktop-chrome-control-border); border-radius:6px; padding:0 22px 0 7px; color:var(--desktop-chrome-foreground); background-color:var(--desktop-chrome-control-background); box-shadow:none; font:500 10px/normal -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif; letter-spacing:0; text-transform:none; }
+.desktop-shell__body { display:grid; width:100%; height:calc(100% - var(--desktop-chrome-height)); min-height:0; grid-template-columns:minmax(0,1fr); }
+.desktop-shell__body--navigation { grid-template-columns:220px minmax(0,1fr); }
+.desktop-shell__navigation-region { display:flex; min-width:0; min-height:0; flex-direction:column; border-right:1px solid var(--border); background:color-mix(in oklab,var(--muted),transparent 58%); }
+.desktop-shell__content { min-width:0; min-height:0; overflow:hidden; }
+.desktop-navigation { display:flex; min-height:0; flex:1; flex-direction:column; gap:4px; padding:16px 12px; overflow:auto; }
+.desktop-navigation__item { display:flex; min-height:38px; width:100%; align-items:center; gap:10px; border:0; border-radius:8px; padding:0 10px; color:var(--muted-foreground); background:transparent; font:500 13px/1 -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif; text-align:left; cursor:pointer; }
+.desktop-navigation__item:hover { background:var(--accent); color:var(--accent-foreground); }
+.desktop-navigation__item[data-active] { background:var(--secondary); color:var(--secondary-foreground); font-weight:650; }
+.desktop-navigation__item svg { width:16px; height:16px; flex:0 0 auto; }
+.desktop-navigation__badge { margin-left:auto; }
+.desktop-shell__navigation-footer { flex:0 0 auto; padding:12px; }
+.desktop-page { width:100%; height:100%; margin:0 auto; }
+.desktop-page--compact { max-width:640px; }.desktop-page--standard { max-width:960px; }.desktop-page--wide { max-width:1280px; }.desktop-page--full { max-width:none; }
+.desktop-page--scroll-page { overflow:auto; padding:32px; }.desktop-page--scroll-contained { display:flex; min-height:0; flex-direction:column; overflow:hidden; padding:24px; }
+.desktop-content-header { display:flex; flex:0 0 auto; align-items:flex-start; justify-content:space-between; gap:24px; margin:0 0 24px; }
+.desktop-content-header__copy { min-width:0; }.desktop-content-header__title-row { display:flex; align-items:center; flex-wrap:wrap; gap:10px; }.desktop-content-header h1 { margin:0; font-size:28px; line-height:1.15; letter-spacing:-.03em; }.desktop-content-header p { margin:6px 0 0; color:var(--muted-foreground); font-size:13px; }.desktop-content-header__actions { display:flex; flex:0 0 auto; align-items:center; flex-wrap:wrap; justify-content:flex-end; gap:8px; -webkit-app-region:no-drag; }
+.desktop-shell__sr-only { position:absolute; width:1px; height:1px; padding:0; margin:-1px; overflow:hidden; clip:rect(0,0,0,0); white-space:nowrap; border:0; }
+/* Compatibility for bespoke windows that have not adopted the shell. */
+.desktop-app-frame { width:100%; height:100%; overflow:hidden; background:var(--background); color:var(--foreground); }.desktop-app-bar { position:relative; z-index:20; height:var(--desktop-chrome-height); min-height:var(--desktop-chrome-height); border-bottom:1px solid var(--desktop-chrome-border); background:var(--desktop-chrome-background); -webkit-app-region:drag; }.desktop-app-bar button,.desktop-app-bar input,.desktop-app-bar select,.desktop-app-bar a,.desktop-page-actions{-webkit-app-region:no-drag}.desktop-app-content{height:calc(100% - var(--desktop-chrome-height));overflow:auto}.desktop-page-header{display:flex;height:var(--desktop-chrome-height);min-height:var(--desktop-chrome-height);align-items:center;justify-content:space-between;gap:12px;padding:0 10px 0 76px}.desktop-page-identity{display:flex;min-width:0;align-items:baseline;gap:8px;white-space:nowrap}.desktop-page-identity>span{font-size:12px;font-weight:650}.desktop-page-identity>strong{font-size:11px}.desktop-page-identity>small{color:var(--muted-foreground);font-size:10px}.appearance-control select{height:24px}.desktop-page-header:not(.macos){padding-left:12px}
+@media(max-width:720px){.desktop-shell__body--navigation{grid-template-columns:minmax(0,1fr);grid-template-rows:auto minmax(0,1fr) auto}.desktop-shell__navigation-region{display:contents}.desktop-navigation{order:0; min-width:0; flex:none; flex-direction:row; gap:4px; padding:8px; border-bottom:1px solid var(--border); overflow-x:auto}.desktop-navigation__item{width:auto; min-width:max-content; padding:0 10px}.desktop-shell__navigation-footer{display:block;order:2;padding:8px 12px;border-top:1px solid var(--border);background:color-mix(in oklab,var(--muted),transparent 58%)}.desktop-shell__content{order:1}.desktop-page--scroll-page{padding:22px 18px}.desktop-page--scroll-contained{padding:18px}.desktop-content-header{flex-direction:column;gap:14px}.desktop-content-header__actions{justify-content:flex-start}}
