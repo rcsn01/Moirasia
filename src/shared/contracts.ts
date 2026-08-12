@@ -1,6 +1,6 @@
 import type { Appearance, AppearanceSnapshot, LoginItemControlResult } from '@moirasia/desktop-shell'
 
-export const APPLICATION_IDS = ['amove', 'vox', 'exithibition'] as const
+export const APPLICATION_IDS = ['amove', 'vox', 'exithibition', 'bonded'] as const
 export type ApplicationId = (typeof APPLICATION_IDS)[number]
 export type ControllerPage = 'apps' | 'settings'
 

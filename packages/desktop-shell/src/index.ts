@@ -1,4 +1,4 @@
-export const PRODUCT_IDS = ['moirasia', 'amove', 'vox', 'exithibition'] as const
+export const PRODUCT_IDS = ['moirasia', 'amove', 'vox', 'exithibition', 'bonded'] as const
 export type ProductId = (typeof PRODUCT_IDS)[number]
 export const APPEARANCES = ['system', 'light', 'dark'] as const
 export type Appearance = (typeof APPEARANCES)[number]

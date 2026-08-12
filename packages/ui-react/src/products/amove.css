@@ -1,13 +1,5 @@
 /* Generated amove product tokens. Do not edit. */
 :root {
-  --amove-color-action-primary: #3883a2;
-  --amove-color-text-on-action: #ffffff;
-  --amove-color-action-primary-hover: #2e718d;
-  --amove-color-action-primary-pressed: #275f77;
-  --amove-color-action-primary-border: #4c92ae;
-  --amove-color-focus: #268db8;
-  --amove-color-focus-soft: rgba(38, 141, 184, 0.2);
-  --amove-color-window-background: #f3f4f6;
   --amove-shelf-color-canvas: #1c1917;
   --amove-shelf-color-surface: #292524;
   --amove-shelf-color-surface-raised: #44403c;
@@ -24,17 +16,4 @@
   --amove-shelf-color-document: #f5f5f4;
   --amove-shelf-color-document-fold: #a8a29e;
   --amove-shelf-color-shadow: rgba(0, 0, 0, 0.4);
-}
-
-@media (prefers-color-scheme: dark) {
-  :root {
-  --amove-color-action-primary: #3e91b2;
-  --amove-color-text-on-action: #ffffff;
-  --amove-color-action-primary-hover: #50a2c1;
-  --amove-color-action-primary-pressed: #327b98;
-  --amove-color-action-primary-border: #66abc5;
-  --amove-color-focus: #52add0;
-  --amove-color-focus-soft: rgba(82, 173, 208, 0.28);
-  --amove-color-window-background: #1c1917;
-  }
 }

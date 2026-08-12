@@ -1,9 +1,9 @@
 import { existsSync } from 'node:fs'
 
 const forbidden = [
-  'src/modules/amove', 'src/modules/vox', 'src/modules/exithibition',
-  'src/renderer/amove', 'src/renderer/vox', 'src/renderer/exithibition',
-  'native/amove', 'native/vox', 'native/exithibition'
+  'src/modules/amove', 'src/modules/vox', 'src/modules/exithibition', 'src/modules/bonded',
+  'src/renderer/amove', 'src/renderer/vox', 'src/renderer/exithibition', 'src/renderer/bonded',
+  'native/amove', 'native/vox', 'native/exithibition', 'native/bonded'
 ]
 const found = forbidden.filter(existsSync)
 if (found.length > 0) {
