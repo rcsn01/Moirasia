@@ -6,7 +6,7 @@ import { AppearanceRegistry, applyWindowAppearance, desktopWindowChromeOptions, 
 
 describe('AppearanceRegistry migration', () => {
   it('keeps macOS chrome separate from app-owned dimensions', () => {
-    expect(desktopWindowChromeOptions('darwin')).toEqual({ titleBarStyle: 'hiddenInset', trafficLightPosition: { x: 16, y: 13 } })
+    expect(desktopWindowChromeOptions('darwin')).toEqual({ titleBarStyle: 'hiddenInset', trafficLightPosition: { x: 16, y: 11 } })
     expect(desktopWindowChromeOptions('linux')).toEqual({})
     expect(desktopWindowChromeOptions('darwin')).not.toHaveProperty('width')
   })

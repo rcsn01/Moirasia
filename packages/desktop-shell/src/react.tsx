@@ -20,7 +20,7 @@ export function DesktopAppShell({ product, appearance, onAppearanceChange, navig
   return <div className="desktop-shell">
     <header className={`desktop-shell__chrome ${macos ? 'desktop-shell__chrome--macos' : ''}`}>
       <strong className="desktop-shell__product">{product}</strong>
-      <AppearanceControl value={appearance} onChange={onAppearanceChange} />
+      <AppearanceToggle value={appearance} onChange={onAppearanceChange} />
     </header>
     <div className={`desktop-shell__body ${navigation ? 'desktop-shell__body--navigation' : ''}`}>
       {navigation && <aside className="desktop-shell__navigation-region">{navigation}{footer && <div className="desktop-shell__navigation-footer">{footer}</div>}</aside>}
@@ -82,6 +82,26 @@ export function DesktopPageHeader({ product, title, subtitle, actions }: { reado
 
 export function AppearanceControl({ value, onChange, label = 'Appearance', mixed = false }: { readonly value: Appearance; readonly onChange: (value: Appearance) => void; readonly label?: string; readonly mixed?: boolean }): React.JSX.Element {
   return <label className="desktop-appearance-control"><span className="desktop-shell__sr-only">{label}</span><select aria-label={label} value={mixed ? 'mixed' : value} onChange={(event) => { if (event.target.value !== 'mixed') onChange(event.target.value as Appearance) }}>{mixed && <option value="mixed">Mixed</option>}{APPEARANCES.map((item) => <option key={item} value={item}>{item[0]!.toUpperCase() + item.slice(1)}</option>)}</select></label>
+}
+
+export function AppearanceToggle({ value, onChange }: { readonly value: Appearance; readonly onChange: (value: Appearance) => void }): React.JSX.Element {
+  const [systemDark, setSystemDark] = useState(() => typeof matchMedia === 'function' && matchMedia('(prefers-color-scheme: dark)').matches)
+  useEffect(() => {
+    if (typeof matchMedia !== 'function') return
+    const media = matchMedia('(prefers-color-scheme: dark)')
+    const update = () => setSystemDark(media.matches)
+    update()
+    media.addEventListener('change', update)
+    return () => media.removeEventListener('change', update)
+  }, [])
+  const dark = value === 'dark' || (value === 'system' && systemDark)
+  const next: Appearance = dark ? 'light' : 'dark'
+  const label = `Switch to ${next} appearance`
+  return <button className="desktop-appearance-toggle" type="button" aria-label={label} title={label} data-effective-appearance={dark ? 'dark' : 'light'} onClick={() => onChange(next)}>
+    {dark
+      ? <svg aria-hidden="true" viewBox="0 0 24 24"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.93 4.93l1.42 1.42M17.66 17.66l1.41 1.41M2 12h2M20 12h2M4.93 19.07l1.42-1.42M17.66 6.34l1.41-1.41"/></svg>
+      : <svg aria-hidden="true" viewBox="0 0 24 24"><path d="M20.35 15.35A9 9 0 0 1 8.65 3.65a9 9 0 1 0 11.7 11.7Z"/></svg>}
+  </button>
 }
 
 export function applyDocumentAppearance(appearance: Appearance, systemDark = matchMedia('(prefers-color-scheme: dark)').matches): void {
