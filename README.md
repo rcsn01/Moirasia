@@ -12,7 +12,7 @@ pnpm test
 pnpm build
 ```
 
-The four product repositories live under `apps/` and keep their own package manager locks and verification commands. `@moirasia/desktop-shell` provides the shared 40px macOS chrome, adaptive navigation, page/content-header layouts, atomic cross-process appearance registry, chrome-only window options, and bundle-owned headless login-item protocol.
+The four product repositories live under `apps/` and keep their own package manager locks and verification commands. `@moirasia/desktop-shell` provides the shared 36px macOS chrome, adaptive navigation, page/content-header layouts, atomic cross-process appearance registry, chrome-only window options, and bundle-owned headless login-item protocol.
 
 ## Application control
 

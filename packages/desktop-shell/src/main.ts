@@ -134,7 +134,7 @@ export async function registerProductAppearance(product: ProductId, window: Brow
 }
 
 export function desktopWindowChromeOptions(platform = process.platform): BrowserWindowConstructorOptions {
-  return platform === 'darwin' ? { titleBarStyle: 'hiddenInset', trafficLightPosition: { x: 16, y: 13 } } : {}
+  return platform === 'darwin' ? { titleBarStyle: 'hiddenInset', trafficLightPosition: { x: 16, y: 11 } } : {}
 }
 
 export async function runLoginItemControl(appId: string, argv = process.argv): Promise<boolean> {
