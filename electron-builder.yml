@@ -9,6 +9,8 @@ files:
 extraResources:
   - from: native/staged/application-agent
     to: application-agent
+  - from: native/staged/features/ExithibitionNative
+    to: native/ExithibitionNative
 mac:
   target:
     - target: dmg

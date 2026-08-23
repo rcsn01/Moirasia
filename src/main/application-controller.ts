@@ -4,6 +4,7 @@ import { join } from 'node:path'
 import { promisify } from 'node:util'
 import { AppearanceRegistry, type Appearance, type LoginItemControlResult, type ProductId } from '@moirasia/desktop-shell/main'
 import { APPLICATION_IDS, type ApplicationId, type ApplicationStatus, type ControllerSnapshot } from '../shared/contracts'
+import type { FeatureRuntime } from './features/runtime'
 import type { ShellSettingsStore } from './settings'
 
 const execFile = promisify(execFileCallback)
@@ -19,9 +20,9 @@ export class ApplicationController {
   #listeners = new Set<(snapshot: ControllerSnapshot) => void>()
   #busy = new Map<ApplicationId, ApplicationStatus['busy']>()
   #errors = new Map<ApplicationId, string>()
-  constructor(readonly appearances: AppearanceRegistry, private readonly settings: ShellSettingsStore, private readonly agent: ApplicationAgent = new SwiftApplicationAgent()) {}
+  constructor(readonly appearances: AppearanceRegistry, private readonly settings: ShellSettingsStore, private readonly features: FeatureRuntime, private readonly agent: ApplicationAgent = new SwiftApplicationAgent()) {}
 
-  snapshot(): ControllerSnapshot { return { applications: structuredClone(this.#applications), appearances: this.appearances.get() } }
+  snapshot(): ControllerSnapshot { return { applications: structuredClone(this.#applications), appearances: this.appearances.get(), features: this.features.statuses() } }
   subscribe(listener: (snapshot: ControllerSnapshot) => void): () => void { this.#listeners.add(listener); return () => this.#listeners.delete(listener) }
   async refresh(): Promise<ControllerSnapshot> {
     const records = await this.agent.snapshot()
@@ -29,6 +30,10 @@ export class ApplicationController {
     await this.#retryPending(); this.#emit(); return this.snapshot()
   }
   async open(id: ApplicationId): Promise<ControllerSnapshot> { return this.#action(id, 'opening', async (record) => { await this.agent.open(record) }) }
+  async installFeature(id: ApplicationId): Promise<ControllerSnapshot> { await this.features.setInstalled(id, true); this.#emit(); return this.snapshot() }
+  async uninstallFeature(id: ApplicationId): Promise<ControllerSnapshot> { await this.features.setInstalled(id, false); this.#emit(); return this.snapshot() }
+  openFeature(id: ApplicationId): void { this.features.activate(id) }
+  relaunch(): void { this.features.relaunch() }
   async quit(id: ApplicationId): Promise<ControllerSnapshot> { return this.#action(id, 'quitting', async (record) => { if (!await this.agent.quit(record)) throw new Error(`${CATALOG[id].label} did not quit within 10 seconds.`) }) }
   async setAppearance(product: ProductId, appearance: Appearance): Promise<ControllerSnapshot> { await this.appearances.set(product, appearance); this.#emit(); return this.snapshot() }
   async setAllAppearances(appearance: Appearance): Promise<ControllerSnapshot> { await this.appearances.setAll(appearance); this.#emit(); return this.snapshot() }

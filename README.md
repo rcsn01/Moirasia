@@ -1,6 +1,6 @@
 # Moirasia
 
-Moirasia is a macOS controller for the standalone Amove, Vox, Exithibition, and Bonded applications. It never embeds or runs product content: the Apps page discovers installed bundles, opens or focuses them, reports running state, and requests graceful termination. Closing Moirasia leaves every product app running.
+Moirasia is a macOS controller and feature host for Amove, Vox, Exithibition, and Bonded. The Apps page discovers standalone bundles, opens or focuses them, reports running state, and requests graceful termination. The suite can also run feature packages in-process; Exithibition is the first one.
 
 ## Development
 
@@ -10,6 +10,20 @@ pnpm dev
 pnpm typecheck
 pnpm test
 pnpm build
+```
+
+The suite build compiles the Exithibition Swift helper, stages it, and packages the unsigned Moirasia app:
+
+```sh
+pnpm dist:mac
+```
+
+Exithibition remains buildable as a standalone app. Run its commands from the app directory:
+
+```sh
+pnpm -C apps/Exithibition install --ignore-workspace
+pnpm -C apps/Exithibition dev
+pnpm -C apps/Exithibition package:mac
 ```
 
 The four product repositories live under `apps/` and keep their own package manager locks and verification commands. `@moirasia/desktop-shell` provides the shared 36px macOS chrome, adaptive navigation, page/content-header layouts, atomic cross-process appearance registry, chrome-only window options, and bundle-owned headless login-item protocol.
@@ -27,3 +41,5 @@ Each standalone bundle accepts one headless command without creating product win
 ```
 
 Appearance is stored in `Application Support/Moirasia/appearance.json`. Values for Moirasia and each app remain independent, update live across running processes, and can be changed together from Moirasia Settings.
+
+In-suite features use the Moirasia bundle's macOS permissions. Microphone, accessibility, and screen-recording grants apply to the suite app, not to an individual product feature. Standalone builds keep their own bundle identity and permissions.

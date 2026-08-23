@@ -12,6 +12,9 @@
     "src/preload/**/*.ts",
     "src/shared/**/*.ts",
     "packages/desktop-shell/src/**/*.ts",
+    "packages/feature-exithibition/src/main/**/*.ts",
+    "packages/feature-exithibition/src/preload/**/*.ts",
+    "packages/feature-exithibition/src/shared/**/*.ts",
     "tests/**/*.ts"
   ]
 }

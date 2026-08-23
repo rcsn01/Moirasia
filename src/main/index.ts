@@ -3,6 +3,7 @@ import { join } from 'node:path'
 import { pathToFileURL } from 'node:url'
 import { AppearanceRegistry, applyAppearance, applyWindowAppearance, desktopWindowChromeOptions, neutralWindowBackground } from '@moirasia/desktop-shell/main'
 import { ApplicationController } from './application-controller'
+import { FeatureRuntime } from './features/runtime'
 import { registerControllerIpc } from './ipc'
 import { installApplicationMenu } from './menu'
 import { paths } from './paths'
@@ -18,7 +19,8 @@ async function createApplication(): Promise<void> {
   const appearances = new AppearanceRegistry(); await appearances.load(legacyAppearance ? { moirasia: legacyAppearance } : {})
   applyAppearance(nativeTheme, appearances.get().values.moirasia)
   app.setLoginItemSettings({ openAtLogin: settings.get().launchAtLogin })
-  const controller = new ApplicationController(appearances, settings)
+  const features = new FeatureRuntime(settings); await features.syncAtLaunch()
+  const controller = new ApplicationController(appearances, settings, features)
   const window = new BrowserWindow({
     title: 'Moirasia', width: 980, height: 700, minWidth: 760, minHeight: 560, show: false,
     ...desktopWindowChromeOptions(),
@@ -40,7 +42,7 @@ async function createApplication(): Promise<void> {
   window.on('show', updatePolling); window.on('hide', updatePolling); updatePolling()
   app.on('second-instance', () => { if (window.isMinimized()) window.restore(); window.show(); window.focus() })
   app.on('activate', () => { window.show(); window.focus() })
-  app.on('before-quit', () => { if (timer) clearInterval(timer); nativeTheme.removeListener('updated', updateSystemBackground); disposeIpc(); controller.close() })
+  app.on('before-quit', () => { if (timer) clearInterval(timer); nativeTheme.removeListener('updated', updateSystemBackground); disposeIpc(); void features.disposeAll(); controller.close() })
 }
 
 async function legacyShellAppearance(path: string): Promise<'system' | 'light' | 'dark' | undefined> {

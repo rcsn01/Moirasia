@@ -1,0 +1,22 @@
+{
+  "name": "@moirasia/feature-exithibition",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    "./main": "./src/main/feature.ts",
+    "./standalone": "./src/main/standalone.ts",
+    "./preload": "./src/preload/index.ts",
+    "./renderer": "./src/renderer/mount.tsx",
+    "./styles.css": "./src/renderer/styles.css",
+    "./shared/contracts": "./src/shared/contracts.ts"
+  },
+  "dependencies": {
+    "@moirasia/desktop-shell": "file:../desktop-shell",
+    "@moirasia/ui-react": "file:../ui-react"
+  },
+  "peerDependencies": {
+    "electron": ">=41 <44",
+    "react": ">=19 <20"
+  }
+}

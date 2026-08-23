@@ -6,6 +6,8 @@
     "types": ["vite/client"]
   },
   "include": [
-    "src/renderer/shell/**/*"
+    "src/renderer/shell/**/*",
+    "src/renderer/feature-exithibition/**/*",
+    "packages/feature-exithibition/src/renderer/**/*"
   ]
 }

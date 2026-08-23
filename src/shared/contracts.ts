@@ -16,15 +16,24 @@ export interface ApplicationStatus {
   readonly error?: string
 }
 
+export interface FeatureStatus {
+  readonly id: ApplicationId
+  readonly installed: boolean
+  readonly loaded: boolean         // register() has run in this session
+  readonly restartPending: boolean // was loaded, now uninstalled; relaunch fully unloads
+}
+
 export interface ControllerSnapshot {
   readonly applications: readonly ApplicationStatus[]
   readonly appearances: AppearanceSnapshot
+  readonly features: readonly FeatureStatus[]
 }
 
 export interface ShellSettings {
-  readonly version: 2
+  readonly version: 3
   readonly launchAtLogin: boolean
   readonly pendingLoginItems: Readonly<Partial<Record<ApplicationId, true>>>
+  readonly features: Readonly<Partial<Record<ApplicationId, boolean>>>
 }
 
 export interface ControllerApi {
@@ -37,6 +46,10 @@ export interface ControllerApi {
   setAllAppearances(appearance: Appearance): Promise<ControllerSnapshot>
   setLaunchAtLogin(enabled: boolean): Promise<ShellSettings>
   setApplicationLoginItem(id: ApplicationId, enabled: boolean): Promise<ControllerSnapshot>
+  installFeature(id: ApplicationId): Promise<ControllerSnapshot>
+  uninstallFeature(id: ApplicationId): Promise<ControllerSnapshot>
+  openFeature(id: ApplicationId): Promise<void>
+  relaunchApp(): Promise<void>
   openLoginItemsSettings(): Promise<void>
   onSnapshot(listener: (snapshot: ControllerSnapshot) => void): () => void
   onNavigate(listener: (page: ControllerPage) => void): () => void
@@ -45,6 +58,8 @@ export interface ControllerApi {
 export const IPC = {
   getSnapshot: 'controller:get-snapshot', refresh: 'controller:refresh', getSettings: 'controller:get-settings',
   openApplication: 'controller:open-application', quitApplication: 'controller:quit-application',
+  installFeature: 'controller:install-feature', uninstallFeature: 'controller:uninstall-feature',
+  openFeature: 'controller:open-feature', relaunch: 'controller:relaunch',
   setAppearance: 'controller:set-appearance', setAllAppearances: 'controller:set-all-appearances',
   setLaunchAtLogin: 'controller:set-launch-at-login', setApplicationLoginItem: 'controller:set-application-login-item',
   openLoginItemsSettings: 'controller:open-login-items-settings', snapshot: 'controller:snapshot', navigate: 'controller:navigate'
