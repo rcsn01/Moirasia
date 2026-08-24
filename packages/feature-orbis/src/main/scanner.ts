@@ -1,6 +1,7 @@
 import { lstat as defaultLstat, realpath as defaultRealpath, readdir as defaultReaddir, rename, statfs as defaultStatfs } from "node:fs/promises"
 import { basename, isAbsolute, normalize, relative, resolve, sep } from "node:path"
 import { createScanDatabase, finalizeDatabase, insertNode, prepareDatabaseDirectory, removeDatabaseFiles, writeMetadata } from "./database"
+import { measureScan, measureScanAsync, runWithScanDiagnostics } from "./diagnostics"
 
 export interface ScanStats {
   readonly blocks?: number | bigint
@@ -89,47 +90,57 @@ const STARTUP_EXCLUSIONS = [
   "/private/var/run"
 ]
 
-export async function scanFilesystem(options: ScanOptions): Promise<ScanResult> {
+export function scanFilesystem(options: ScanOptions): Promise<ScanResult> {
+  return runWithScanDiagnostics(options.generation, () => measureScanAsync("scan-total", () => scanFilesystemImpl(options)))
+}
+
+async function scanFilesystemImpl(options: ScanOptions): Promise<ScanResult> {
   if (!isAbsolute(options.target)) throw new Error("Scan target must be an absolute path")
   const fileSystem = options.fileSystem ?? defaultFileSystem
   const startedAt = Date.now()
   const totals = { scannedItems: 0, discoveredBytes: 0, skippedItems: 0, unreadableItems: 0, nestedMounts: 0, symlinks: 0, duplicateHardLinks: 0, disappearingItems: 0 }
   const reporter = new ProgressReporter(options.onProgress, startedAt, totals)
   const seenFiles = new Set<string>()
-  await prepareDatabaseDirectory(options.partialPath)
-  const indexRoot = await fileSystem.realpath(options.indexDirectory).catch(() => resolve(options.indexDirectory))
-  const indexStats = await fileSystem.lstat(indexRoot).catch(() => undefined)
-  const indexIdentity = indexStats?.isDirectory() ? fileIdentity(indexStats) : undefined
-  const target = normalize(resolve(options.target))
-  const rootStats = await fileSystem.lstat(target)
-  throwIfCanceled(options.signal)
-  if (rootStats.isSymbolicLink() || !rootStats.isDirectory()) throw new Error("Scan target must be a directory")
-  const rootDevice = identityPart(rootStats.dev)
-  const volume = await fileSystem.statfs(target)
-  const capacityBytes = blockBytes(volume.blocks, volume.bsize)
-  const freeBytes = blockBytes(volume.bfree, volume.bsize)
-  const rootId = "n-1"
-  await removeDatabaseFiles(options.partialPath)
-  const database = createScanDatabase(options.partialPath)
-  try {
-    database.exec("BEGIN")
-    insertNode(database, {
-      id: rootId,
-      parentId: null,
-      name: displayName(target),
-      path: target,
-      kind: "directory",
-      ownBytes: allocatedBytes(rootStats),
-      device: rootDevice,
-      inode: identityPart(rootStats.ino)
-    })
-    seenFiles.add(fileIdentity(rootStats))
-    totals.scannedItems += 1
-    totals.discoveredBytes += allocatedBytes(rootStats)
-    reporter.emit(displayName(target), true)
-    await walkDirectory(target, rootId, rootDevice, database, options, fileSystem, indexRoot, indexIdentity, seenFiles, totals, reporter)
+  const preflight = await measureScanAsync("preflight", async () => {
+    await prepareDatabaseDirectory(options.partialPath)
+    const indexRoot = await fileSystem.realpath(options.indexDirectory).catch(() => resolve(options.indexDirectory))
+    const indexStats = await fileSystem.lstat(indexRoot).catch(() => undefined)
+    const indexIdentity = indexStats?.isDirectory() ? fileIdentity(indexStats) : undefined
+    const target = normalize(resolve(options.target))
+    const rootStats = await fileSystem.lstat(target)
     throwIfCanceled(options.signal)
-    database.exec("COMMIT")
+    if (rootStats.isSymbolicLink() || !rootStats.isDirectory()) throw new Error("Scan target must be a directory")
+    const rootDevice = identityPart(rootStats.dev)
+    const volume = await fileSystem.statfs(target)
+    const capacityBytes = blockBytes(volume.blocks, volume.bsize)
+    const freeBytes = blockBytes(volume.bfree, volume.bsize)
+    await removeDatabaseFiles(options.partialPath)
+    return { indexRoot, indexIdentity, target, rootStats, rootDevice, capacityBytes, freeBytes }
+  })
+  const { indexRoot, indexIdentity, target, rootStats, rootDevice, capacityBytes, freeBytes } = preflight
+  const rootId = "n-1"
+  const database = measureScan("database-create", () => createScanDatabase(options.partialPath))
+  try {
+    await measureScanAsync("traversal", async () => {
+      database.exec("BEGIN")
+      insertNode(database, {
+        id: rootId,
+        parentId: null,
+        name: displayName(target),
+        path: target,
+        kind: "directory",
+        ownBytes: allocatedBytes(rootStats),
+        device: rootDevice,
+        inode: identityPart(rootStats.ino)
+      })
+      seenFiles.add(fileIdentity(rootStats))
+      totals.scannedItems += 1
+      totals.discoveredBytes += allocatedBytes(rootStats)
+      reporter.emit(displayName(target), true)
+      await walkDirectory(target, rootId, rootDevice, database, options, fileSystem, indexRoot, indexIdentity, seenFiles, totals, reporter)
+      throwIfCanceled(options.signal)
+      database.exec("COMMIT")
+    })
     reporter.emit(displayName(target), true)
     reporter.stage("indexing", displayName(target), true)
     const nodes = finalizeDatabase(database, rootId)
@@ -137,18 +148,18 @@ export async function scanFilesystem(options: ScanOptions): Promise<ScanResult> 
     if (!root) throw new Error("The scan did not produce a root directory")
     const elapsedMs = Date.now() - startedAt
     const finalTotals: ScanTotals = { ...totals, elapsedMs }
-    writeMetadata(database, {
+    measureScan("metadata-write", () => writeMetadata(database, {
       target,
       rootId,
       capacityBytes,
       freeBytes,
       scannedBytes: root.sizeBytes,
       totals: finalTotals
-    })
-    database.exec("PRAGMA optimize")
-    database.close()
+    }))
+    measureScan("database-optimize", () => database.exec("PRAGMA optimize"))
+    measureScan("database-close", () => database.close())
     throwIfCanceled(options.signal)
-    await rename(options.partialPath, options.publishedPath)
+    await measureScanAsync("publish-rename", () => rename(options.partialPath, options.publishedPath))
     options.onProgress?.({ stage: "indexing", scannedItems: totals.scannedItems, discoveredBytes: totals.discoveredBytes, elapsedMs, currentItem: displayName(target) })
     return { generation: options.generation, target, rootId, publishedPath: options.publishedPath, capacityBytes, freeBytes, scannedBytes: root.sizeBytes, totals: finalTotals }
   } catch (error) {

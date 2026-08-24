@@ -3,6 +3,7 @@ import { basename, isAbsolute, join, normalize, relative, resolve, sep } from 'n
 import type { OrbisSnapshot, ProgressSnapshot } from '../shared/contracts'
 import { buildChart } from './chart'
 import { removeDatabaseFiles } from './database'
+import { measureController, measureControllerAsync } from './diagnostics'
 import { DiskIndex } from './index-store'
 import type { ScanResult, ScanTotals } from './scanner'
 
@@ -87,21 +88,28 @@ export class OrbisController {
     return () => this.#listeners.delete(listener)
   }
 
-  snapshot(): OrbisSnapshot {
+  snapshot(): OrbisSnapshot { return this.#buildSnapshot() }
+
+  #buildSnapshot(diagnosticGeneration?: number): OrbisSnapshot {
+    const timed = <T>(phase: string, operation: () => T): T => diagnosticGeneration === undefined ? operation() : measureController(diagnosticGeneration, phase, operation)
     const active = this.#active
-    const focus = active && this.#focusId ? active.getNode(this.#focusId) : undefined
+    const focus = timed('snapshot-focus-query', () => active && this.#focusId ? active.getNode(this.#focusId) : undefined)
     const target = active?.target ?? this.#target
     const activeTotals = active ? parseTotals(active.metadata.totals) : null
+    const root = timed('snapshot-root-query', () => active?.root)
     const volume = active
-      ? parseVolume(active.metadata.volume, active.root?.sizeBytes ?? 0, active.target)
+      ? parseVolume(active.metadata.volume, root?.sizeBytes ?? 0, active.target)
       : { capacityBytes: 0, freeBytes: 0, scannedBytes: 0, unscannedBytes: 0 }
+    const breadcrumbs = timed('snapshot-breadcrumbs-query', () => focus && active ? active.getBreadcrumbs(focus.id) : [])
+    const chart = timed('snapshot-chart-query', () => focus && active ? buildChart(active, focus, { extraRootBytes: focus.id === active.rootId && active.target === '/' ? volume.unscannedBytes : 0 }) : [])
+    const largestItems = timed('snapshot-largest-items-query', () => focus && active ? active.getLargestItems(focus.id) : [])
     return {
       version: 1,
-      target: { name: active?.root?.name ?? displayName(target), isStartup: target === '/' },
+      target: { name: root?.name ?? displayName(target), isStartup: target === '/' },
       focus: focus ? toSnapshotNode(focus) : null,
-      breadcrumbs: focus && active ? active.getBreadcrumbs(focus.id) : [],
-      chart: focus && active ? buildChart(active, focus, { extraRootBytes: focus.id === active.rootId && active.target === '/' ? volume.unscannedBytes : 0 }) : [],
-      largestItems: focus && active ? active.getLargestItems(focus.id) : [],
+      breadcrumbs,
+      chart,
+      largestItems,
       volume,
       scan: { ...this.#scanStatus, totals: this.#scanStatus.totals ?? activeTotals }
     }
@@ -253,30 +261,33 @@ export class OrbisController {
   }
 
   async #publish(run: ScanRun, result: ScanResult): Promise<void> {
-    if (result.publishedPath !== run.publishedPath || !isOwnedIndexPath(result.publishedPath, this.indexDirectory)) {
-      await this.#fail(run, 'The scan worker returned an invalid index path.')
-      return
-    }
-    if (this.#run !== run || this.#closed) {
-      await removeOwnedDatabaseFiles(result.publishedPath, this.indexDirectory)
-      return
-    }
-    try {
-      const next = new DiskIndex(result.publishedPath)
-      const old = this.#active
-      this.#active = next
-      this.#focusId = next.rootId
-      this.#target = next.target
-      this.#run = undefined
-      this.#scanStatus = { status: 'completed', generation: run.generation, progress: null, totals: result.totals, error: null }
-      old?.close()
-      if (old) await removeOwnedDatabaseFiles(old.path, this.indexDirectory)
-      await removeOwnedDatabaseFiles(run.partialPath, this.indexDirectory)
-      this.#emit()
-    } catch (error) {
-      await removeOwnedDatabaseFiles(result.publishedPath, this.indexDirectory)
-      this.#fail(run, error instanceof Error ? error.message : String(error))
-    }
+    return measureControllerAsync(run.generation, 'publication-total', async () => {
+      if (result.publishedPath !== run.publishedPath || !isOwnedIndexPath(result.publishedPath, this.indexDirectory)) {
+        await this.#fail(run, 'The scan worker returned an invalid index path.')
+        return
+      }
+      if (this.#run !== run || this.#closed) {
+        await removeOwnedDatabaseFiles(result.publishedPath, this.indexDirectory)
+        return
+      }
+      try {
+        const next = measureController(run.generation, 'index-open', () => new DiskIndex(result.publishedPath))
+        const old = this.#active
+        this.#active = next
+        this.#focusId = next.rootId
+        this.#target = next.target
+        this.#run = undefined
+        this.#scanStatus = { status: 'completed', generation: run.generation, progress: null, totals: result.totals, error: null }
+        old?.close()
+        if (old) await measureControllerAsync(run.generation, 'previous-index-cleanup', () => removeOwnedDatabaseFiles(old.path, this.indexDirectory))
+        await measureControllerAsync(run.generation, 'partial-index-cleanup', () => removeOwnedDatabaseFiles(run.partialPath, this.indexDirectory))
+        const snapshot = measureController(run.generation, 'snapshot-total', () => this.#buildSnapshot(run.generation))
+        measureController(run.generation, 'listener-notify', () => this.#emit(snapshot))
+      } catch (error) {
+        await removeOwnedDatabaseFiles(result.publishedPath, this.indexDirectory)
+        this.#fail(run, error instanceof Error ? error.message : String(error))
+      }
+    })
   }
 
   #fail(run: ScanRun, error: string): void {
@@ -286,8 +297,7 @@ export class OrbisController {
     this.#startTask(this.#stopRun(run).then(() => this.#removeRunFiles(run)).then(() => this.#emit()))
   }
 
-  #emit(): void {
-    const snapshot = this.snapshot()
+  #emit(snapshot = this.snapshot()): void {
     for (const listener of this.#listeners) listener(snapshot)
   }
 }

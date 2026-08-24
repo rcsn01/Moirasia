@@ -35,11 +35,11 @@ Supporting research: [`docs/research/squirreldisk-orbis-optimizations.md`](docs/
 
 ### Purpose
 
-Determine whether traversal, SQLite writes, finalization, or rendering dominates on representative scans. All later decisions depend on these numbers.
+Determine whether traversal, SQLite writes, finalization, or main-process snapshot construction dominates on representative scans. Browser rendering requires a separate Electron measurement.
 
 ### Implementation
 
-- [ ] Add named timing boundaries for:
+- [x] Add named timing boundaries for:
   - worker startup;
   - database creation;
   - filesystem traversal and node insertion;
@@ -48,17 +48,17 @@ Determine whether traversal, SQLite writes, finalization, or rendering dominates
   - database close and atomic rename;
   - controller publication and first snapshot;
   - first chart and largest-items queries.
-- [ ] Record item, file, directory, skipped, and unreadable counts.
-- [ ] Record output database size and peak process memory where practical.
-- [ ] Keep user-facing progress snapshots compatible. Diagnostic timings may stay test-only or behind an environment flag.
-- [ ] Add deterministic fixture generators for:
+- [x] Record item, file, directory, skipped, and unreadable counts.
+- [x] Record output database size and sampled process memory.
+- [x] Keep user-facing progress snapshots compatible. Diagnostics use internal channels and a separate opt-in worker message.
+- [x] Add deterministic fixture generators for:
   - a wide tree with many sibling files;
   - a deep directory tree;
   - many tiny files;
   - mixed large and small files;
   - symlinks and duplicate hard links;
   - simulated unreadable and disappearing entries.
-- [ ] Add a repeatable benchmark command or script that does not scan the developer's real startup volume.
+- [x] Add a repeatable benchmark command that refuses live targets unless explicitly allowed.
 - [ ] Run at least one manual cold-cache and warm-cache startup-volume comparison. Do not automate cache flushing in normal tests.
 
 ### Likely files
@@ -78,10 +78,10 @@ pnpm -C apps/Orbis typecheck
 
 ### Exit criteria
 
-- [ ] The benchmark produces stage timings and throughput in items per second.
-- [ ] Running the same fixture repeatedly gives stable enough results to compare changes.
-- [ ] Baseline measurements are entered in this document.
-- [ ] No production scan behavior has changed.
+- [x] The benchmark produces stage timings and throughput in items per second.
+- [x] Five-sample fixture runs have a median absolute deviation below 7.1 percent; rerun noisy fixtures when a change is near that spread.
+- [x] Baseline measurements are recorded here and in `docs/benchmarks/orbis-stage-0-baseline.md`.
+- [x] Production scan results, snapshots, IPC, and progress contracts are unchanged.
 
 ---
 
@@ -470,10 +470,14 @@ pnpm -C apps/Orbis test:smoke
 
 Fill in one row after each stage using the same primary fixture. Add separate tables for materially different disks or fixtures.
 
-| Stage | Fixture | Cache | Items | Total ms | Traverse ms | Finalize ms | Publish ms | DB MiB | Peak MiB | Notes |
+| Stage | Fixture | Cache | Items | Scan ms | Traverse ms | Aggregate ms | Controller publish ms | DB MiB | RSS increase MiB | Notes |
 |---|---|---|---:|---:|---:|---:|---:|---:|---:|---|
-| 0 baseline | | cold | | | | | | | | |
-| 0 baseline | | warm | | | | | | | | |
+| 0 baseline | wide | warm | 2,001 | 75.92 | 67.35 | 4.10 | 0.89 | 0.42 | 10.58 | 5 instrumented runs; highest variance |
+| 0 baseline | deep | warm | 257 | 55.75 | 22.81 | 28.46 | 0.57 | 0.16 | 10.36 | Directory-heavy aggregation |
+| 0 baseline | tiny | warm | 10,101 | 281.57 | 238.11 | 34.15 | 1.64 | 2.14 | 23.59 | Many one-byte files |
+| 0 baseline | mixed | warm | 2,021 | 65.22 | 53.96 | 7.52 | 1.30 | 0.46 | 10.30 | 62.98 MiB file data |
+| 0 baseline | semantics | warm | 7 | 5.56 | 1.52 | 0.80 | 0.41 | 0.03 | 0.00 | Too short for the 20 ms RSS sampler |
+| 0 baseline | startup volume | cold-manual | | | | | | | | Pending a restart and prepared manual run |
 | 1 SQLite transaction | | cold | | | | | | | | |
 | 2 bottom-up totals | | cold | | | | | | | | |
 | 3 compact schema | | cold | | | | | | | | |
@@ -487,4 +491,5 @@ Record decisions that affect later stages.
 
 | Date | Stage | Decision | Evidence | Consequences |
 |---|---:|---|---|---|
-| | | | | |
+| 2026-08-24 | 0 | Keep diagnostics internal and opt-in | Production result and snapshot contracts do not need benchmark data | Worker sends a separate diagnostics message only when enabled |
+| 2026-08-24 | 0 | Proceed with transaction and statement reuse before concurrency | Traversal used 82-88% on wide, tiny, and mixed fixtures; aggregation used 52.5% on the deep fixture | Stage 1 can address both measured costs without changing traversal behavior |

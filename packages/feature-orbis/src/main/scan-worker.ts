@@ -1,5 +1,6 @@
 import { parentPort } from "node:worker_threads"
 import { scanFilesystem, ScanCanceledError, type ScanProgress, type ScanResult } from "./scanner"
+import { subscribeScanDiagnostics, type OrbisTimingEvent } from "./diagnostics"
 
 interface WorkerStartMessage {
   readonly type: "start"
@@ -29,6 +30,10 @@ port.on("message", (message: WorkerMessage) => {
 })
 
 async function run(message: WorkerStartMessage, abort: AbortController): Promise<void> {
+  const timings: OrbisTimingEvent[] | undefined = process.env.ORBIS_SCAN_DIAGNOSTICS === "1" ? [] : undefined
+  const unsubscribe = timings ? subscribeScanDiagnostics((event) => {
+    if (event.generation === message.generation) timings.push(event)
+  }) : undefined
   try {
     const result = await scanFilesystem({
       generation: message.generation,
@@ -40,19 +45,26 @@ async function run(message: WorkerStartMessage, abort: AbortController): Promise
       signal: abort.signal,
       onProgress: (progress) => port.postMessage({ type: "progress", generation: message.generation, progress })
     })
+    postDiagnostics(message.generation, timings)
     port.postMessage({ type: "complete", generation: message.generation, result })
   } catch (error) {
+    postDiagnostics(message.generation, timings)
     if (error instanceof ScanCanceledError || abort.signal.aborted) {
       port.postMessage({ type: "canceled", generation: message.generation })
     } else {
       port.postMessage({ type: "error", generation: message.generation, error: serializeError(error) })
     }
   } finally {
+    unsubscribe?.()
     if (activeAbort === abort) {
       activeAbort = undefined
       port.close()
     }
   }
+}
+
+function postDiagnostics(generation: number, timings: readonly OrbisTimingEvent[] | undefined): void {
+  if (timings) port.postMessage({ type: "diagnostics", generation, timings })
 }
 
 function serializeError(error: unknown): { readonly message: string; readonly code?: string } {

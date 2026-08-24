@@ -2,6 +2,7 @@ import { DatabaseSync, type StatementSync } from "node:sqlite"
 import { mkdir, rm } from "node:fs/promises"
 import { dirname } from "node:path"
 import type { NodeKind } from "../shared/contracts"
+import { measureScan } from "./diagnostics"
 
 export interface DatabaseNode {
   readonly id: string
@@ -91,6 +92,12 @@ export function insertNode(database: DatabaseSync, node: {
 }
 
 export function finalizeDatabase(database: DatabaseSync, rootId: string): Map<string, MutableDatabaseNode> {
+  const nodes = measureScan("aggregation", () => aggregateDatabase(database, rootId))
+  measureScan("index-create", () => database.exec("CREATE INDEX nodes_parent_size ON nodes (parent_id, size_bytes DESC, name COLLATE NOCASE ASC);"))
+  return nodes
+}
+
+function aggregateDatabase(database: DatabaseSync, rootId: string): Map<string, MutableDatabaseNode> {
   const rows = database.prepare(`
     SELECT id, parent_id AS parentId, name, path, kind, own_bytes AS ownBytes,
       size_bytes AS sizeBytes, own_unreadable AS ownUnreadable,
@@ -148,7 +155,6 @@ export function finalizeDatabase(database: DatabaseSync, rootId: string): Map<st
   }
   const root = nodes.get(rootId)
   if (root) visit(root)
-  database.exec("CREATE INDEX nodes_parent_size ON nodes (parent_id, size_bytes DESC, name COLLATE NOCASE ASC);")
   return nodes
 }
 
