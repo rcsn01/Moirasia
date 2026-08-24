@@ -131,24 +131,26 @@ pnpm test -- tests/orbis-feature.test.ts
 
 ## Stage 2: aggregate directory totals during traversal
 
+Results: [`docs/benchmarks/orbis-stage-2-bottom-up.md`](docs/benchmarks/orbis-stage-2-bottom-up.md)
+
 ### Purpose
 
 Remove the full-table JavaScript reconstruction and second recursive aggregation pass.
 
 ### Implementation
 
-- [ ] Make each directory traversal return its aggregate result:
+- [x] Make each directory traversal return its aggregate result:
   - allocated bytes;
   - direct child count;
   - descendant count;
   - unreadable count.
-- [ ] Update a directory row when its subtree finishes.
-- [ ] Include the directory's own allocated blocks in its total, matching current behavior.
-- [ ] Preserve unreadable-directory accounting.
-- [ ] Remove the all-row `SELECT`, node map, child map, and recursive `finalizeDatabase()` walk once equivalence tests pass.
-- [ ] Create the `nodes_parent_size` index only after node and directory writes finish.
-- [ ] Ensure deep trees do not add a new synchronous recursion limit. Add a deep-tree test.
-- [ ] Compare root size, every fixture directory size, descendant counts, and unreadable counts against the old implementation.
+- [x] Update a directory row when its subtree finishes.
+- [x] Include the directory's own allocated blocks in its total, matching current behavior.
+- [x] Preserve unreadable-directory accounting.
+- [x] Remove the all-row `SELECT`, node map, child map, and recursive finalization walk once equivalence tests pass.
+- [x] Create the `nodes_parent_size` index only after node and directory writes finish.
+- [x] Ensure deep trees do not add a new synchronous recursion limit; test a synthetic 1,500-level tree.
+- [x] Compare root size and every fixture directory's size, descendant count, and unreadable count with an independent oracle.
 
 ### Likely files
 
@@ -165,10 +167,10 @@ pnpm -C apps/Orbis verify
 
 ### Exit criteria
 
-- [ ] Finalization no longer loads every node into a JavaScript map.
-- [ ] Fixture results are identical to Stage 1.
-- [ ] Peak memory and finalization time are recorded.
-- [ ] Cancellation still rolls back and removes the partial database.
+- [x] Finalization no longer loads every node into a JavaScript map.
+- [x] Fixture results are identical to Stage 1.
+- [x] Sampled memory and directory-update time are recorded; the fixture RSS sampler is too coarse for a general memory claim.
+- [x] Cancellation still rolls back completed subtree updates and removes the partial database.
 
 ---
 
@@ -485,7 +487,11 @@ Fill in one row after each stage using the same primary fixture. Add separate ta
 | 1 SQLite transaction | tiny | warm | 10,101 | 190.53 | 172.29 | 12.70 | 1.54 | 2.14 | 16.11 | 32.3% lower scan median |
 | 1 SQLite transaction | mixed | warm | 2,021 | 47.98 | 41.68 | 2.89 | 1.25 | 0.46 | 12.00 | 26.4% lower scan median |
 | 1 SQLite transaction | semantics | warm | 7 | 3.54 | 1.22 | 0.14 | 0.44 | 0.03 | 0.00 | Correctness counters unchanged |
-| 2 bottom-up totals | | cold | | | | | | | | |
+| 2 bottom-up totals | wide | warm | 2,001 | 44.59 | 41.17 | 0.02 | 0.65 | 0.42 | 10.31 | 10 runs; aggregation is nested update time |
+| 2 bottom-up totals | deep | warm | 257 | 20.50 | 17.76 | 0.25 | 0.51 | 0.16 | 3.71 | Stage 1 difference is inconclusive |
+| 2 bottom-up totals | tiny | warm | 10,101 | 196.51 | 190.52 | 0.37 | 1.53 | 2.14 | 15.20 | Stage 1 difference is inconclusive |
+| 2 bottom-up totals | mixed | warm | 2,021 | 50.54 | 46.88 | 0.10 | 1.44 | 0.46 | 10.33 | Stage 1 difference is inconclusive |
+| 2 bottom-up totals | semantics | warm | 7 | 3.88 | 1.38 | 0.02 | 0.53 | 0.03 | 0.00 | Too short for a latency conclusion |
 | 3 compact schema | | cold | | | | | | | | |
 | 4 no scan sort | | cold | | | | | | | | |
 | 5 bounded concurrency | | cold | | | | | | | | |
@@ -500,3 +506,4 @@ Record decisions that affect later stages.
 | 2026-08-24 | 0 | Keep diagnostics internal and opt-in | Production result and snapshot contracts do not need benchmark data | Worker sends a separate diagnostics message only when enabled |
 | 2026-08-24 | 0 | Proceed with transaction and statement reuse before concurrency | Traversal used 82-88% on wide, tiny, and mixed fixtures; aggregation used 52.5% on the deep fixture | Stage 1 can address both measured costs without changing traversal behavior |
 | 2026-08-24 | 1 | Keep one construction transaction and reusable writer statements | Scan medians fell 26.4-64.4%; deep aggregation fell 97.8%; database sizes and scan totals were unchanged | Proceed to bottom-up aggregation as a separate Stage 2 change |
+| 2026-08-24 | 2 | Keep bottom-up aggregation for bounded memory | Ten-sample latency differences were within observed spread; all-row reconstruction was removed and fixture results remained identical | Scan memory no longer needs a second full copy of database rows and edges; proceed to Stage 3 separately |

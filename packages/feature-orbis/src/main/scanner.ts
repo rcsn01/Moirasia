@@ -1,7 +1,7 @@
 import { lstat as defaultLstat, realpath as defaultRealpath, readdir as defaultReaddir, rename, statfs as defaultStatfs } from "node:fs/promises"
 import { basename, isAbsolute, normalize, relative, resolve, sep } from "node:path"
-import { createScanDatabase, prepareDatabaseDirectory, removeDatabaseFiles, type ScanDatabase } from "./database"
-import { measureScan, measureScanAsync, runWithScanDiagnostics } from "./diagnostics"
+import { createScanDatabase, prepareDatabaseDirectory, removeDatabaseFiles, type DirectoryAggregate, type ScanDatabase } from "./database"
+import { createScanTimingAccumulator, measureScan, measureScanAsync, runWithScanDiagnostics } from "./diagnostics"
 
 export interface ScanStats {
   readonly blocks?: number | bigint
@@ -123,29 +123,31 @@ async function scanFilesystemImpl(options: ScanOptions): Promise<ScanResult> {
   try {
     const writer = measureScan("database-create", () => createScanDatabase(options.partialPath))
     database = writer
-    await measureScanAsync("traversal", async () => {
+    const rootOwnBytes = allocatedBytes(rootStats)
+    const aggregationTiming = createScanTimingAccumulator("aggregation")
+    const root = await measureScanAsync("traversal", async () => {
       writer.insertNode({
         id: rootId,
         parentId: null,
         name: displayName(target),
         path: target,
         kind: "directory",
-        ownBytes: allocatedBytes(rootStats),
+        ownBytes: rootOwnBytes,
         device: rootDevice,
         inode: identityPart(rootStats.ino)
       })
       seenFiles.add(fileIdentity(rootStats))
       totals.scannedItems += 1
-      totals.discoveredBytes += allocatedBytes(rootStats)
+      totals.discoveredBytes += rootOwnBytes
       reporter.emit(displayName(target), true)
-      await walkDirectory(target, rootId, rootDevice, writer, options, fileSystem, indexRoot, indexIdentity, seenFiles, totals, reporter)
+      const aggregate = await walkDirectory(target, rootId, rootOwnBytes, rootDevice, writer, options, fileSystem, indexRoot, indexIdentity, seenFiles, totals, reporter, aggregationTiming.measure)
       throwIfCanceled(options.signal)
+      return aggregate
     })
+    aggregationTiming.publish()
     reporter.emit(displayName(target), true)
     reporter.stage("indexing", displayName(target), true)
-    const nodes = writer.finalize(rootId)
-    const root = nodes.get(rootId)
-    if (!root) throw new Error("The scan did not produce a root directory")
+    writer.finalize()
     // Keep persisted and returned totals identical. End-to-end diagnostics separately include commit, close, and publication.
     const elapsedMs = Date.now() - startedAt
     const finalTotals: ScanTotals = { ...totals, elapsedMs }
@@ -173,6 +175,7 @@ async function scanFilesystemImpl(options: ScanOptions): Promise<ScanResult> {
 async function walkDirectory(
   directory: string,
   parentId: string,
+  ownBytes: number,
   rootDevice: string,
   database: ScanDatabase,
   options: ScanOptions,
@@ -181,8 +184,9 @@ async function walkDirectory(
   indexIdentity: string | undefined,
   seenFiles: Set<string>,
   totals: { scannedItems: number; discoveredBytes: number; skippedItems: number; unreadableItems: number; nestedMounts: number; symlinks: number; duplicateHardLinks: number; disappearingItems: number },
-  reporter: ProgressReporter
-): Promise<void> {
+  reporter: ProgressReporter,
+  recordAggregation: (operation: () => void) => void
+): Promise<DirectoryAggregate> {
   throwIfCanceled(options.signal)
   let names: readonly string[]
   try {
@@ -193,8 +197,14 @@ async function walkDirectory(
     totals.unreadableItems += 1
     if (isDisappearing(error)) totals.disappearingItems += 1
     reporter.emit(displayName(directory))
-    return
+    const aggregate = { sizeBytes: ownBytes, directChildren: 0, descendantCount: 0, unreadableCount: 1 }
+    recordAggregation(() => database.updateDirectory(parentId, aggregate))
+    return aggregate
   }
+  let sizeBytes = ownBytes
+  let directChildren = 0
+  let descendantCount = 0
+  let unreadableCount = 0
   const sortedNames = [...names].sort((left, right) => left.localeCompare(right, undefined, { numeric: true, sensitivity: "base" }))
   for (const name of sortedNames) {
     throwIfCanceled(options.signal)
@@ -252,8 +262,17 @@ async function walkDirectory(
     totals.scannedItems += 1
     totals.discoveredBytes += ownBytes
     reporter.emit(name)
-    if (kind === "directory") await walkDirectory(childPath, id, rootDevice, database, options, fileSystem, indexRoot, indexIdentity, seenFiles, totals, reporter)
+    const child = kind === "directory"
+      ? await walkDirectory(childPath, id, ownBytes, rootDevice, database, options, fileSystem, indexRoot, indexIdentity, seenFiles, totals, reporter, recordAggregation)
+      : { sizeBytes: ownBytes, directChildren: 0, descendantCount: 0, unreadableCount: 0 }
+    sizeBytes += child.sizeBytes
+    directChildren += 1
+    descendantCount += 1 + child.descendantCount
+    unreadableCount += child.unreadableCount
   }
+  const aggregate = { sizeBytes, directChildren, descendantCount, unreadableCount }
+  recordAggregation(() => database.updateDirectory(parentId, aggregate))
+  return aggregate
 }
 
 function shouldExclude(path: string, options: ScanOptions, indexRoot: string): boolean {

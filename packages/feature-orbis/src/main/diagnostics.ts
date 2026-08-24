@@ -11,6 +11,11 @@ export interface OrbisTimingEvent {
 
 type TimingListener = (event: OrbisTimingEvent) => void
 
+export interface ScanTimingAccumulator {
+  measure<T>(operation: () => T): T
+  publish(): void
+}
+
 const scanChannel = channel('orbis.scan.timing')
 const controllerChannel = channel('orbis.controller.timing')
 const scanContext = new AsyncLocalStorage<{ readonly generation: number }>()
@@ -18,6 +23,19 @@ const scanContext = new AsyncLocalStorage<{ readonly generation: number }>()
 export function runWithScanDiagnostics<T>(generation: number, operation: () => T): T {
   if (!scanChannel.hasSubscribers) return operation()
   return scanContext.run({ generation }, operation)
+}
+
+export function createScanTimingAccumulator(phase: string): ScanTimingAccumulator {
+  let durationMs = 0
+  return {
+    measure: <T>(operation: () => T): T => {
+      if (!scanChannel.hasSubscribers) return operation()
+      const startedAt = performance.now()
+      try { return operation() }
+      finally { durationMs += performance.now() - startedAt }
+    },
+    publish: (): void => publishScan(phase, durationMs)
+  }
 }
 
 export function measureScan<T>(phase: string, operation: () => T): T {

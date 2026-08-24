@@ -160,7 +160,7 @@ async function runSample(target: string, manifest: ScanFixtureManifest | LiveMan
     validateDiagnostics(measuredWorker, controllerTimings)
     const scanTimings = timingMap(measuredWorker.scanTimings)
     const scanTotal = scanTimings['scan-total'] ?? 0
-    const measuredPhases = Object.entries(scanTimings).filter(([phase]) => phase !== 'scan-total').reduce((sum, [, duration]) => sum + duration, 0)
+    const measuredPhases = Object.entries(scanTimings).filter(([phase]) => isScanLeafPhase(phase)).reduce((sum, [, duration]) => sum + duration, 0)
     return {
       sample,
       workerStartupMs,
@@ -326,9 +326,11 @@ function validateDiagnostics(worker: MeasuredWorker, controllerEvents: readonly 
   validateTimingSet(controllerEvents, requiredControllerPhases, 'controller')
   if (!worker.diagnosticMessageBeforeComplete) throw new Error('The worker diagnostics message did not arrive before completion')
   const scan = timingMap(worker.scanTimings)
-  const leafTotal = Object.entries(scan).filter(([phase]) => phase !== 'scan-total').reduce((sum, [, duration]) => sum + duration, 0)
+  const leafTotal = Object.entries(scan).filter(([phase]) => isScanLeafPhase(phase)).reduce((sum, [, duration]) => sum + duration, 0)
   if (leafTotal > (scan['scan-total'] ?? 0) + 0.1) throw new Error('Worker phase durations exceed scan-total')
 }
+
+function isScanLeafPhase(phase: string): boolean { return phase !== 'scan-total' && phase !== 'aggregation' }
 
 function validateTimingSet(events: readonly OrbisTimingEvent[], required: readonly string[], label: string): void {
   for (const phase of required) {

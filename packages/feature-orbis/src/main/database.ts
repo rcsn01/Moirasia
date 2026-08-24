@@ -16,18 +16,11 @@ export interface DatabaseNode {
   readonly unreadableCount: number
 }
 
-export interface MutableDatabaseNode {
-  id: string
-  parentId: string | null
-  name: string
-  path: string
-  kind: NodeKind
-  ownBytes: number
-  sizeBytes: number
-  ownUnreadable: number
-  directChildren: number
-  descendantCount: number
-  unreadableCount: number
+export interface DirectoryAggregate {
+  readonly sizeBytes: number
+  readonly directChildren: number
+  readonly descendantCount: number
+  readonly unreadableCount: number
 }
 
 export interface InsertNode {
@@ -120,11 +113,14 @@ export class ScanDatabase {
     this.#markUnreadable.run(id)
   }
 
-  finalize(rootId: string): Map<string, MutableDatabaseNode> {
+  updateDirectory(id: string, aggregate: DirectoryAggregate): void {
     this.#assertBuilding()
-    const nodes = measureScan("aggregation", () => this.#aggregate(rootId))
+    this.#updateDirectory.run(aggregate.sizeBytes, aggregate.directChildren, aggregate.descendantCount, aggregate.unreadableCount, id)
+  }
+
+  finalize(): void {
+    this.#assertBuilding()
     measureScan("index-create", () => this.#database.exec("CREATE INDEX nodes_parent_size ON nodes (parent_id, size_bytes DESC, name COLLATE NOCASE ASC);"))
-    return nodes
   }
 
   writeMetadata(meta: ScanDatabaseMeta): void {
@@ -151,64 +147,6 @@ export class ScanDatabase {
       this.#state = "rolled-back"
     }
     try { this.#close() } catch { /* Best effort while preserving the scan error. */ }
-  }
-
-  #aggregate(rootId: string): Map<string, MutableDatabaseNode> {
-    const rows = this.#database.prepare(`
-      SELECT id, parent_id AS parentId, name, path, kind, own_bytes AS ownBytes,
-        size_bytes AS sizeBytes, own_unreadable AS ownUnreadable,
-        direct_children AS directChildren, descendant_count AS descendantCount,
-        unreadable_count AS unreadableCount
-      FROM nodes
-    `).all() as unknown as Array<Record<string, unknown>>
-    const nodes = new Map<string, MutableDatabaseNode>()
-    const children = new Map<string, MutableDatabaseNode[]>()
-    for (const row of rows) {
-      const node: MutableDatabaseNode = {
-        id: String(row.id),
-        parentId: row.parentId === null ? null : String(row.parentId),
-        name: String(row.name),
-        path: String(row.path),
-        kind: row.kind === "directory" ? "directory" : "file",
-        ownBytes: numberValue(row.ownBytes),
-        sizeBytes: numberValue(row.sizeBytes),
-        ownUnreadable: numberValue(row.ownUnreadable),
-        directChildren: numberValue(row.directChildren),
-        descendantCount: numberValue(row.descendantCount),
-        unreadableCount: numberValue(row.unreadableCount)
-      }
-      nodes.set(node.id, node)
-      if (node.parentId !== null) {
-        const siblings = children.get(node.parentId) ?? []
-        siblings.push(node)
-        children.set(node.parentId, siblings)
-      }
-    }
-
-    const visiting = new Set<string>()
-    const visit = (node: MutableDatabaseNode): void => {
-      if (node.kind !== "directory" || visiting.has(node.id)) return
-      visiting.add(node.id)
-      let sizeBytes = node.ownBytes
-      let descendantCount = 0
-      let unreadableCount = node.ownUnreadable
-      const direct = children.get(node.id) ?? []
-      for (const child of direct) {
-        visit(child)
-        sizeBytes += child.sizeBytes
-        descendantCount += 1 + child.descendantCount
-        unreadableCount += child.unreadableCount
-      }
-      node.sizeBytes = sizeBytes
-      node.directChildren = direct.length
-      node.descendantCount = descendantCount
-      node.unreadableCount = unreadableCount
-      this.#updateDirectory.run(sizeBytes, direct.length, descendantCount, unreadableCount, node.id)
-      visiting.delete(node.id)
-    }
-    const root = nodes.get(rootId)
-    if (root) visit(root)
-    return nodes
   }
 
   #assertBuilding(): void {
@@ -241,7 +179,5 @@ export async function removeDatabaseFiles(path: string): Promise<void> {
     rm(`${path}-shm`, { force: true })
   ])
 }
-
-function numberValue(value: unknown): number { return typeof value === "number" ? value : Number(value) }
 
 export type { DatabaseSync, StatementSync }
