@@ -4,6 +4,9 @@ import { extname, resolve } from "node:path"
 const workspace = resolve(import.meta.dirname, "..")
 const rendererRoots = [
   "src/renderer",
+  "packages/feature-amove/src/renderer",
+  "packages/feature-exithibition/src/renderer",
+  "packages/feature-orbis/src/renderer",
   "apps/Amove/src/renderer",
   "apps/Vox/src/renderer",
   "apps/Exithibition/src/renderer",
@@ -44,16 +47,42 @@ for (const root of rendererRoots) {
 }
 
 const requiredImports = new Map([
-  ["apps/Amove/src/renderer/main/main.css", "@moirasia/ui-react/products/amove.css"],
-  ["apps/Amove/src/renderer/shelf/shelf.css", "@moirasia/ui-react/products/amove.css"],
+  ["packages/feature-amove/src/renderer/main/main.css", "@moirasia/ui-react/products/amove.css"],
+  ["packages/feature-amove/src/renderer/shelf/shelf.css", "@moirasia/ui-react/products/amove.css"],
   ["apps/Vox/src/renderer/styles.css", "@moirasia/ui-react/products/vox.css"],
-  ["apps/Exithibition/src/renderer/styles.css", "@moirasia/ui-react/products/exithibition.css"],
+  ["packages/feature-exithibition/src/renderer/styles.css", "@moirasia/ui-react/products/exithibition.css"],
+  ["packages/feature-orbis/src/renderer/styles.css", "@moirasia/desktop-shell/styles.css"],
   ["apps/Bonded/src/renderer/styles.css", "@moirasia/ui-react/products/bonded.css"]
 ])
 for (const [relativePath, expected] of requiredImports) {
   const content = await readFile(resolve(workspace, relativePath), "utf8")
   if (!content.includes(expected)) failures.push(`${relativePath}: missing ${expected}`)
   if (!content.includes("@source")) failures.push(`${relativePath}: missing renderer-owned Tailwind @source declaration`)
+}
+
+const embeddedStyleEntrypoints = [
+  ["packages/feature-amove/src/renderer/main/main.css", ".amove-feature-panel"],
+  ["packages/feature-exithibition/src/renderer/styles.css", ".exithibition-feature-panel"],
+  ["packages/feature-orbis/src/renderer/styles.css", ".orbis-feature-panel"]
+]
+for (const [relativePath, prefix] of embeddedStyleEntrypoints) {
+  const content = await readFile(resolve(workspace, relativePath), "utf8")
+  for (const match of content.matchAll(/(?:^|})([^{}]+)\{/gm)) {
+    let selectors = match[1].trim()
+    if (selectors.includes(";")) selectors = selectors.split(";").at(-1)?.trim() ?? ""
+    if (!selectors || selectors.startsWith("@")) continue
+    for (const selector of selectors.split(",").map((value) => value.trim())) {
+      if (/^(?:html|body|#root)(?:$|[\s.#:[>+~])/.test(selector) || /\.(?:loading|setting-row|workspace)(?:$|[\s.#:[>+~])/.test(selector)) {
+        failures.push(`${relativePath}: document or generic embedded selector is not allowed: ${selector}`)
+      } else if (!selector.startsWith(prefix)) {
+        failures.push(`${relativePath}: selector is outside ${prefix}: ${selector}`)
+      }
+    }
+  }
+}
+const shellStyles = await readFile(resolve(workspace, "src/renderer/shell/styles.css"), "utf8")
+for (const entry of ["@moirasia/feature-amove/styles.css", "@moirasia/feature-exithibition/styles.css", "@moirasia/feature-orbis/styles.css"]) {
+  if (!shellStyles.includes(entry)) failures.push(`src/renderer/shell/styles.css: missing scoped feature import ${entry}`)
 }
 
 const voxStyles = await readFile(resolve(workspace, "apps/Vox/src/renderer/styles.css"), "utf8")
@@ -63,7 +92,7 @@ for (const [index, line] of voxStyles.split("\n").entries()) {
   }
 }
 
-for (const relativePath of ["apps/Exithibition/src/renderer/styles.css", "apps/Exithibition/src/renderer/App.tsx"]) {
+for (const relativePath of ["packages/feature-exithibition/src/renderer/styles.css", "packages/feature-exithibition/src/renderer/App.tsx"]) {
   const content = await readFile(resolve(workspace, relativePath), "utf8")
   for (const [index, line] of content.split("\n").entries()) {
     if (line.includes("--exithibition-color-") && !/legend|hardware-component|kind-|chartConfig/.test(line)) {
@@ -72,10 +101,13 @@ for (const relativePath of ["apps/Exithibition/src/renderer/styles.css", "apps/E
   }
 }
 
-const bondedStyles = await readFile(resolve(workspace, "apps/Bonded/src/renderer/styles.css"), "utf8")
-for (const [index, line] of bondedStyles.split("\n").entries()) {
-  if (line.includes("--bonded-color-") && !/\.status|\.unenforced-badge|\.missing-label|\.protocol|\.retry-bar|\.error-banner/.test(line)) {
-    failures.push(`apps/Bonded/src/renderer/styles.css:${index + 1}: product color is outside a protocol/status indicator`)
+const bondedStylesPath = "apps/Bonded/src/renderer/styles.css"
+const bondedStyles = await readFile(resolve(workspace, bondedStylesPath), "utf8")
+for (const match of bondedStyles.matchAll(/(?:^|})([^{}]+)\{([^{}]*)\}/gm)) {
+  const selectors = match[1].trim()
+  const body = match[2]
+  if (body.includes("--bonded-color-") && !/\.status|\.active-badge|\.inactive-badge|\.firewall|\.migration-notice|\.unenforced-badge|\.missing-label|\.protocol|\.retry-bar|\.error-banner|\.notice/.test(selectors)) {
+    failures.push(`${bondedStylesPath}: ${selectors}: product color is outside a protocol/status indicator`)
   }
 }
 

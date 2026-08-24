@@ -7,7 +7,9 @@
     "./main": "./src/main/feature.ts",
     "./standalone": "./src/main/standalone.ts",
     "./preload": "./src/preload/index.ts",
+    "./preload/bridge": "./src/preload/bridge.ts",
     "./renderer": "./src/renderer/mount.tsx",
+    "./renderer/panel": "./src/renderer/App.tsx",
     "./styles.css": "./src/renderer/styles.css",
     "./shared/contracts": "./src/shared/contracts.ts"
   },

@@ -8,9 +8,12 @@ const require_ = createRequire(import.meta.url)
 
 export default defineConfig({
   main: {
-    // @moirasia/feature-exithibition must be bundled (not externalized): the feature
-    // runtime reaches it through a code-split dynamic import().
-    plugins: [externalizeDepsPlugin({ exclude: ['@moirasia/desktop-shell', '@moirasia/ui-react', '@moirasia/feature-exithibition'] })],
+    // Embedded feature backends must be bundled (not externalized): the runtime
+    // reaches them through code-split dynamic imports.
+    plugins: [externalizeDepsPlugin({ exclude: [
+      '@moirasia/desktop-shell', '@moirasia/ui-react', '@moirasia/feature-exithibition', '@moirasia/feature-amove', '@moirasia/feature-orbis',
+      '@codemirror/commands', '@codemirror/state', '@codemirror/view', 'zod'
+    ] })],
     build: {
       rollupOptions: {
         input: resolve(import.meta.dirname, 'src/main/index.ts')
@@ -18,12 +21,12 @@ export default defineConfig({
     }
   },
   preload: {
-    plugins: [externalizeDepsPlugin({ exclude: ['@moirasia/feature-exithibition'] })],
+    plugins: [externalizeDepsPlugin({ exclude: ['@moirasia/feature-exithibition', '@moirasia/feature-amove', '@moirasia/feature-orbis'] })],
     build: {
       rollupOptions: {
         input: {
           shell: resolve(import.meta.dirname, 'src/preload/shell.ts'),
-          'feature-exithibition': require_.resolve('@moirasia/feature-exithibition/preload')
+          'feature-amove-shelf': require_.resolve('@moirasia/feature-amove/preload/shelf')
         },
         output: {
           format: 'cjs',
@@ -49,7 +52,7 @@ export default defineConfig({
       rollupOptions: {
         input: {
           shell: resolve(import.meta.dirname, 'src/renderer/shell.html'),
-          'feature-exithibition': resolve(import.meta.dirname, 'src/renderer/feature-exithibition.html')
+          'feature-amove-shelf': resolve(import.meta.dirname, 'src/renderer/feature-amove-shelf.html')
         }
       }
     }

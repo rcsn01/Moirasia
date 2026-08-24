@@ -104,6 +104,33 @@ export function AppearanceToggle({ value, onChange }: { readonly value: Appearan
   </button>
 }
 
+export function resolveEffectiveAppearance(appearance: Appearance, systemDark = typeof matchMedia === 'function' && matchMedia('(prefers-color-scheme: dark)').matches): 'light' | 'dark' {
+  return appearance === 'dark' || (appearance === 'system' && systemDark) ? 'dark' : 'light'
+}
+
+/**
+ * Apply a product appearance to a local subtree. Unlike useProductAppearance,
+ * this never touches document.documentElement, which lets embedded products
+ * coexist with the shell and with one another.
+ */
+export function AppearanceScope({ appearance, className = '', children }: {
+  readonly appearance: Appearance
+  readonly className?: string
+  readonly children: React.ReactNode
+}): React.JSX.Element {
+  const [systemDark, setSystemDark] = useState(() => typeof matchMedia === 'function' && matchMedia('(prefers-color-scheme: dark)').matches)
+  useEffect(() => {
+    if (typeof matchMedia !== 'function') return
+    const media = matchMedia('(prefers-color-scheme: dark)')
+    const update = () => setSystemDark(media.matches)
+    update()
+    media.addEventListener('change', update)
+    return () => media.removeEventListener('change', update)
+  }, [])
+  const effective = resolveEffectiveAppearance(appearance, systemDark)
+  return <div className={`appearance-scope ${effective} ${className}`.trim()} data-appearance={appearance} data-effective-appearance={effective} style={{ colorScheme: effective }}>{children}</div>
+}
+
 export function applyDocumentAppearance(appearance: Appearance, systemDark = matchMedia('(prefers-color-scheme: dark)').matches): void {
   const dark = appearance === 'dark' || (appearance === 'system' && systemDark)
   document.documentElement.classList.toggle('dark', dark)

@@ -12,6 +12,7 @@ import { ShellSettingsStore } from '../src/main/settings'
 
 const CONTEXT: FeatureContext = {
   id: 'exithibition', mode: 'suite', productId: 'exithibition',
+  surface: { webContents: {} as never, state: { active: false, focused: false }, activate: () => undefined, focus: () => undefined, subscribe: () => () => undefined },
   paths: { preload: '/tmp/feature.cjs', rendererFile: '/tmp/feature.html', nativeExecutable: '/tmp/ExithibitionNative' }
 }
 
@@ -161,6 +162,24 @@ describe('FeatureRuntime', () => {
 
     expect(fake.activate).toHaveBeenCalledTimes(1)
     expect(() => runtime.activate('vox')).toThrow(TypeError)
+  })
+
+  it('disposes every feature even when one disposer fails', async () => {
+    const firstDispose = vi.fn(async () => { throw new Error('first cleanup failed') })
+    const secondDispose = vi.fn(async () => {})
+    const runtime = new FeatureRuntime(await settingsWith(undefined), {
+      loaders: {
+        amove: async () => ({ feature: { id: 'amove', register: vi.fn(), dispose: firstDispose, activate: vi.fn() } }),
+        exithibition: async () => ({ feature: { id: 'exithibition', register: vi.fn(), dispose: secondDispose, activate: vi.fn() } })
+      },
+      context: () => CONTEXT
+    })
+
+    await runtime.syncAtLaunch()
+    await runtime.disposeAll()
+
+    expect(firstDispose).toHaveBeenCalledTimes(1)
+    expect(secondDispose).toHaveBeenCalledTimes(1)
   })
 
   it('relaunches the suite on request', () => {

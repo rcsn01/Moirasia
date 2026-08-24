@@ -7,7 +7,9 @@
   },
   "include": [
     "src/renderer/shell/**/*",
-    "src/renderer/feature-exithibition/**/*",
-    "packages/feature-exithibition/src/renderer/**/*"
+    "packages/feature-exithibition/src/renderer/**/*",
+    "src/renderer/feature-amove-shelf/**/*",
+    "packages/feature-amove/src/renderer/**/*",
+    "packages/feature-orbis/src/renderer/**/*"
   ]
 }

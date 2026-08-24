@@ -14,12 +14,13 @@ export function standaloneContext(): FeatureContext {
     mode: 'standalone',
     productId: 'exithibition',
     paths: {
-      preload: join(import.meta.dirname, '../preload/index.cjs'),
-      ...(rendererUrl ? { rendererUrl } : {}),
-      rendererFile: join(import.meta.dirname, '../renderer/index.html'),
-      nativeExecutable: app.isPackaged
+      preloads: { main: join(import.meta.dirname, '../preload/index.cjs') },
+      renderers: { main: rendererUrl ?? join(import.meta.dirname, '../renderer/index.html') },
+      native: { executable: app.isPackaged
         ? join(process.resourcesPath, 'native/ExithibitionNative')
-        : join(app.getAppPath(), '.build/arm64-apple-macosx/debug/ExithibitionNative')
+        : join(app.getAppPath(), '.build/arm64-apple-macosx/debug/ExithibitionNative') },
+      assetsDirectory: app.isPackaged ? join(app.getAppPath(), 'assets') : join(app.getAppPath(), 'assets'),
+      dataDirectory: app.getPath('userData')
     }
   }
 }

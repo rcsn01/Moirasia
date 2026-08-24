@@ -24,3 +24,16 @@
   --exithibition-color-storage: #51a8e8;
   --exithibition-color-fan: #bd8aff;
 }
+
+.light {
+  --exithibition-color-cool: #d6e8e0;
+  --exithibition-color-warm: #15803d;
+  --exithibition-color-hot: #dc2626;
+  --exithibition-color-load-low: #d6f5e8;
+  --exithibition-color-load-high: #0f9f70;
+  --exithibition-color-focus: #087a55;
+  --exithibition-color-selected: #0f9f70;
+  --exithibition-color-battery: #15803d;
+  --exithibition-color-storage: #2563eb;
+  --exithibition-color-fan: #7c3aed;
+}

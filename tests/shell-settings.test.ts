@@ -29,6 +29,17 @@ describe('ShellSettingsStore', () => {
     expect(recovered).toMatchObject({ version: 3, launchAtLogin: true })
   })
 
+  it('recovers from a syntactically valid but malformed primary using backup', async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'moirasia-settings-'))
+    const path = join(directory, 'settings.json')
+    const store = new ShellSettingsStore(path)
+    await store.load()
+    await store.update({ launchAtLogin: true })
+    await writeFile(path, JSON.stringify({ version: 3, launchAtLogin: false, pendingLoginItems: [], features: {} }))
+
+    await expect(new ShellSettingsStore(path).load()).resolves.toMatchObject({ version: 3, launchAtLogin: true })
+  })
+
   it('falls back to defaults when primary and backup are invalid', async () => {
     const directory = await mkdtemp(join(tmpdir(), 'moirasia-settings-'))
     const path = join(directory, 'settings.json')

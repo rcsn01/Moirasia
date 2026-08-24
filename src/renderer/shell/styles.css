@@ -1,5 +1,8 @@
 @import "@moirasia/ui-react/styles.css";
 @import "@moirasia/desktop-shell/styles.css";
+@import "@moirasia/feature-amove/styles.css";
+@import "@moirasia/feature-exithibition/styles.css";
+@import "@moirasia/feature-orbis/styles.css";
 @source "./**/*.{ts,tsx}";
 * { box-sizing: border-box; } html, body, #root { width:100%; height:100%; margin:0; overflow:hidden; background:var(--background); }
 .controller-main { height:100%; overflow:auto; padding:42px 36px; }
@@ -8,4 +11,7 @@
 .feature-section { margin-top:36px; }.feature-section > h2 { margin:4px 0 8px; font-size:22px; letter-spacing:-.02em; }.feature-note { margin:0; color:var(--muted-foreground); font-size:12px; }
 .restart-banner { margin-bottom:14px; }.restart-banner [data-slot="alert-description"] { display:flex; align-items:center; justify-content:space-between; gap:12px; }
 .controller-page > [data-slot="card"] { margin-top:16px; gap:0; }.setting-row { display:flex; min-height:70px; align-items:center; justify-content:space-between; gap:24px; padding:12px 0; }.setting-row strong,.setting-row small { display:block; }.setting-row small { margin-top:3px; color:var(--muted-foreground); font-size:12px; }.settings-link { padding-top:16px; }.controller-error { position:fixed; right:20px; bottom:20px; z-index:50; max-width:420px; background:var(--card); box-shadow:none; }
+.shell-route, .shell-feature-route { width:100%; height:100%; min-width:0; min-height:0; overflow:hidden; }
+.shell-feature-loading { display:grid; width:100%; height:100%; place-items:center; color:var(--muted-foreground); }
+.shell-feature-route[hidden], .shell-route[hidden] { display:none; }
 @media(max-width:800px){.application-grid{grid-template-columns:1fr}.controller-main{padding:30px 20px}}

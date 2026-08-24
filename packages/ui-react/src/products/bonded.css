@@ -18,3 +18,13 @@
   --bonded-color-protocol-udp: #e3c37d;
   --bonded-color-protocol-quic: #bba8ff;
 }
+
+.light {
+  --bonded-color-status-active: #168451;
+  --bonded-color-status-warning: #855d19;
+  --bonded-color-status-inactive: #737d8e;
+  --bonded-color-status-danger: #8f312e;
+  --bonded-color-protocol-tcp: #1d64bf;
+  --bonded-color-protocol-udp: #7f581c;
+  --bonded-color-protocol-quic: #6550a6;
+}

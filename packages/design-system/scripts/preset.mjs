@@ -93,6 +93,16 @@ ${cssVars(CORE_LIGHT)}
 ${cssVars(CORE_DARK)}
 }
 
+/* Local appearance scopes reset inherited dark-shell variables explicitly. */
+.light {
+  color-scheme: light;
+  --menu-background: color-mix(in oklab, var(--popover), transparent 12%);
+  --menu-border: color-mix(in oklab, var(--border), transparent 18%);
+  --menu-shadow: 0 16px 48px rgb(28 25 23 / 14%);
+  --menu-backdrop-filter: blur(18px) saturate(1.12);
+${cssVars(CORE_LIGHT)}
+}
+
 @layer base {
   * { @apply border-border outline-ring/50; }
   html { @apply font-mono; }
@@ -110,12 +120,12 @@ function productCss(name, product) {
   if (name === "vox") {
     const light = tokenVars(product.light, "vox-")
     const dark = tokenVars(product.dark, "vox-")
-    return `${header}:root {\n${cssVars(light)}\n}\n\n.dark {\n${cssVars(dark)}\n}\n`
+    return `${header}:root {\n${cssVars(light)}\n}\n\n.dark {\n${cssVars(dark)}\n}\n\n.light {\n${cssVars(light)}\n}\n`
   }
   if (name === "bonded" || name === "exithibition") {
     const light = tokenVars(product.light, `${name}-`)
     const dark = tokenVars(product.dark, `${name}-`)
-    return `${header}:root {\n${cssVars(light)}\n}\n\n.dark {\n${cssVars(dark)}\n}\n`
+    return `${header}:root {\n${cssVars(light)}\n}\n\n.dark {\n${cssVars(dark)}\n}\n\n.light {\n${cssVars(light)}\n}\n`
   }
   return `${header}:root {\n  color-scheme: dark;\n${cssVars(tokenVars(product.base, `${name}-`))}\n}\n`
 }

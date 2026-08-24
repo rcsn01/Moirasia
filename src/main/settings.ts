@@ -10,7 +10,9 @@ export class ShellSettingsStore {
   constructor(readonly filePath: string) {}
 
   async load(): Promise<ShellSettings> {
-    const raw = await readJson(this.filePath) ?? await readJson(`${this.filePath}.backup`)
+    const primary = await readJson(this.filePath)
+    const backup = await readJson(`${this.filePath}.backup`)
+    const raw = isShellSettingsDocument(primary) ? primary : isShellSettingsDocument(backup) ? backup : primary ?? backup
     this.#settings = migrate(raw)
     await this.#persist()
     return this.get()
@@ -58,6 +60,18 @@ function validPending(value: unknown): Readonly<Partial<Record<ApplicationId, tr
 function validFeatures(value: unknown): Readonly<Partial<Record<ApplicationId, boolean>>> {
   const features = value && typeof value === 'object' ? value as Record<string, unknown> : {}
   return Object.fromEntries(Object.entries(features).filter(([, flag]) => typeof flag === 'boolean')) as Partial<Record<ApplicationId, boolean>>
+}
+
+function isShellSettingsDocument(value: unknown): boolean {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return false
+  const object = value as Record<string, unknown>
+  if (object.version === 3) return typeof object.launchAtLogin === 'boolean' && optionalRecord(object.pendingLoginItems) && optionalRecord(object.features)
+  if (object.version === 2) return typeof object.launchAtLogin === 'boolean' && optionalRecord(object.pendingLoginItems)
+  return object.version === undefined && (object.autoStart !== undefined || typeof object.launchAtLogin === 'boolean' || object.pendingLoginItems !== undefined || object.features !== undefined)
+}
+
+function optionalRecord(value: unknown): boolean {
+  return value === undefined || (typeof value === 'object' && value !== null && !Array.isArray(value))
 }
 
 async function readJson(path: string): Promise<unknown> { try { return JSON.parse(await readFile(path, 'utf8')) } catch { return undefined } }

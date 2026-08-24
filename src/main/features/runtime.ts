@@ -1,31 +1,39 @@
 import { app } from 'electron'
 import { join } from 'node:path'
-import { isFeatureId, type FeatureContext, type FeatureId, type MoirasiaFeature } from '@moirasia/desktop-shell/feature'
+import { isFeatureId, type EmbeddedFeatureSurface, type FeatureContext, type FeatureId, type MoirasiaFeature } from '@moirasia/desktop-shell/feature'
 import type { ApplicationId, FeatureStatus } from '../../shared/contracts'
+import type { EmbeddedFeatureHost } from './embedded-host'
 import { paths } from '../paths'
 import type { ShellSettingsStore } from '../settings'
 
 type FeatureLoader = () => Promise<{ feature: MoirasiaFeature }>
 
-// String-literal dynamic imports: rollup code-splits each feature into its own
-// chunk. An uninstalled feature's chunk is never evaluated.
+// Keep these imports as string literals. Electron-vite turns each feature into
+// a separate chunk, and an uninstalled feature is never evaluated.
 const LOADERS: Record<FeatureId, FeatureLoader> = {
-  exithibition: () => import('@moirasia/feature-exithibition/main')
+  amove: () => import('@moirasia/feature-amove/main'),
+  exithibition: () => import('@moirasia/feature-exithibition/main'),
+  orbis: () => import('@moirasia/feature-orbis/main')
 }
 
 export class FeatureRuntime {
   #instances = new Map<FeatureId, MoirasiaFeature>()
   #loadedThisSession = new Set<FeatureId>()
   #operations = new Map<FeatureId, Promise<void>>()
-  readonly #loaders: Record<FeatureId, FeatureLoader>
+  #active: FeatureId | undefined
+  readonly #loaders: Partial<Record<FeatureId, FeatureLoader>>
   readonly #context: (id: FeatureId) => FeatureContext
+  readonly #host: EmbeddedFeatureHost | undefined
 
   constructor(
     private readonly settings: ShellSettingsStore,
-    options: { loaders?: Record<FeatureId, FeatureLoader>; context?: (id: FeatureId) => FeatureContext } = {}
+    options: { loaders?: Partial<Record<FeatureId, FeatureLoader>>; context?: (id: FeatureId) => FeatureContext; host?: EmbeddedFeatureHost } = {}
   ) {
     this.#loaders = options.loaders ?? LOADERS
-    this.#context = options.context ?? suiteFeatureContext
+    this.#host = options.host
+    this.#context = options.context ?? (this.#host
+      ? (id) => suiteFeatureContext(id, this.#host!.surface(id))
+      : () => { throw new Error('FeatureRuntime requires an embedded host or an explicit feature context') })
   }
 
   statuses(): readonly FeatureStatus[] {
@@ -37,8 +45,9 @@ export class FeatureRuntime {
   }
 
   isInstalled(id: FeatureId): boolean { return this.settings.get().features[id] !== false }
+  isLoaded(id: FeatureId): boolean { return this.#instances.has(id) }
+  get activeFeature(): FeatureId | undefined { return this.#active }
 
-  /** Load and register every installed feature. Uninstalled features are never imported. */
   async syncAtLaunch(): Promise<void> {
     for (const id of Object.keys(this.#loaders) as FeatureId[]) {
       if (this.isInstalled(id)) await this.#enqueue(id, () => this.#load(id))
@@ -50,6 +59,9 @@ export class FeatureRuntime {
     await this.#enqueue(featureId, async () => {
       if (!installed) {
         if (!this.isInstalled(featureId)) return
+        // The renderer must leave the feature tab before the feature removes
+        // its IPC handlers and native listeners.
+        if (this.#active === featureId) this.setActive(undefined)
         await this.settings.update({ features: { [featureId]: false } })
         const instance = this.#instances.get(featureId)
         if (!instance) return
@@ -59,22 +71,44 @@ export class FeatureRuntime {
       }
       if (!this.isInstalled(featureId)) await this.settings.update({ features: { [featureId]: true } })
       await this.#load(featureId)
+      if (this.#active === featureId) this.#setInstanceActive(featureId, true)
     })
   }
 
+  /** Select a loaded feature tab, or clear selection for Apps/Settings. */
+  setActive(id: FeatureId | undefined): void {
+    if (id !== undefined && (!this.#instances.has(id) || !this.isInstalled(id))) id = undefined
+    this.#active = id
+    this.#host?.setActive(id)
+    for (const featureId of this.#instances.keys()) this.#setInstanceActive(featureId, featureId === id)
+  }
+
   activate(id: ApplicationId): void {
-    const instance = this.#instances.get(narrow(id))
-    if (!instance?.activate) throw new Error('Feature is not running inside Moirasia. Relaunch or reinstall it.')
-    instance.activate()
+    const featureId = narrow(id)
+    const instance = this.#instances.get(featureId)
+    if (!instance?.activate && !this.#host) throw new Error('Feature is not running inside Moirasia. Relaunch or reinstall it.')
+    if (!instance) throw new Error('Feature is not loaded. Relaunch or reinstall it.')
+    this.setActive(featureId)
+    if (instance.activate) instance.activate()
+    else this.#host?.activate(featureId)
   }
 
   relaunch(): void { app.relaunch(); app.exit(0) }
 
   async disposeAll(): Promise<void> {
     await Promise.all([...this.#operations.values()].map((operation) => operation.catch(() => undefined)))
+    this.setActive(undefined)
     const instances = [...this.#instances.values()]
     this.#instances.clear()
-    for (const instance of instances) await instance.dispose()
+    await Promise.all(instances.map(async (instance) => {
+      try { await instance.dispose() }
+      catch (error) { console.error(`Feature '${instance.id}' failed to dispose`, error) }
+    }))
+  }
+
+  #setInstanceActive(id: FeatureId, active: boolean): void {
+    try { this.#instances.get(id)?.setActive?.(active) }
+    catch (error) { console.error(`Feature '${id}' failed to update active state`, error) }
   }
 
   #enqueue(id: FeatureId, operation: () => Promise<void> | void): Promise<void> {
@@ -86,9 +120,11 @@ export class FeatureRuntime {
 
   async #load(id: FeatureId): Promise<void> {
     if (this.#instances.has(id)) return
+    const loader = this.#loaders[id]
+    if (!loader) return
     let loaded: { feature: MoirasiaFeature }
     try {
-      loaded = await this.#loaders[id]()
+      loaded = await loader()
     } catch (error) {
       console.error(`Feature '${id}' failed to load`, error)
       return
@@ -97,7 +133,7 @@ export class FeatureRuntime {
       await loaded.feature.register(this.#context(id))
     } catch (error) {
       console.error(`Feature '${id}' failed to register`, error)
-      try { await loaded.feature.dispose() } catch { /* best-effort cleanup */ }
+      try { await loaded.feature.dispose() } catch { /* Best-effort rollback. */ }
       return
     }
     this.#loadedThisSession.add(id)
@@ -110,20 +146,54 @@ function narrow(id: ApplicationId): FeatureId {
   return id
 }
 
-function suiteFeatureContext(id: FeatureId): FeatureContext {
-  const rendererUrl = process.env.ELECTRON_RENDERER_URL
-  // Today every feature follows the feature-<id> naming scheme for built assets.
-  return {
-    id,
-    mode: 'suite',
-    productId: id,
-    paths: {
-      preload: paths.preload(`feature-${id}`),
-      ...(rendererUrl ? { rendererUrl: `${rendererUrl}/feature-${id}.html` } : {}),
-      rendererFile: paths.renderer(`feature-${id}`),
-      nativeExecutable: app.isPackaged
-        ? join(process.resourcesPath, 'native', 'ExithibitionNative')
-        : join(app.getAppPath(), 'apps', 'Exithibition', '.build', 'arm64-apple-macosx', 'debug', 'ExithibitionNative')
+export function suiteFeatureContext(id: FeatureId, surface: EmbeddedFeatureSurface): FeatureContext {
+  const dataDirectory = join(app.getPath('userData'), 'features', id)
+  switch (id) {
+    case 'amove': {
+      const root = app.isPackaged ? join(process.resourcesPath, 'features', 'amove') : join(app.getAppPath(), 'packages', 'feature-amove')
+      const rendererUrl = process.env.ELECTRON_RENDERER_URL
+      return {
+        id, mode: 'suite', productId: id, surface,
+        paths: {
+          preloads: { shelf: paths.preload('feature-amove-shelf') },
+          renderers: { shelf: rendererUrl ? `${rendererUrl}/feature-amove-shelf.html` : paths.renderer('feature-amove-shelf') },
+          native: { addon: app.isPackaged ? join(root, 'native', nativeAddonName()) : join(app.getAppPath(), 'apps', 'Amove', 'native', nativeAddonName()) },
+          assetsDirectory: app.isPackaged ? join(root, 'assets') : join(app.getAppPath(), 'packages', 'feature-amove', 'assets'),
+          dataDirectory,
+          legacyDataDirectories: [join(app.getPath('appData'), 'Amove')]
+        }
+      }
     }
+    case 'exithibition':
+      return {
+        id, mode: 'suite', productId: id, surface,
+        paths: {
+          native: { executable: app.isPackaged ? join(process.resourcesPath, 'native', 'ExithibitionNative') : join(app.getAppPath(), 'apps', 'Exithibition', '.build', 'arm64-apple-macosx', 'debug', 'ExithibitionNative') },
+          dataDirectory
+        }
+      }
+    case 'orbis':
+      return {
+        id, mode: 'suite', productId: id, surface,
+        paths: {
+          workers: { scan: app.isPackaged
+            ? join(process.resourcesPath, 'features', 'orbis', 'worker', 'scan-worker.mjs')
+            : join(app.getAppPath(), 'native', 'staged', 'features', 'orbis', 'worker', 'scan-worker.mjs') },
+          dataDirectory
+        }
+      }
+    default:
+      return assertNever(id)
   }
 }
+
+function assertNever(value: never): never { throw new Error(`Unknown feature '${String(value)}'`) }
+
+function nativeAddonName(): string {
+  const arch = process.arch === 'arm64' ? 'arm64' : 'x64'
+  if (process.platform === 'darwin') return `amove-native.darwin-${arch}.node`
+  if (process.platform === 'win32') return 'amove-native.win32-x64-msvc.node'
+  return 'amove-native.linux-x64-gnu.node'
+}
+
+export type { FeatureLoader }

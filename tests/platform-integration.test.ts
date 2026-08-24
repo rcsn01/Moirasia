@@ -1,5 +1,6 @@
 import { readFile } from 'node:fs/promises'
 import { describe, expect, it, vi } from 'vitest'
+import { applicationAgentPath } from '../src/main/paths'
 
 const electron = vi.hoisted(() => ({
   setApplicationMenu: vi.fn(),
@@ -19,8 +20,24 @@ describe('Bonded platform integration', () => {
     expect(open).toHaveBeenCalledWith('bonded')
   })
 
-  it('registers Bonded with the native application agent', async () => {
+  it('assigns Orbis Command+5 in the application menu', async () => {
+    const { installApplicationMenu } = await import('../src/main/menu')
+    const open = vi.fn()
+    installApplicationMenu({ webContents: { send: vi.fn() } } as never, open)
+    const template = electron.buildFromTemplate.mock.calls.at(-1)![0] as Array<{ label?: string; submenu?: Array<{ label?: string; accelerator?: string; click?: () => void }> }>
+    const orbis = template.find((item) => item.label === 'Applications')!.submenu!.find((item) => item.label === 'Orbis')!
+    expect(orbis.accelerator).toBe('CommandOrControl+5')
+    orbis.click?.()
+    expect(open).toHaveBeenCalledWith('orbis')
+  })
+
+  it('uses the staged native agent while running from Electron dev', () => {
+    expect(applicationAgentPath('/tmp/electron-resources-without-moirasia-agent')).toMatch(/native\/staged\/application-agent$/)
+  })
+
+  it('registers Bonded and Orbis with the native application agent', async () => {
     const source = await readFile(new URL('../native/application-agent/main.swift', import.meta.url), 'utf8')
     expect(source).toContain('Product(id: "bonded", name: "Bonded", bundleIdentifier: "com.opense.Bonded")')
+    expect(source).toContain('Product(id: "orbis", name: "Orbis", bundleIdentifier: "com.opense.Orbis")')
   })
 })

@@ -1,8 +1,19 @@
-import { contextBridge, ipcRenderer } from "electron"
+import { contextBridge, ipcRenderer } from 'electron'
 import type { Appearance, AppearanceApi } from '@moirasia/desktop-shell'
-import type { ExithibitionAPI, ExithibitionEvent, HistoryRange } from "../shared/contracts"
-import { isExithibitionEvent } from "../shared/contracts"
-const api: ExithibitionAPI = { getSnapshot: () => ipcRenderer.invoke("exithibition:get-snapshot"), getHistory: (range: HistoryRange) => ipcRenderer.invoke("exithibition:get-history", range), setSampling: (enabled: boolean) => ipcRenderer.invoke("exithibition:set-sampling", enabled), setExperimentalSensorsEnabled: (enabled: boolean) => ipcRenderer.invoke("exithibition:set-experimental", enabled), onEvent: (listener: (event: ExithibitionEvent) => void) => { const handler = (_event: Electron.IpcRendererEvent, value: unknown) => { if (isExithibitionEvent(value)) listener(value) }; ipcRenderer.on("exithibition:event", handler); return () => ipcRenderer.removeListener("exithibition:event", handler) } }
-contextBridge.exposeInMainWorld("exithibition", api)
-const appearanceApi: AppearanceApi = { getAppearance: () => ipcRenderer.invoke('desktop-shell:exithibition:appearance:get'), setAppearance: (value: Appearance) => ipcRenderer.invoke('desktop-shell:exithibition:appearance:set', value), onAppearance(listener) { const handler = (_event: Electron.IpcRendererEvent, value: Appearance) => listener(value); ipcRenderer.on('desktop-shell:exithibition:appearance:changed', handler); return () => ipcRenderer.removeListener('desktop-shell:exithibition:appearance:changed', handler) } }
-contextBridge.exposeInMainWorld('desktopShell', appearanceApi)
+import { createExithibitionBridge } from './bridge'
+
+export { createExithibitionBridge } from './bridge'
+export type { IpcRendererLike } from './bridge'
+
+contextBridge.exposeInMainWorld('exithibition', Object.freeze(createExithibitionBridge(ipcRenderer)))
+
+const appearanceApi: AppearanceApi = {
+  getAppearance: () => ipcRenderer.invoke('desktop-shell:exithibition:appearance:get'),
+  setAppearance: (value: Appearance) => ipcRenderer.invoke('desktop-shell:exithibition:appearance:set', value),
+  onAppearance(listener) {
+    const handler = (_event: Electron.IpcRendererEvent, value: Appearance) => listener(value)
+    ipcRenderer.on('desktop-shell:exithibition:appearance:changed', handler)
+    return () => ipcRenderer.removeListener('desktop-shell:exithibition:appearance:changed', handler)
+  }
+}
+contextBridge.exposeInMainWorld('desktopShell', Object.freeze(appearanceApi))

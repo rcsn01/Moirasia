@@ -43,6 +43,18 @@ vi.mock('@moirasia/desktop-shell/main', () => ({
 
 import { feature } from '../packages/feature-exithibition/src/main/feature'
 
+const shellWindow = new mocks.FakeWindow({})
+const surface = {
+  webContents: shellWindow.webContents,
+  state: { active: true, focused: true },
+  activate: vi.fn(),
+  focus: vi.fn(),
+  subscribe: vi.fn(() => vi.fn())
+} as never
+function context(nativeExecutable: string) {
+  return { id: 'exithibition', mode: 'suite', productId: 'exithibition', surface, paths: { native: { executable: nativeExecutable }, dataDirectory: '/tmp/exithibition-data' } } as never
+}
+
 const CHANNELS = ['exithibition:get-snapshot', 'exithibition:get-history', 'exithibition:set-sampling', 'exithibition:set-experimental'] as const
 
 // A minimal stand-in for ExithibitionNative: answers every JSON line with an ok
@@ -58,11 +70,11 @@ beforeAll(async () => {
 
 describe('Exithibition feature IPC', () => {
   it('rejects foreign and destroyed senders, serves its own window, and tears down fully', async () => {
-    await feature.register({ id: 'exithibition', mode: 'suite', productId: 'exithibition', paths: { preload: '/tmp/preload.cjs', rendererFile: '/tmp/renderer.html', nativeExecutable: native } })
+    await feature.register(context(native))
     for (const channel of CHANNELS) expect(mocks.handlers.has(channel)).toBe(true)
 
     const getHistory = mocks.handlers.get('exithibition:get-history')!
-    const view = mocks.FakeWindow.instances.at(-1)!
+    const view = shellWindow
     const foreign = { sender: {} } as unknown as IpcMainInvokeEvent
     const own = { sender: view.webContents } as unknown as IpcMainInvokeEvent
 
@@ -84,15 +96,16 @@ describe('Exithibition feature IPC', () => {
     for (const channel of CHANNELS) expect(mocks.handlers.has(channel)).toBe(false)
 
     // Reinstall in the same session re-registers the feature cleanly.
-    await feature.register({ id: 'exithibition', mode: 'suite', productId: 'exithibition', paths: { preload: '/tmp/preload.cjs', rendererFile: '/tmp/renderer.html', nativeExecutable: native } })
+    await feature.register(context(native))
     for (const channel of CHANNELS) expect(mocks.handlers.has(channel)).toBe(true)
     await feature.dispose()
   })
 
   it('rolls back a partially started feature when the native helper is missing', async () => {
-    await expect(feature.register({ id: 'exithibition', mode: 'suite', productId: 'exithibition', paths: { preload: '/tmp/preload.cjs', rendererFile: '/tmp/renderer.html', nativeExecutable: '/tmp/missing-ExithibitionNative' } })).rejects.toThrow('ExithibitionNative was not found')
+    await expect(feature.register(context('/tmp/missing-ExithibitionNative'))).rejects.toThrow('ExithibitionNative was not found')
 
     expect([...mocks.handlers.keys()]).not.toEqual(expect.arrayContaining([...CHANNELS]))
-    expect(mocks.FakeWindow.instances.at(-1)?.destroyed).toBe(true)
+    expect(mocks.FakeWindow.instances).toHaveLength(1)
+    expect(shellWindow.destroyed).toBe(false)
   })
 })

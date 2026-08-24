@@ -3,7 +3,7 @@ import { readFile } from 'node:fs/promises'
 import { resolve } from 'node:path'
 import { cleanup, fireEvent, render, screen } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { DesktopAppShell, DesktopContentHeader, DesktopNavigation, DesktopPage } from '../packages/desktop-shell/src/react'
+import { AppearanceScope, DesktopAppShell, DesktopContentHeader, DesktopNavigation, DesktopPage } from '../packages/desktop-shell/src/react'
 
 afterEach(() => { cleanup(); vi.unstubAllGlobals() })
 
@@ -57,6 +57,15 @@ describe('DesktopAppShell', () => {
     expect(chrome).toBeVisible()
     expect(content).toContainElement(screen.getByRole('status'))
     expect(content).toContainElement(screen.getByRole('alert'))
+  })
+
+  it('keeps embedded appearance local to its product subtree', () => {
+    const { container, rerender } = render(<AppearanceScope appearance="dark" className="feature-scope"><p>Telemetry</p></AppearanceScope>)
+    expect(container.querySelector('.appearance-scope.dark.feature-scope')).toBeTruthy()
+    expect(document.documentElement).not.toHaveClass('dark')
+    rerender(<AppearanceScope appearance="light" className="feature-scope"><p>Telemetry</p></AppearanceScope>)
+    expect(container.querySelector('.appearance-scope.light.feature-scope')).toBeTruthy()
+    expect(document.documentElement).not.toHaveClass('dark')
   })
 
   it('locks the compact geometry and neutral semantic token ownership', async () => {

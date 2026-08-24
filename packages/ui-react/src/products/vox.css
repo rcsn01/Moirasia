@@ -16,3 +16,12 @@
   --vox-color-overlay: rgba(28, 25, 23, 0.92);
   --vox-color-danger: #fb7185;
 }
+
+.light {
+  --vox-color-signal: #65a30d;
+  --vox-color-signal-strong: #15803d;
+  --vox-color-signal-soft: rgba(101, 163, 13, 0.08);
+  --vox-color-signal-glow: rgba(101, 163, 13, 0.22);
+  --vox-color-overlay: rgba(250, 250, 249, 0.94);
+  --vox-color-danger: #dc2626;
+}

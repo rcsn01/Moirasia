@@ -1,6 +1,6 @@
 import { ipcMain, type BrowserWindow, type IpcMainEvent, type IpcMainInvokeEvent } from 'electron'
 import { isAppearance, isProductId } from '@moirasia/desktop-shell'
-import { IPC, isApplicationId } from '../shared/contracts'
+import { IPC, isApplicationId, isControllerPage } from '../shared/contracts'
 import type { ApplicationController } from './application-controller'
 import type { ShellSettingsStore } from './settings'
 
@@ -19,6 +19,7 @@ export function registerControllerIpc(options: { window: BrowserWindow; controll
   ipcMain.handle(IPC.installFeature, (event, id) => { authorize(event); return options.controller.installFeature(applicationId(id)) })
   ipcMain.handle(IPC.uninstallFeature, (event, id) => { authorize(event); return options.controller.uninstallFeature(applicationId(id)) })
   ipcMain.handle(IPC.openFeature, (event, id) => { authorize(event); options.controller.openFeature(applicationId(id)) })
+  ipcMain.handle(IPC.reportPage, (event, page) => { authorize(event); if (!isControllerPage(page)) throw new TypeError('Invalid controller page'); options.controller.reportPage(page) })
   ipcMain.handle(IPC.relaunch, (event) => { authorize(event); options.controller.relaunch() })
   ipcMain.handle(IPC.openLoginItemsSettings, (event) => { authorize(event); return options.controller.openLoginItemsSettings() })
   const unsubscribe = options.controller.subscribe((snapshot) => { if (!options.window.isDestroyed()) options.window.webContents.send(IPC.snapshot, snapshot) })

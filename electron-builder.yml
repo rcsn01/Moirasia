@@ -11,6 +11,12 @@ extraResources:
     to: application-agent
   - from: native/staged/features/ExithibitionNative
     to: native/ExithibitionNative
+  - from: native/staged/features/amove/native
+    to: features/amove/native
+  - from: native/staged/features/amove/assets
+    to: features/amove/assets
+  - from: native/staged/features/orbis/worker
+    to: features/orbis/worker
 mac:
   target:
     - target: dmg

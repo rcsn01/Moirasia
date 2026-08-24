@@ -1,9 +1,9 @@
 import { describe, expect, it } from 'vitest'
 import { APPLICATION_IDS, isApplicationId, isControllerPage } from '../src/shared/contracts'
 describe('controller contracts', () => {
-  it('exposes only standalone applications and two pages', () => {
-    expect(APPLICATION_IDS).toEqual(['amove', 'vox', 'exithibition', 'bonded'])
-    expect(isApplicationId('vox')).toBe(true); expect(isApplicationId('bonded')).toBe(true); expect(isApplicationId('module')).toBe(false)
-    expect(isControllerPage('apps')).toBe(true); expect(isControllerPage('settings')).toBe(true); expect(isControllerPage('home')).toBe(false)
+  it('exposes standalone applications and embedded controller pages', () => {
+    expect(APPLICATION_IDS).toEqual(['amove', 'vox', 'exithibition', 'bonded', 'orbis'])
+    expect(isApplicationId('vox')).toBe(true); expect(isApplicationId('bonded')).toBe(true); expect(isApplicationId('orbis')).toBe(true); expect(isApplicationId('module')).toBe(false)
+    expect(isControllerPage('apps')).toBe(true); expect(isControllerPage('settings')).toBe(true); expect(isControllerPage('orbis')).toBe(true); expect(isControllerPage('home')).toBe(false)
   })
 })

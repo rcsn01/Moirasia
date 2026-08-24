@@ -1,0 +1,38 @@
+{
+  "name": "@moirasia/feature-orbis",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    "./main": "./src/main/feature.ts",
+    "./main/chart": "./src/main/chart.ts",
+    "./main/controller": "./src/main/controller.ts",
+    "./main/database": "./src/main/database.ts",
+    "./main/index-store": "./src/main/index-store.ts",
+    "./main/ipc": "./src/main/ipc.ts",
+    "./main/scanner": "./src/main/scanner.ts",
+    "./standalone": "./src/main/standalone.ts",
+    "./preload": "./src/preload/index.ts",
+    "./preload/bridge": "./src/preload/bridge.ts",
+    "./renderer": "./src/renderer/mount.tsx",
+    "./renderer/panel": "./src/renderer/App.tsx",
+    "./renderer/sunburst": "./src/renderer/Sunburst.tsx",
+    "./styles.css": "./src/renderer/styles.css",
+    "./shared/contracts": "./src/shared/contracts.ts"
+  },
+  "dependencies": {
+    "@moirasia/desktop-shell": "file:../desktop-shell",
+    "@moirasia/ui-react": "file:../ui-react"
+  },
+  "devDependencies": {
+    "vite": "^7.3.1"
+  },
+  "peerDependencies": {
+    "electron": ">=41 <44",
+    "react": ">=19 <20",
+    "react-dom": ">=19 <20"
+  },
+  "scripts": {
+    "build:worker": "node scripts/build-worker.mjs"
+  }
+}

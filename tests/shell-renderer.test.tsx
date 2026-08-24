@@ -9,8 +9,9 @@ const snapshot: ControllerSnapshot = { applications: [
   { id: 'amove', label: 'Amove', bundleId: 'com.opense.Amove', installed: true, running: false },
   { id: 'vox', label: 'Vox', bundleId: 'com.moirasia.vox', installed: true, running: true },
   { id: 'exithibition', label: 'Exithibition', bundleId: 'com.local.Exithibition', installed: false, running: false },
-  { id: 'bonded', label: 'Bonded', bundleId: 'com.opense.Bonded', installed: true, running: false }
-], appearances: { version: 1, revision: 1, values: { moirasia: 'system', amove: 'system', vox: 'dark', exithibition: 'dark', bonded: 'system' } }, features: [
+  { id: 'bonded', label: 'Bonded', bundleId: 'com.opense.Bonded', installed: true, running: false },
+  { id: 'orbis', label: 'Orbis', bundleId: 'com.opense.Orbis', installed: true, running: false }
+], appearances: { version: 1, revision: 1, values: { moirasia: 'system', amove: 'system', vox: 'dark', exithibition: 'dark', bonded: 'system', orbis: 'system' } }, features: [
   { id: 'exithibition', installed: true, loaded: true, restartPending: false }
 ] }
 const settings: ShellSettings = { version: 3, launchAtLogin: false, pendingLoginItems: {}, features: { exithibition: true } }
@@ -30,6 +31,8 @@ describe('launcher renderer', () => {
     await user.click(within(vox).getByRole('button', { name: 'Quit' })); expect(bridge.quitApplication).toHaveBeenCalledWith('vox')
     const bonded = screen.getByText('Bonded').closest('[data-slot="card"]')!
     await user.click(within(bonded).getByRole('button', { name: 'Open' })); expect(bridge.openApplication).toHaveBeenCalledWith('bonded')
+    const orbis = screen.getByText('Orbis').closest('[data-slot="card"]')!
+    await user.click(within(orbis).getByRole('button', { name: 'Open' })); expect(bridge.openApplication).toHaveBeenCalledWith('orbis')
     const externalExithibition = screen.getByText('Not installed').closest('[data-slot="card"]')!
     expect(within(externalExithibition).getByRole('button', { name: 'Open' })).toBeDisabled()
     expect(externalExithibition).toHaveTextContent('Running inside Moirasia')
@@ -63,8 +66,10 @@ describe('launcher renderer', () => {
     await user.click(screen.getByRole('button', { name: 'Settings' })); expect(await screen.findByRole('heading', { name: 'Settings' })).toBeVisible()
     expect(screen.getByRole('combobox', { name: 'All apps appearance' })).toHaveValue('mixed')
     expect(screen.getByRole('combobox', { name: 'bonded appearance' })).toHaveValue('system')
+    expect(screen.getByRole('combobox', { name: 'orbis appearance' })).toHaveValue('system')
     await user.click(screen.getByRole('switch', { name: 'Launch Moirasia at login' })); expect(bridge.setLaunchAtLogin).toHaveBeenCalledWith(true)
     expect(screen.getByRole('switch', { name: 'Launch Exithibition at login' })).toHaveAttribute('aria-disabled', 'true')
     expect(screen.getByRole('switch', { name: 'Launch Bonded at login' })).toBeEnabled()
+    expect(screen.getByRole('switch', { name: 'Launch Orbis at login' })).toBeEnabled()
   })
 })

@@ -3,13 +3,15 @@ import { existsSync } from 'node:fs'
 import { join } from 'node:path'
 import { promisify } from 'node:util'
 import { AppearanceRegistry, type Appearance, type LoginItemControlResult, type ProductId } from '@moirasia/desktop-shell/main'
-import { APPLICATION_IDS, type ApplicationId, type ApplicationStatus, type ControllerSnapshot } from '../shared/contracts'
+import { isFeatureId } from '@moirasia/desktop-shell/feature'
+import { APPLICATION_IDS, type ApplicationId, type ApplicationStatus, type ControllerPage, type ControllerSnapshot } from '../shared/contracts'
+import { applicationAgentPath } from './paths'
 import type { FeatureRuntime } from './features/runtime'
 import type { ShellSettingsStore } from './settings'
 
 const execFile = promisify(execFileCallback)
 const CATALOG: Readonly<Record<ApplicationId, { label: string; bundleId: string }>> = {
-  amove: { label: 'Amove', bundleId: 'com.opense.Amove' }, vox: { label: 'Vox', bundleId: 'com.moirasia.vox' }, exithibition: { label: 'Exithibition', bundleId: 'com.local.Exithibition' }, bonded: { label: 'Bonded', bundleId: 'com.opense.Bonded' }
+  amove: { label: 'Amove', bundleId: 'com.opense.Amove' }, vox: { label: 'Vox', bundleId: 'com.moirasia.vox' }, exithibition: { label: 'Exithibition', bundleId: 'com.local.Exithibition' }, bonded: { label: 'Bonded', bundleId: 'com.opense.Bonded' }, orbis: { label: 'Orbis', bundleId: 'com.opense.Orbis' }
 }
 
 interface AgentRecord { id: ApplicationId; installed: boolean; running: boolean; path?: string }
@@ -33,6 +35,7 @@ export class ApplicationController {
   async installFeature(id: ApplicationId): Promise<ControllerSnapshot> { await this.features.setInstalled(id, true); this.#emit(); return this.snapshot() }
   async uninstallFeature(id: ApplicationId): Promise<ControllerSnapshot> { await this.features.setInstalled(id, false); this.#emit(); return this.snapshot() }
   openFeature(id: ApplicationId): void { this.features.activate(id) }
+  reportPage(page: ControllerPage): void { this.features.setActive(isFeatureId(page) ? page : undefined) }
   relaunch(): void { this.features.relaunch() }
   async quit(id: ApplicationId): Promise<ControllerSnapshot> { return this.#action(id, 'quitting', async (record) => { if (!await this.agent.quit(record)) throw new Error(`${CATALOG[id].label} did not quit within 10 seconds.`) }) }
   async setAppearance(product: ProductId, appearance: Appearance): Promise<ControllerSnapshot> { await this.appearances.set(product, appearance); this.#emit(); return this.snapshot() }
@@ -74,7 +77,7 @@ export class ApplicationController {
 }
 
 class SwiftApplicationAgent implements ApplicationAgent {
-  private readonly executable = join(process.resourcesPath, 'application-agent')
+  private readonly executable = applicationAgentPath()
   async snapshot(): Promise<readonly AgentRecord[]> {
     if (process.platform !== 'darwin' || !existsSync(this.executable)) return APPLICATION_IDS.map((id) => ({ id, installed: false, running: false }))
     return JSON.parse((await execFile(this.executable, ['snapshot'], { timeout: 5_000 })).stdout) as AgentRecord[]
