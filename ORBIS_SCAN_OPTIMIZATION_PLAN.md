@@ -87,21 +87,23 @@ pnpm -C apps/Orbis typecheck
 
 ## Stage 1: remove SQLite autocommit and prepare overhead
 
+Results: [`docs/benchmarks/orbis-stage-1-transaction.md`](docs/benchmarks/orbis-stage-1-transaction.md)
+
 ### Purpose
 
 Fix the most obvious avoidable database cost before changing traversal behavior.
 
 ### Implementation
 
-- [ ] Keep aggregation updates, metadata inserts, and index creation inside an explicit transaction.
-- [ ] Prefer one transaction covering construction of the unpublished partial database. A second finalization transaction is acceptable if it benchmarks better or makes error handling clearer.
-- [ ] Prepare the node insertion statement once per scan instead of once per node.
-- [ ] Prepare and reuse directory update and metadata statements.
-- [ ] Finalize statements before closing the database.
-- [ ] Preserve rollback and cleanup behavior for cancellation and errors.
-- [ ] Keep the `.partial.sqlite` to `.sqlite` rename after commit and database close.
-- [ ] Add a test proving a canceled scan leaves neither partial nor published files.
-- [ ] Add a test proving a failed finalization cannot replace the active completed index.
+- [x] Keep aggregation updates, metadata inserts, and index creation inside an explicit transaction.
+- [x] Use one transaction covering construction of the unpublished partial database.
+- [x] Prepare the node insertion statement once per scan instead of once per node.
+- [x] Prepare and reuse unreadable-marker, directory-update, and metadata statements.
+- [x] Release prepared statements by closing their owning `DatabaseSync`; Node 22 `StatementSync` has no explicit finalizer.
+- [x] Preserve rollback and cleanup behavior for cancellation and errors.
+- [x] Keep the `.partial.sqlite` to `.sqlite` rename after commit and database close.
+- [x] Test that a canceled scan leaves neither partial nor published files.
+- [x] Test that a failed replacement database cannot replace the active completed index.
 
 ### Likely files
 
@@ -120,10 +122,10 @@ pnpm test -- tests/orbis-feature.test.ts
 
 ### Exit criteria
 
-- [ ] SQL writes during a scan use explicit transactions and reused statements.
-- [ ] Scan totals and database query results match the Stage 0 baseline fixture.
-- [ ] Cancellation, failure cleanup, and atomic publication tests pass.
-- [ ] Finalization time is recorded. If it does not improve, document why before continuing.
+- [x] SQL writes during a scan use an explicit transaction and reused statements.
+- [x] Scan totals and database query results match the Stage 0 baseline fixture.
+- [x] Cancellation, failure cleanup, and atomic publication tests pass.
+- [x] Finalization time is recorded; aggregation improved by 41.8-97.8% across fixtures.
 
 ---
 
@@ -478,7 +480,11 @@ Fill in one row after each stage using the same primary fixture. Add separate ta
 | 0 baseline | mixed | warm | 2,021 | 65.22 | 53.96 | 7.52 | 1.30 | 0.46 | 10.30 | 62.98 MiB file data |
 | 0 baseline | semantics | warm | 7 | 5.56 | 1.52 | 0.80 | 0.41 | 0.03 | 0.00 | Too short for the 20 ms RSS sampler |
 | 0 baseline | startup volume | cold-manual | | | | | | | | Pending a restart and prepared manual run |
-| 1 SQLite transaction | | cold | | | | | | | | |
+| 1 SQLite transaction | wide | warm | 2,001 | 44.90 | 39.18 | 2.39 | 0.64 | 0.42 | 10.41 | 40.8% lower scan median |
+| 1 SQLite transaction | deep | warm | 257 | 19.83 | 16.66 | 0.64 | 0.49 | 0.16 | 10.02 | Aggregation down 97.8% |
+| 1 SQLite transaction | tiny | warm | 10,101 | 190.53 | 172.29 | 12.70 | 1.54 | 2.14 | 16.11 | 32.3% lower scan median |
+| 1 SQLite transaction | mixed | warm | 2,021 | 47.98 | 41.68 | 2.89 | 1.25 | 0.46 | 12.00 | 26.4% lower scan median |
+| 1 SQLite transaction | semantics | warm | 7 | 3.54 | 1.22 | 0.14 | 0.44 | 0.03 | 0.00 | Correctness counters unchanged |
 | 2 bottom-up totals | | cold | | | | | | | | |
 | 3 compact schema | | cold | | | | | | | | |
 | 4 no scan sort | | cold | | | | | | | | |
@@ -493,3 +499,4 @@ Record decisions that affect later stages.
 |---|---:|---|---|---|
 | 2026-08-24 | 0 | Keep diagnostics internal and opt-in | Production result and snapshot contracts do not need benchmark data | Worker sends a separate diagnostics message only when enabled |
 | 2026-08-24 | 0 | Proceed with transaction and statement reuse before concurrency | Traversal used 82-88% on wide, tiny, and mixed fixtures; aggregation used 52.5% on the deep fixture | Stage 1 can address both measured costs without changing traversal behavior |
+| 2026-08-24 | 1 | Keep one construction transaction and reusable writer statements | Scan medians fell 26.4-64.4%; deep aggregation fell 97.8%; database sizes and scan totals were unchanged | Proceed to bottom-up aggregation as a separate Stage 2 change |

@@ -30,6 +30,18 @@ export interface MutableDatabaseNode {
   unreadableCount: number
 }
 
+export interface InsertNode {
+  readonly id: string
+  readonly parentId: string | null
+  readonly name: string
+  readonly path: string
+  readonly kind: NodeKind
+  readonly ownBytes: number
+  readonly device: string
+  readonly inode: string
+  readonly ownUnreadable?: number
+}
+
 export interface ScanDatabaseMeta {
   readonly target: string
   readonly rootId: string
@@ -49,123 +61,168 @@ export interface ScanDatabaseMeta {
   }
 }
 
-export function createScanDatabase(path: string): DatabaseSync {
-  const database = new DatabaseSync(path)
-  database.exec("PRAGMA journal_mode=DELETE; PRAGMA synchronous=FULL; PRAGMA foreign_keys=ON;")
-  database.exec(`
-    CREATE TABLE nodes (
-      id TEXT PRIMARY KEY,
-      parent_id TEXT REFERENCES nodes(id),
-      name TEXT NOT NULL,
-      path TEXT NOT NULL,
-      kind TEXT NOT NULL CHECK (kind IN ('directory', 'file')),
-      own_bytes INTEGER NOT NULL,
-      size_bytes INTEGER NOT NULL,
-      own_unreadable INTEGER NOT NULL DEFAULT 0,
-      direct_children INTEGER NOT NULL DEFAULT 0,
-      descendant_count INTEGER NOT NULL DEFAULT 0,
-      unreadable_count INTEGER NOT NULL DEFAULT 0,
-      device TEXT NOT NULL,
-      inode TEXT NOT NULL
-    );
-    CREATE TABLE metadata (key TEXT PRIMARY KEY, value TEXT NOT NULL);
-  `)
-  return database
-}
+type DatabaseState = "building" | "committed" | "rolled-back" | "closed"
 
-export function insertNode(database: DatabaseSync, node: {
-  readonly id: string
-  readonly parentId: string | null
-  readonly name: string
-  readonly path: string
-  readonly kind: NodeKind
-  readonly ownBytes: number
-  readonly device: string
-  readonly inode: string
-  readonly ownUnreadable?: number
-}): void {
-  const statement = database.prepare(`
-    INSERT INTO nodes (id, parent_id, name, path, kind, own_bytes, size_bytes, own_unreadable, device, inode)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-  `)
-  statement.run(node.id, node.parentId, node.name, node.path, node.kind, node.ownBytes, node.ownBytes, node.ownUnreadable ?? 0, node.device, node.inode)
-}
+export class ScanDatabase {
+  readonly #database: DatabaseSync
+  readonly #insertNode: StatementSync
+  readonly #markUnreadable: StatementSync
+  readonly #updateDirectory: StatementSync
+  readonly #insertMetadata: StatementSync
+  #state: DatabaseState = "building"
 
-export function finalizeDatabase(database: DatabaseSync, rootId: string): Map<string, MutableDatabaseNode> {
-  const nodes = measureScan("aggregation", () => aggregateDatabase(database, rootId))
-  measureScan("index-create", () => database.exec("CREATE INDEX nodes_parent_size ON nodes (parent_id, size_bytes DESC, name COLLATE NOCASE ASC);"))
-  return nodes
-}
-
-function aggregateDatabase(database: DatabaseSync, rootId: string): Map<string, MutableDatabaseNode> {
-  const rows = database.prepare(`
-    SELECT id, parent_id AS parentId, name, path, kind, own_bytes AS ownBytes,
-      size_bytes AS sizeBytes, own_unreadable AS ownUnreadable,
-      direct_children AS directChildren, descendant_count AS descendantCount,
-      unreadable_count AS unreadableCount
-    FROM nodes
-  `).all() as unknown as Array<Record<string, unknown>>
-  const nodes = new Map<string, MutableDatabaseNode>()
-  const children = new Map<string, MutableDatabaseNode[]>()
-  for (const row of rows) {
-    const node: MutableDatabaseNode = {
-      id: String(row.id),
-      parentId: row.parentId === null ? null : String(row.parentId),
-      name: String(row.name),
-      path: String(row.path),
-      kind: row.kind === "directory" ? "directory" : "file",
-      ownBytes: numberValue(row.ownBytes),
-      sizeBytes: numberValue(row.sizeBytes),
-      ownUnreadable: numberValue(row.ownUnreadable),
-      directChildren: numberValue(row.directChildren),
-      descendantCount: numberValue(row.descendantCount),
-      unreadableCount: numberValue(row.unreadableCount)
-    }
-    nodes.set(node.id, node)
-    if (node.parentId !== null) {
-      const siblings = children.get(node.parentId) ?? []
-      siblings.push(node)
-      children.set(node.parentId, siblings)
+  constructor(path: string) {
+    const database = new DatabaseSync(path)
+    this.#database = database
+    try {
+      database.exec("PRAGMA journal_mode=DELETE; PRAGMA synchronous=FULL; PRAGMA foreign_keys=ON;")
+      database.exec(`
+        CREATE TABLE nodes (
+          id TEXT PRIMARY KEY,
+          parent_id TEXT REFERENCES nodes(id),
+          name TEXT NOT NULL,
+          path TEXT NOT NULL,
+          kind TEXT NOT NULL CHECK (kind IN ('directory', 'file')),
+          own_bytes INTEGER NOT NULL,
+          size_bytes INTEGER NOT NULL,
+          own_unreadable INTEGER NOT NULL DEFAULT 0,
+          direct_children INTEGER NOT NULL DEFAULT 0,
+          descendant_count INTEGER NOT NULL DEFAULT 0,
+          unreadable_count INTEGER NOT NULL DEFAULT 0,
+          device TEXT NOT NULL,
+          inode TEXT NOT NULL
+        );
+        CREATE TABLE metadata (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+      `)
+      this.#insertNode = database.prepare(`
+        INSERT INTO nodes (id, parent_id, name, path, kind, own_bytes, size_bytes, own_unreadable, device, inode)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `)
+      this.#markUnreadable = database.prepare("UPDATE nodes SET own_unreadable = 1, unreadable_count = 1 WHERE id = ?")
+      this.#updateDirectory = database.prepare(`
+        UPDATE nodes SET size_bytes = ?, direct_children = ?, descendant_count = ?, unreadable_count = ? WHERE id = ?
+      `)
+      this.#insertMetadata = database.prepare("INSERT INTO metadata (key, value) VALUES (?, ?)")
+      database.exec("BEGIN")
+    } catch (error) {
+      try { database.close() } catch { /* Preserve the construction error. */ }
+      throw error
     }
   }
 
-  const update = database.prepare(`
-    UPDATE nodes SET size_bytes = ?, direct_children = ?, descendant_count = ?, unreadable_count = ? WHERE id = ?
-  `)
-  const visiting = new Set<string>()
-  const visit = (node: MutableDatabaseNode): void => {
-    if (node.kind !== "directory" || visiting.has(node.id)) return
-    visiting.add(node.id)
-    let sizeBytes = node.ownBytes
-    let descendantCount = 0
-    let unreadableCount = node.ownUnreadable
-    const direct = children.get(node.id) ?? []
-    for (const child of direct) {
-      visit(child)
-      sizeBytes += child.sizeBytes
-      descendantCount += 1 + child.descendantCount
-      unreadableCount += child.unreadableCount
-    }
-    node.sizeBytes = sizeBytes
-    node.directChildren = direct.length
-    node.descendantCount = descendantCount
-    node.unreadableCount = unreadableCount
-    update.run(sizeBytes, direct.length, descendantCount, unreadableCount, node.id)
-    visiting.delete(node.id)
+  insertNode(node: InsertNode): void {
+    this.#assertBuilding()
+    this.#insertNode.run(node.id, node.parentId, node.name, node.path, node.kind, node.ownBytes, node.ownBytes, node.ownUnreadable ?? 0, node.device, node.inode)
   }
-  const root = nodes.get(rootId)
-  if (root) visit(root)
-  return nodes
+
+  markUnreadable(id: string): void {
+    this.#assertBuilding()
+    this.#markUnreadable.run(id)
+  }
+
+  finalize(rootId: string): Map<string, MutableDatabaseNode> {
+    this.#assertBuilding()
+    const nodes = measureScan("aggregation", () => this.#aggregate(rootId))
+    measureScan("index-create", () => this.#database.exec("CREATE INDEX nodes_parent_size ON nodes (parent_id, size_bytes DESC, name COLLATE NOCASE ASC);"))
+    return nodes
+  }
+
+  writeMetadata(meta: ScanDatabaseMeta): void {
+    this.#assertBuilding()
+    this.#insertMetadata.run("target", meta.target)
+    this.#insertMetadata.run("rootId", meta.rootId)
+    this.#insertMetadata.run("volume", JSON.stringify({ capacityBytes: meta.capacityBytes, freeBytes: meta.freeBytes }))
+    this.#insertMetadata.run("totals", JSON.stringify(meta.totals))
+    this.#insertMetadata.run("scannedBytes", String(meta.scannedBytes))
+  }
+
+  complete(): void {
+    this.#assertBuilding()
+    measureScan("database-commit", () => this.#database.exec("COMMIT"))
+    this.#state = "committed"
+    try { measureScan("database-optimize", () => this.#database.exec("PRAGMA optimize")) }
+    finally { this.#close() }
+  }
+
+  abort(): void {
+    if (this.#state === "closed" || this.#state === "rolled-back") return
+    if (this.#state === "building") {
+      try { this.#database.exec("ROLLBACK") } catch { /* Best effort while preserving the scan error. */ }
+      this.#state = "rolled-back"
+    }
+    try { this.#close() } catch { /* Best effort while preserving the scan error. */ }
+  }
+
+  #aggregate(rootId: string): Map<string, MutableDatabaseNode> {
+    const rows = this.#database.prepare(`
+      SELECT id, parent_id AS parentId, name, path, kind, own_bytes AS ownBytes,
+        size_bytes AS sizeBytes, own_unreadable AS ownUnreadable,
+        direct_children AS directChildren, descendant_count AS descendantCount,
+        unreadable_count AS unreadableCount
+      FROM nodes
+    `).all() as unknown as Array<Record<string, unknown>>
+    const nodes = new Map<string, MutableDatabaseNode>()
+    const children = new Map<string, MutableDatabaseNode[]>()
+    for (const row of rows) {
+      const node: MutableDatabaseNode = {
+        id: String(row.id),
+        parentId: row.parentId === null ? null : String(row.parentId),
+        name: String(row.name),
+        path: String(row.path),
+        kind: row.kind === "directory" ? "directory" : "file",
+        ownBytes: numberValue(row.ownBytes),
+        sizeBytes: numberValue(row.sizeBytes),
+        ownUnreadable: numberValue(row.ownUnreadable),
+        directChildren: numberValue(row.directChildren),
+        descendantCount: numberValue(row.descendantCount),
+        unreadableCount: numberValue(row.unreadableCount)
+      }
+      nodes.set(node.id, node)
+      if (node.parentId !== null) {
+        const siblings = children.get(node.parentId) ?? []
+        siblings.push(node)
+        children.set(node.parentId, siblings)
+      }
+    }
+
+    const visiting = new Set<string>()
+    const visit = (node: MutableDatabaseNode): void => {
+      if (node.kind !== "directory" || visiting.has(node.id)) return
+      visiting.add(node.id)
+      let sizeBytes = node.ownBytes
+      let descendantCount = 0
+      let unreadableCount = node.ownUnreadable
+      const direct = children.get(node.id) ?? []
+      for (const child of direct) {
+        visit(child)
+        sizeBytes += child.sizeBytes
+        descendantCount += 1 + child.descendantCount
+        unreadableCount += child.unreadableCount
+      }
+      node.sizeBytes = sizeBytes
+      node.directChildren = direct.length
+      node.descendantCount = descendantCount
+      node.unreadableCount = unreadableCount
+      this.#updateDirectory.run(sizeBytes, direct.length, descendantCount, unreadableCount, node.id)
+      visiting.delete(node.id)
+    }
+    const root = nodes.get(rootId)
+    if (root) visit(root)
+    return nodes
+  }
+
+  #assertBuilding(): void {
+    if (this.#state !== "building") throw new Error(`Scan database is ${this.#state}`)
+  }
+
+  #close(): void {
+    if (this.#state === "closed") return
+    try { measureScan("database-close", () => this.#database.close()) }
+    finally { this.#state = "closed" }
+  }
 }
 
-export function writeMetadata(database: DatabaseSync, meta: ScanDatabaseMeta): void {
-  const statement = database.prepare("INSERT INTO metadata (key, value) VALUES (?, ?)")
-  statement.run("target", meta.target)
-  statement.run("rootId", meta.rootId)
-  statement.run("volume", JSON.stringify({ capacityBytes: meta.capacityBytes, freeBytes: meta.freeBytes }))
-  statement.run("totals", JSON.stringify(meta.totals))
-  statement.run("scannedBytes", String(meta.scannedBytes))
-}
+export function createScanDatabase(path: string): ScanDatabase { return new ScanDatabase(path) }
 
 export function readMetadata(database: DatabaseSync): Record<string, string> {
   const values = database.prepare("SELECT key, value FROM metadata").all() as unknown as Array<{ key: string; value: string }>

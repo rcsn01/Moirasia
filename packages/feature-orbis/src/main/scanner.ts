@@ -1,6 +1,6 @@
 import { lstat as defaultLstat, realpath as defaultRealpath, readdir as defaultReaddir, rename, statfs as defaultStatfs } from "node:fs/promises"
 import { basename, isAbsolute, normalize, relative, resolve, sep } from "node:path"
-import { createScanDatabase, finalizeDatabase, insertNode, prepareDatabaseDirectory, removeDatabaseFiles, writeMetadata } from "./database"
+import { createScanDatabase, prepareDatabaseDirectory, removeDatabaseFiles, type ScanDatabase } from "./database"
 import { measureScan, measureScanAsync, runWithScanDiagnostics } from "./diagnostics"
 
 export interface ScanStats {
@@ -119,11 +119,12 @@ async function scanFilesystemImpl(options: ScanOptions): Promise<ScanResult> {
   })
   const { indexRoot, indexIdentity, target, rootStats, rootDevice, capacityBytes, freeBytes } = preflight
   const rootId = "n-1"
-  const database = measureScan("database-create", () => createScanDatabase(options.partialPath))
+  let database: ScanDatabase | undefined
   try {
+    const writer = measureScan("database-create", () => createScanDatabase(options.partialPath))
+    database = writer
     await measureScanAsync("traversal", async () => {
-      database.exec("BEGIN")
-      insertNode(database, {
+      writer.insertNode({
         id: rootId,
         parentId: null,
         name: displayName(target),
@@ -137,18 +138,18 @@ async function scanFilesystemImpl(options: ScanOptions): Promise<ScanResult> {
       totals.scannedItems += 1
       totals.discoveredBytes += allocatedBytes(rootStats)
       reporter.emit(displayName(target), true)
-      await walkDirectory(target, rootId, rootDevice, database, options, fileSystem, indexRoot, indexIdentity, seenFiles, totals, reporter)
+      await walkDirectory(target, rootId, rootDevice, writer, options, fileSystem, indexRoot, indexIdentity, seenFiles, totals, reporter)
       throwIfCanceled(options.signal)
-      database.exec("COMMIT")
     })
     reporter.emit(displayName(target), true)
     reporter.stage("indexing", displayName(target), true)
-    const nodes = finalizeDatabase(database, rootId)
+    const nodes = writer.finalize(rootId)
     const root = nodes.get(rootId)
     if (!root) throw new Error("The scan did not produce a root directory")
+    // Keep persisted and returned totals identical. End-to-end diagnostics separately include commit, close, and publication.
     const elapsedMs = Date.now() - startedAt
     const finalTotals: ScanTotals = { ...totals, elapsedMs }
-    measureScan("metadata-write", () => writeMetadata(database, {
+    measureScan("metadata-write", () => writer.writeMetadata({
       target,
       rootId,
       capacityBytes,
@@ -156,15 +157,13 @@ async function scanFilesystemImpl(options: ScanOptions): Promise<ScanResult> {
       scannedBytes: root.sizeBytes,
       totals: finalTotals
     }))
-    measureScan("database-optimize", () => database.exec("PRAGMA optimize"))
-    measureScan("database-close", () => database.close())
+    writer.complete()
     throwIfCanceled(options.signal)
     await measureScanAsync("publish-rename", () => rename(options.partialPath, options.publishedPath))
     options.onProgress?.({ stage: "indexing", scannedItems: totals.scannedItems, discoveredBytes: totals.discoveredBytes, elapsedMs, currentItem: displayName(target) })
     return { generation: options.generation, target, rootId, publishedPath: options.publishedPath, capacityBytes, freeBytes, scannedBytes: root.sizeBytes, totals: finalTotals }
   } catch (error) {
-    try { database.exec("ROLLBACK") } catch { /* The transaction may already be closed. */ }
-    try { database.close() } catch { /* Best effort during cancellation. */ }
+    database?.abort()
     await removeDatabaseFiles(options.partialPath)
     await removeDatabaseFiles(options.publishedPath)
     throw error
@@ -175,7 +174,7 @@ async function walkDirectory(
   directory: string,
   parentId: string,
   rootDevice: string,
-  database: ReturnType<typeof createScanDatabase>,
+  database: ScanDatabase,
   options: ScanOptions,
   fileSystem: ScanFileSystem,
   indexRoot: string,
@@ -189,7 +188,7 @@ async function walkDirectory(
   try {
     names = await fileSystem.readdir(directory)
   } catch (error) {
-    markUnreadable(database, parentId)
+    database.markUnreadable(parentId)
     totals.skippedItems += 1
     totals.unreadableItems += 1
     if (isDisappearing(error)) totals.disappearingItems += 1
@@ -249,16 +248,12 @@ async function walkDirectory(
     }
     const id = `n-${totals.scannedItems + 1}`
     const ownBytes = allocatedBytes(stats)
-    insertNode(database, { id, parentId, name, path: childPath, kind, ownBytes, device: identityPart(stats.dev), inode: identityPart(stats.ino) })
+    database.insertNode({ id, parentId, name, path: childPath, kind, ownBytes, device: identityPart(stats.dev), inode: identityPart(stats.ino) })
     totals.scannedItems += 1
     totals.discoveredBytes += ownBytes
     reporter.emit(name)
     if (kind === "directory") await walkDirectory(childPath, id, rootDevice, database, options, fileSystem, indexRoot, indexIdentity, seenFiles, totals, reporter)
   }
-}
-
-function markUnreadable(database: ReturnType<typeof createScanDatabase>, id: string): void {
-  database.prepare("UPDATE nodes SET own_unreadable = 1, unreadable_count = 1 WHERE id = ?").run(id)
 }
 
 function shouldExclude(path: string, options: ScanOptions, indexRoot: string): boolean {

@@ -320,7 +320,7 @@ function makeFixtureReport(fixture: string, manifest: FixtureReport['manifest'],
 }
 
 function validateDiagnostics(worker: MeasuredWorker, controllerEvents: readonly OrbisTimingEvent[]): void {
-  const requiredScanPhases = ['preflight', 'database-create', 'traversal', 'aggregation', 'index-create', 'metadata-write', 'database-optimize', 'database-close', 'publish-rename', 'scan-total']
+  const requiredScanPhases = ['preflight', 'database-create', 'traversal', 'aggregation', 'index-create', 'metadata-write', 'database-commit', 'database-optimize', 'database-close', 'publish-rename', 'scan-total']
   const requiredControllerPhases = ['index-open', 'partial-index-cleanup', 'snapshot-focus-query', 'snapshot-root-query', 'snapshot-breadcrumbs-query', 'snapshot-chart-query', 'snapshot-largest-items-query', 'snapshot-total', 'listener-notify', 'publication-total']
   validateTimingSet(worker.scanTimings, requiredScanPhases, 'worker')
   validateTimingSet(controllerEvents, requiredControllerPhases, 'controller')
