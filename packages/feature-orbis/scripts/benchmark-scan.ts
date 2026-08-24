@@ -9,7 +9,7 @@ import { spawnSync } from 'node:child_process'
 import { Worker } from 'node:worker_threads'
 import { OrbisController, type OrbisWorker, type OrbisWorkerFactory } from '../src/main/controller'
 import { subscribeControllerDiagnostics, type OrbisTimingEvent } from '../src/main/diagnostics'
-import type { ScanResult } from '../src/main/scanner'
+import { DEFAULT_METADATA_CONCURRENCY, type ScanResult } from '../src/main/scanner'
 import { createScanFixture, type ScanFixtureManifest, type ScanFixtureName, type ScanFixtureProfile } from './lib/scan-fixtures'
 
 interface BenchmarkOptions {
@@ -23,6 +23,7 @@ interface BenchmarkOptions {
   readonly allowLiveTarget: boolean
   readonly cacheState: string
   readonly timeoutMs: number
+  readonly metadataConcurrency: number
 }
 
 type PerformanceFixture = ScanFixtureName
@@ -75,6 +76,7 @@ interface FixtureReport {
 }
 
 const options = parseArguments(process.argv.slice(2))
+process.env.ORBIS_SCAN_CONCURRENCY = String(options.metadataConcurrency)
 const rootDirectory = resolve(process.cwd(), '../..')
 const appDirectory = process.cwd()
 async function runBenchmark(): Promise<void> {
@@ -99,6 +101,7 @@ async function runBenchmark(): Promise<void> {
       profile: options.profile,
       warmupRuns: options.warmup,
       measuredRuns: options.samples,
+      metadataConcurrency: options.metadataConcurrency,
       artifacts: {
         scanWorkerSha256: fileHash(options.workerPath),
         benchmarkRunnerSha256: fileHash(process.argv[1]!)
@@ -371,7 +374,9 @@ function parseArguments(arguments_: readonly string[]): BenchmarkOptions {
   const workerPath = resolve(value('--worker') ?? resolve(process.cwd(), 'worker-dist/scan-worker.mjs'))
   const outputPath = resolve(value('--output') ?? resolve(process.cwd(), 'benchmark-results', `orbis-scan-${new Date().toISOString().replaceAll(':', '-')}.json`))
   const timeoutMs = positiveInteger(value('--timeout-ms') ?? '1800000', '--timeout-ms')
-  return { workerPath, profile, samples, warmup, fixtures: target ? [] : fixtures, outputPath, ...(target ? { target: resolve(target) } : {}), allowLiveTarget: arguments_.includes('--allow-live-target'), cacheState: value('--cache-state') ?? (target ? 'uncontrolled' : 'warm'), timeoutMs }
+  const metadataConcurrency = positiveInteger(value('--concurrency') ?? String(DEFAULT_METADATA_CONCURRENCY), '--concurrency')
+  if (metadataConcurrency > 64) throw new Error('--concurrency must be at most 64')
+  return { workerPath, profile, samples, warmup, fixtures: target ? [] : fixtures, outputPath, ...(target ? { target: resolve(target) } : {}), allowLiveTarget: arguments_.includes('--allow-live-target'), cacheState: value('--cache-state') ?? (target ? 'uncontrolled' : 'warm'), timeoutMs, metadataConcurrency }
 }
 
 function positiveInteger(value: string, name: string): number { const parsed = Number(value); if (!Number.isInteger(parsed) || parsed < 1) throw new Error(`${name} must be a positive integer`); return parsed }

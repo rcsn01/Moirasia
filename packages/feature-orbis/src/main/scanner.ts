@@ -2,6 +2,7 @@ import { lstat as defaultLstat, realpath as defaultRealpath, readdir as defaultR
 import { basename, isAbsolute, normalize, relative, resolve, sep } from "node:path"
 import { createScanDatabase, prepareDatabaseDirectory, removeDatabaseFiles, type DirectoryAggregate, type ScanDatabase } from "./database"
 import { createScanTimingAccumulator, measureScan, measureScanAsync, runWithScanDiagnostics } from "./diagnostics"
+import { createOrderedConcurrentMapper, type OrderedConcurrentMapper } from "./ordered-concurrent-map"
 
 export interface ScanStats {
   readonly blocks?: number | bigint
@@ -65,6 +66,7 @@ export interface ScanOptions {
   readonly startupRoot?: boolean
   readonly signal?: AbortSignal
   readonly fileSystem?: ScanFileSystem
+  readonly metadataConcurrency?: number
   readonly onProgress?: (progress: ScanProgress) => void
 }
 
@@ -78,6 +80,8 @@ const defaultFileSystem: ScanFileSystem = {
   statfs: async (path) => defaultStatfs(path),
   realpath: async (path) => defaultRealpath(path)
 }
+
+export const DEFAULT_METADATA_CONCURRENCY = 4
 
 const STARTUP_EXCLUSIONS = [
   "/System/Volumes",
@@ -97,6 +101,7 @@ export function scanFilesystem(options: ScanOptions): Promise<ScanResult> {
 async function scanFilesystemImpl(options: ScanOptions): Promise<ScanResult> {
   if (!isAbsolute(options.target)) throw new Error("Scan target must be an absolute path")
   const fileSystem = options.fileSystem ?? defaultFileSystem
+  const metadataMapper = createOrderedConcurrentMapper(resolveMetadataConcurrency(options.metadataConcurrency))
   const startedAt = Date.now()
   const totals = { scannedItems: 0, discoveredBytes: 0, skippedItems: 0, unreadableItems: 0, nestedMounts: 0, symlinks: 0, duplicateHardLinks: 0, disappearingItems: 0 }
   const reporter = new ProgressReporter(options.onProgress, startedAt, totals)
@@ -140,7 +145,7 @@ async function scanFilesystemImpl(options: ScanOptions): Promise<ScanResult> {
       totals.scannedItems += 1
       totals.discoveredBytes += rootOwnBytes
       reporter.emit(displayName(target), true)
-      const aggregate = await walkDirectory(target, rootId, rootOwnBytes, rootDevice, writer, options, fileSystem, indexRoot, indexIdentity, seenFiles, totals, reporter, aggregationTiming.measure)
+      const aggregate = await walkDirectory(target, rootId, rootOwnBytes, rootDevice, writer, options, fileSystem, indexRoot, indexIdentity, seenFiles, totals, reporter, aggregationTiming.measure, metadataMapper)
       throwIfCanceled(options.signal)
       return aggregate
     })
@@ -162,7 +167,9 @@ async function scanFilesystemImpl(options: ScanOptions): Promise<ScanResult> {
     writer.complete()
     throwIfCanceled(options.signal)
     await measureScanAsync("publish-rename", () => rename(options.partialPath, options.publishedPath))
+    throwIfCanceled(options.signal)
     options.onProgress?.({ stage: "indexing", scannedItems: totals.scannedItems, discoveredBytes: totals.discoveredBytes, elapsedMs, currentItem: displayName(target) })
+    throwIfCanceled(options.signal)
     return { generation: options.generation, target, rootId, publishedPath: options.publishedPath, capacityBytes, freeBytes, scannedBytes: root.sizeBytes, totals: finalTotals }
   } catch (error) {
     database?.abort()
@@ -185,7 +192,8 @@ async function walkDirectory(
   seenFiles: Set<string>,
   totals: { scannedItems: number; discoveredBytes: number; skippedItems: number; unreadableItems: number; nestedMounts: number; symlinks: number; duplicateHardLinks: number; disappearingItems: number },
   reporter: ProgressReporter,
-  recordAggregation: (operation: () => void) => void
+  recordAggregation: (operation: () => void) => void,
+  metadataMapper: OrderedConcurrentMapper
 ): Promise<DirectoryAggregate> {
   throwIfCanceled(options.signal)
   let names: readonly string[]
@@ -205,24 +213,28 @@ async function walkDirectory(
   let directChildren = 0
   let descendantCount = 0
   let unreadableCount = 0
-  const sortedNames = [...names].sort((left, right) => left.localeCompare(right, undefined, { numeric: true, sensitivity: "base" }))
-  for (const name of sortedNames) {
+  const sortedNames = [...names].sort(compareEntryNames)
+  const metadata = metadataMapper.map(sortedNames, { ...(options.signal ? { signal: options.signal } : {}), canceledError: () => new ScanCanceledError() }, async (name): Promise<MetadataResult> => {
     throwIfCanceled(options.signal)
     const childPath = normalize(resolve(directory, name))
-    if (shouldExclude(childPath, options, indexRoot)) {
+    if (shouldExclude(childPath, options, indexRoot)) return { status: "excluded", name, childPath }
+    try { return { status: "ready", name, childPath, stats: await fileSystem.lstat(childPath) } }
+    catch (error) { return { status: "failed", name, childPath, error } }
+  })
+  for await (const entry of metadata) {
+    const { name, childPath } = entry
+    if (entry.status === "excluded") {
       totals.skippedItems += 1
       continue
     }
-    let stats: ScanStats
-    try {
-      stats = await fileSystem.lstat(childPath)
-    } catch (error) {
+    if (entry.status === "failed") {
       totals.skippedItems += 1
-      if (isDisappearing(error)) totals.disappearingItems += 1
+      if (isDisappearing(entry.error)) totals.disappearingItems += 1
       else totals.unreadableItems += 1
       reporter.emit(name)
       continue
     }
+    const stats = entry.stats
     if (stats.isSymbolicLink()) {
       totals.skippedItems += 1
       totals.symlinks += 1
@@ -263,7 +275,7 @@ async function walkDirectory(
     totals.discoveredBytes += ownBytes
     reporter.emit(name)
     const child = kind === "directory"
-      ? await walkDirectory(childPath, id, ownBytes, rootDevice, database, options, fileSystem, indexRoot, indexIdentity, seenFiles, totals, reporter, recordAggregation)
+      ? await walkDirectory(childPath, id, ownBytes, rootDevice, database, options, fileSystem, indexRoot, indexIdentity, seenFiles, totals, reporter, recordAggregation, metadataMapper)
       : { sizeBytes: ownBytes, directChildren: 0, descendantCount: 0, unreadableCount: 0 }
     sizeBytes += child.sizeBytes
     directChildren += 1
@@ -273,6 +285,21 @@ async function walkDirectory(
   const aggregate = { sizeBytes, directChildren, descendantCount, unreadableCount }
   recordAggregation(() => database.updateDirectory(parentId, aggregate))
   return aggregate
+}
+
+type MetadataResult =
+  | { readonly status: "excluded"; readonly name: string; readonly childPath: string }
+  | { readonly status: "failed"; readonly name: string; readonly childPath: string; readonly error: unknown }
+  | { readonly status: "ready"; readonly name: string; readonly childPath: string; readonly stats: ScanStats }
+
+function resolveMetadataConcurrency(value: number | undefined): number {
+  const configured = value ?? Number(process.env.ORBIS_SCAN_CONCURRENCY ?? DEFAULT_METADATA_CONCURRENCY)
+  return Number.isFinite(configured) ? Math.max(1, Math.min(64, Math.floor(configured))) : DEFAULT_METADATA_CONCURRENCY
+}
+
+function compareEntryNames(left: string, right: string): number {
+  const collated = left.localeCompare(right, undefined, { numeric: true, sensitivity: "base" })
+  return collated !== 0 ? collated : left < right ? -1 : left > right ? 1 : 0
 }
 
 function shouldExclude(path: string, options: ScanOptions, indexRoot: string): boolean {

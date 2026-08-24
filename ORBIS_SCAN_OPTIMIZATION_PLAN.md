@@ -260,6 +260,8 @@ pnpm -C apps/Orbis typecheck
 
 ## Stage 5: add bounded parallel metadata traversal
 
+Results: [`docs/benchmarks/orbis-stage-5-bounded-metadata.md`](docs/benchmarks/orbis-stage-5-bounded-metadata.md)
+
 ### Purpose
 
 Apply PDU's strongest technique without copying its full in-memory result model.
@@ -275,17 +277,17 @@ Apply PDU's strongest technique without copying its full in-memory result model.
 
 ### Implementation
 
-- [ ] Introduce a bounded queue or semaphore for metadata operations.
-- [ ] Start with configurable concurrency behind an internal option or environment variable.
-- [ ] Benchmark concurrency values 1, 4, 8, 16, and 32.
-- [ ] Separate concurrent metadata collection from serialized database writes.
-- [ ] Keep a shared hard-link identity set with atomic check-and-add semantics at the coordinator.
-- [ ] Stop queue admission immediately on cancellation.
-- [ ] Drain or safely discard in-flight results before database cleanup.
-- [ ] Bound queued records and open directory handles.
-- [ ] Preserve nested-mount, symlink, special-file, unreadable, and disappearing-item counts.
-- [ ] Add race-focused tests for cancellation, rescan replacement, worker exit, and stale completion.
-- [ ] Test hard links placed in different top-level subtrees.
+- [x] Introduce one scan-wide bounded mapper for metadata operations.
+- [x] Keep configurable concurrency behind an internal option and environment variable.
+- [x] Benchmark concurrency values 1, 4, 8, 16, and 32.
+- [x] Separate concurrent metadata collection from serialized database writes.
+- [x] Keep a shared hard-link identity set with serialized check-and-add semantics at the coordinator.
+- [x] Stop admission immediately on cancellation.
+- [x] Drain in-flight results before database cleanup.
+- [x] Bound active operations and completed-result records across nested directories.
+- [x] Preserve nested-mount, symlink, special-file, unreadable, and disappearing-item counts.
+- [x] Add race-focused tests for cancellation, rescan replacement, worker exit, stale completion, and final publication.
+- [x] Test hard links placed in different top-level subtrees.
 
 ### Likely files
 
@@ -306,11 +308,11 @@ pnpm -C apps/Orbis test:smoke
 
 ### Exit criteria
 
-- [ ] Concurrency is bounded and has a measured default.
-- [ ] The default beats concurrency 1 on the target internal SSD without materially hurting external-disk scans.
-- [ ] Results match the serial scanner for all correctness fixtures.
-- [ ] Cancellation and stale-generation tests pass under repeated runs.
-- [ ] No `EMFILE`, unbounded queue growth, or large memory regression appears in stress tests.
+- [x] Concurrency is scan-wide bounded and has a measured default of 4.
+- [ ] The default beats concurrency 1 on the internal SSD; controlled external-disk validation remains pending because no external test volume was mounted.
+- [x] Results match concurrency 1 for all correctness fixtures.
+- [x] Cancellation and stale-generation tests pass under repeated runs.
+- [x] No unbounded operation or result queue, `EMFILE`, or material fixture-memory regression appears in stress tests.
 
 ---
 
@@ -494,7 +496,11 @@ Fill in one row after each stage using the same primary fixture. Add separate ta
 | 2 bottom-up totals | semantics | warm | 7 | 3.88 | 1.38 | 0.02 | 0.53 | 0.03 | 0.00 | Too short for a latency conclusion |
 | 3 compact schema | | cold | | | | | | | | |
 | 4 no scan sort | | cold | | | | | | | | |
-| 5 bounded concurrency | | cold | | | | | | | | |
+| 5 bounded concurrency | wide | warm | 2,001 | 32.92 | 29.70 | 0.02 | 0.57 | 0.42 | 12.22 | 26.9% faster than concurrency 1 |
+| 5 bounded concurrency | deep | warm | 257 | 20.66 | 18.11 | 0.18 | 0.48 | 0.16 | 10.08 | One-child levels do not benefit materially |
+| 5 bounded concurrency | tiny | warm | 10,101 | 136.23 | 130.95 | 0.30 | 1.41 | 2.14 | 15.48 | 27.4% faster than concurrency 1 |
+| 5 bounded concurrency | mixed | warm | 2,021 | 35.68 | 32.44 | 0.13 | 1.24 | 0.46 | 10.70 | 24.0% faster than concurrency 1 |
+| 5 bounded concurrency | semantics | warm | 7 | 3.62 | 1.42 | 0.02 | 0.44 | 0.03 | 0.00 | Correctness counters unchanged |
 | 6 SQLite durability | | cold | | | | | | | | |
 
 ## Decision log
@@ -507,3 +513,4 @@ Record decisions that affect later stages.
 | 2026-08-24 | 0 | Proceed with transaction and statement reuse before concurrency | Traversal used 82-88% on wide, tiny, and mixed fixtures; aggregation used 52.5% on the deep fixture | Stage 1 can address both measured costs without changing traversal behavior |
 | 2026-08-24 | 1 | Keep one construction transaction and reusable writer statements | Scan medians fell 26.4-64.4%; deep aggregation fell 97.8%; database sizes and scan totals were unchanged | Proceed to bottom-up aggregation as a separate Stage 2 change |
 | 2026-08-24 | 2 | Keep bottom-up aggregation for bounded memory | Ten-sample latency differences were within observed spread; all-row reconstruction was removed and fixture results remained identical | Scan memory no longer needs a second full copy of database rows and edges; proceed to Stage 3 separately |
+| 2026-08-24 | 5 | Use scan-wide metadata concurrency 4 | Against concurrency 1, scan medians improved 26.9% wide, 27.4% tiny, and 24.0% mixed; 8-32 gave no consistent additional benefit | Preserve ordered serialized writes; validate the conservative default on external media when available |
