@@ -1,4 +1,5 @@
 import { DatabaseSync } from 'node:sqlite'
+import { writeFileSync } from 'node:fs'
 import { access, mkdir, mkdtemp, rename, rm, symlink, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -7,11 +8,69 @@ import { FSEVENT_FLAGS, type ChangeJournal } from '../packages/feature-orbis/src
 import type { IndexManifest } from '../packages/feature-orbis/src/main/index-manifest'
 import { refreshPersistentIndex } from '../packages/feature-orbis/src/main/refresh-engine'
 import { scanFilesystem } from '../packages/feature-orbis/src/main/scanner'
+import { FullScanResumeStore } from '../packages/feature-orbis/src/main/full-scan-resume'
 
 const cleanup: string[] = []
 afterEach(async () => { await Promise.all(cleanup.splice(0).map((path) => rm(path, { recursive: true, force: true }))) })
 
 describe('Orbis refresh engine', () => {
+  it('keeps a finalized full candidate resumable until manifest publication', async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'orbis-refresh-resume-candidate-'))
+    cleanup.push(directory)
+    const target = join(directory, 'target')
+    const indexes = join(directory, 'indexes')
+    await mkdir(target, { recursive: true })
+    await mkdir(indexes, { recursive: true })
+    await writeFile(join(target, 'file'), Buffer.alloc(1024))
+    const stats = await import('node:fs/promises').then(({ lstat }) => lstat(target))
+    const journal: ChangeJournal = {
+      captureCheckpoint: () => ({ device: String(stats.dev), journalUuid: 'resume-journal', eventId: '40' }),
+      readChanges: () => ({ throughEventId: '40', events: [], requiresFullScan: false })
+    }
+    const id = '41234567-89ab-4cde-8fab-0123456789ab'
+    const outcome = await refreshPersistentIndex({
+      generation: 1, target, indexDirectory: indexes, partialPath: join(indexes, `index-${id}.partial.sqlite`),
+      publishedPath: join(indexes, `index-${id}.sqlite`), changeJournal: journal
+    })
+    expect(outcome).toMatchObject({ kind: 'candidate', strategy: 'full', journal: { uuid: 'resume-journal', eventId: '40' } })
+    expect(await new FullScanResumeStore(indexes).load(target)).toMatchObject({ kind: 'candidate', descriptor: { scanId: id } })
+  })
+
+  it('replays again after reconciliation before proposing the publication cursor', async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'orbis-refresh-closing-fence-'))
+    cleanup.push(directory)
+    const target = join(directory, 'target')
+    const indexes = join(directory, 'indexes')
+    await mkdir(join(target, 'folder'), { recursive: true })
+    await mkdir(indexes, { recursive: true })
+    const file = join(target, 'folder', 'file')
+    await writeFile(file, Buffer.alloc(512))
+    const stats = await import('node:fs/promises').then(({ lstat }) => lstat(target))
+    let reads = 0
+    const journal: ChangeJournal = {
+      captureCheckpoint: () => ({ device: String(stats.dev), journalUuid: 'closing-journal', eventId: '10' }),
+      readChanges: () => {
+        reads += 1
+        if (reads === 1) {
+          writeFileSync(file, Buffer.alloc(2048))
+          return { throughEventId: '11', requiresFullScan: false, events: [{ relativePath: 'folder/file', eventId: '11', flags: FSEVENT_FLAGS.itemModified | FSEVENT_FLAGS.itemIsFile }] }
+        }
+        if (reads === 2) {
+          writeFileSync(file, Buffer.alloc(8192))
+          return { throughEventId: '12', requiresFullScan: false, events: [{ relativePath: 'folder/file', eventId: '12', flags: FSEVENT_FLAGS.itemModified | FSEVENT_FLAGS.itemIsFile }] }
+        }
+        return { throughEventId: '12', requiresFullScan: false, events: [] }
+      }
+    }
+    const id = '51234567-89ab-4cde-8fab-0123456789ab'
+    const outcome = await refreshPersistentIndex({
+      generation: 1, target, indexDirectory: indexes, partialPath: join(indexes, `index-${id}.partial.sqlite`),
+      publishedPath: join(indexes, `index-${id}.sqlite`), changeJournal: journal
+    })
+    expect(outcome).toMatchObject({ kind: 'candidate', journal: { eventId: '12' } })
+    expect(reads).toBe(3)
+  })
+
   it('publishes a full baseline and then an exact incremental candidate', async () => {
     const directory = await mkdtemp(join(tmpdir(), 'orbis-refresh-'))
     cleanup.push(directory)

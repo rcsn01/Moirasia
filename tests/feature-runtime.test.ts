@@ -1,3 +1,4 @@
+import { EventEmitter } from 'node:events'
 import { mkdtemp, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -7,8 +8,18 @@ import type { FeatureContext, MoirasiaFeature } from '../packages/desktop-shell/
 const electron = vi.hoisted(() => ({ app: { relaunch: vi.fn(), exit: vi.fn((code?: number) => code) } }))
 vi.mock('electron', () => electron)
 
+import { EmbeddedFeatureHost } from '../src/main/features/embedded-host'
 import { FeatureRuntime } from '../src/main/features/runtime'
 import { ShellSettingsStore } from '../src/main/settings'
+
+class FakeShellWindow extends EventEmitter {
+  webContents = {}
+  destroyed = false
+  isDestroyed(): boolean { return this.destroyed }
+  isFocused(): boolean { return false }
+  show(): void {}
+  focus(): void {}
+}
 
 const CONTEXT: FeatureContext = {
   id: 'exithibition', mode: 'suite', productId: 'exithibition',
@@ -162,6 +173,29 @@ describe('FeatureRuntime', () => {
 
     expect(fake.activate).toHaveBeenCalledTimes(1)
     expect(() => runtime.activate('vox')).toThrow(TypeError)
+  })
+
+  it('disposes every feature after the shell window has been destroyed', async () => {
+    const firstDispose = vi.fn(async () => {})
+    const secondDispose = vi.fn(async () => {})
+    const window = new FakeShellWindow()
+    const host = new EmbeddedFeatureHost(window as never)
+    const runtime = new FeatureRuntime(await settingsWith(undefined), {
+      host,
+      context: () => CONTEXT,
+      loaders: {
+        amove: async () => ({ feature: { id: 'amove', register: vi.fn(), dispose: firstDispose } }),
+        exithibition: async () => ({ feature: { id: 'exithibition', register: vi.fn(), dispose: secondDispose } })
+      }
+    })
+    await runtime.syncAtLaunch()
+    runtime.setActive('amove')
+    window.destroyed = true
+
+    await runtime.disposeAll()
+
+    expect(firstDispose).toHaveBeenCalledTimes(1)
+    expect(secondDispose).toHaveBeenCalledTimes(1)
   })
 
   it('disposes every feature even when one disposer fails', async () => {

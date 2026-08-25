@@ -65,6 +65,22 @@ export interface NativeMetadataAddon {
   openDirectory(path: string): NativeDirectoryCursor
 }
 
+export interface MetadataCursorDiagnostics {
+  readonly nativeReadPageCalls: number
+  readonly nodeReadPageCalls: number
+}
+
+const metadataCursorDiagnostics = { nativeReadPageCalls: 0, nodeReadPageCalls: 0 }
+
+export function resetMetadataCursorDiagnostics(): void {
+  metadataCursorDiagnostics.nativeReadPageCalls = 0
+  metadataCursorDiagnostics.nodeReadPageCalls = 0
+}
+
+export function readMetadataCursorDiagnostics(): MetadataCursorDiagnostics {
+  return { ...metadataCursorDiagnostics }
+}
+
 export type NativeOrbisAddon = Partial<NativeMetadataAddon> & Record<string, unknown>
 
 export class NodeDirectoryMetadataSource implements DirectoryMetadataSource {
@@ -99,8 +115,9 @@ class NodeDirectoryMetadataCursor implements DirectoryMetadataCursor {
 
   async readPage(limit: number, signal: AbortSignal): Promise<DirectoryMetadataPage> {
     if (this.#closed || this.#done) return { entries: [], done: true, bulkEntries: 0, fallbackEntries: 0 }
+    metadataCursorDiagnostics.nodeReadPageCalls += 1
     const names: string[] = []
-    const size = Math.max(1, Math.min(32, Math.floor(limit)))
+    const size = clampPageLimit(limit)
     for (let index = 0; index < size; index += 1) {
       throwIfAborted(signal)
       const entry = await this.handle.read()
@@ -154,7 +171,8 @@ class NativeDirectoryMetadataCursor implements DirectoryMetadataCursor {
   async readPage(limit: number, signal: AbortSignal): Promise<DirectoryMetadataPage> {
     throwIfAborted(signal)
     if (this.#closed) return { entries: [], done: true, bulkEntries: 0, fallbackEntries: 0 }
-    const page = this.cursor.readPage(Math.max(1, Math.min(32, Math.floor(limit))))
+    metadataCursorDiagnostics.nativeReadPageCalls += 1
+    const page = this.cursor.readPage(clampPageLimit(limit))
     throwIfAborted(signal)
     return {
       entries: page.entries.map((entry) => ({
@@ -226,6 +244,7 @@ function fromStats(name: string, stats: ScanStats): DirectoryMetadataEntry {
   }
 }
 
+function clampPageLimit(value: number): number { return Math.max(1, Math.min(1_024, Math.floor(value))) }
 function normalizeKind(value: string): DirectoryMetadataKind { return value === "directory" || value === "file" || value === "symlink" ? value : "other" }
 function nativeError(code: number): Error & { code: string } { const error = new Error(`Bulk metadata failed (${code})`) as Error & { code: string }; error.code = String(code); return error }
 function finiteBytes(value: unknown): number { const result = number(value); return Number.isFinite(result) && result > 0 ? result : 0 }

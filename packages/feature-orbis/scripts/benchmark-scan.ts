@@ -25,6 +25,7 @@ interface BenchmarkOptions {
   readonly cacheState: string
   readonly timeoutMs: number
   readonly metadataConcurrency: number
+  readonly batchSize: number
   readonly scanner: 'progressive' | 'legacy'
   readonly scenario: RefreshScenario
 }
@@ -69,6 +70,9 @@ interface SampleReport {
   readonly maxPreviewPayloadBytes: number
   readonly bulkMetadataEntries: number
   readonly fallbackMetadataEntries: number
+  readonly nativeCursorReadPageCalls: number
+  readonly nodeCursorReadPageCalls: number
+  readonly checkpointCount: number
   readonly journalReplayMs: number
   readonly candidateCloneMs: number
   readonly incrementalTraversalMs: number
@@ -102,6 +106,7 @@ interface FixtureReport {
 
 const options = parseArguments(process.argv.slice(2))
 process.env.ORBIS_SCAN_CONCURRENCY = String(options.metadataConcurrency)
+process.env.ORBIS_METADATA_BATCH_SIZE = String(options.batchSize)
 const rootDirectory = resolve(process.cwd(), '../..')
 const appDirectory = process.cwd()
 async function runBenchmark(): Promise<void> {
@@ -110,7 +115,7 @@ async function runBenchmark(): Promise<void> {
   if (options.target) reports.push(await runLiveTarget(options.target))
 
   const report = {
-    schemaVersion: 4,
+    schemaVersion: 5,
     capturedAt: new Date().toISOString(),
     environment: {
       moirasia: gitState(rootDirectory),
@@ -129,6 +134,7 @@ async function runBenchmark(): Promise<void> {
       warmupRuns: options.warmup,
       measuredRuns: options.samples,
       metadataConcurrency: options.metadataConcurrency,
+      batchSize: options.batchSize,
       nativeAddon: options.nativeAddonPath ?? null,
       artifacts: {
         scanWorkerSha256: fileHash(options.workerPath),
@@ -234,6 +240,9 @@ async function runSample(target: string, manifest: ScanFixtureManifest | LiveMan
       maxPreviewPayloadBytes: measuredWorker.maxPreviewPayloadBytes,
       bulkMetadataEntries: result.metadata?.bulkMetadataEntries ?? 0,
       fallbackMetadataEntries: result.metadata?.fallbackMetadataEntries ?? 0,
+      nativeCursorReadPageCalls: measuredWorker.nativeCursorReadPageCalls,
+      nodeCursorReadPageCalls: measuredWorker.nodeCursorReadPageCalls,
+      checkpointCount: measuredWorker.checkpointCount,
       journalReplayMs: scanTimings['journal-replay'] ?? 0,
       candidateCloneMs: scanTimings['candidate-clone'] ?? 0,
       incrementalTraversalMs: scanTimings['incremental-traversal'] ?? 0,
@@ -393,6 +402,9 @@ class MeasuredWorker implements OrbisWorker {
   diagnosticMessageBeforeComplete = false
   firstPreviewMs = 0
   maxPreviewPayloadBytes = 0
+  nativeCursorReadPageCalls = 0
+  nodeCursorReadPageCalls = 0
+  checkpointCount = 0
   #startedAt = 0
   #receivedComplete = false
 
@@ -403,9 +415,19 @@ class MeasuredWorker implements OrbisWorker {
     this.#worker = new Worker(path, { env: environment, ...(nativeAddonPath ? { workerData: { nativeAddonPath } } : {}) })
     this.workerStartupMs = new Promise((resolveOnline) => this.#worker.once('online', () => resolveOnline(performance.now() - this.#createdAt)))
     this.#worker.on('message', (message: unknown) => {
-      const value = message as { readonly type?: string; readonly timings?: readonly OrbisTimingEvent[]; readonly result?: ScanResult; readonly refresh?: { readonly strategy: 'full' | 'incremental'; readonly fallbackReason?: string } }
+      const value = message as {
+        readonly type?: string
+        readonly timings?: readonly OrbisTimingEvent[]
+        readonly counters?: { readonly nativeReadPageCalls?: number; readonly nodeReadPageCalls?: number }
+        readonly checkpointCount?: number
+        readonly result?: ScanResult
+        readonly refresh?: { readonly strategy: 'full' | 'incremental'; readonly fallbackReason?: string }
+      }
       if (value.type === 'diagnostics') {
         this.scanTimings = value.timings ?? []
+        this.nativeCursorReadPageCalls = Number(value.counters?.nativeReadPageCalls ?? 0)
+        this.nodeCursorReadPageCalls = Number(value.counters?.nodeReadPageCalls ?? 0)
+        this.checkpointCount = Number(value.checkpointCount ?? 0)
         this.diagnosticMessageBeforeComplete = !this.#receivedComplete
         return
       }
@@ -578,7 +600,9 @@ function parseArguments(arguments_: readonly string[]): BenchmarkOptions {
   const timeoutMs = positiveInteger(value('--timeout-ms') ?? '1800000', '--timeout-ms')
   const metadataConcurrency = positiveInteger(value('--concurrency') ?? String(DEFAULT_METADATA_CONCURRENCY), '--concurrency')
   if (metadataConcurrency > 64) throw new Error('--concurrency must be at most 64')
-  return { workerPath, ...(nativeAddonPath ? { nativeAddonPath } : {}), profile, samples, warmup, fixtures: target ? [] : fixtures, outputPath, ...(target ? { target: resolve(target) } : {}), allowLiveTarget: arguments_.includes('--allow-live-target'), cacheState: value('--cache-state') ?? (target ? 'uncontrolled' : 'warm'), timeoutMs, metadataConcurrency, scanner, scenario: scenario as RefreshScenario }
+  const batchSize = positiveInteger(value('--batch-size') ?? '256', '--batch-size')
+  if (batchSize > 1_024) throw new Error('--batch-size must be at most 1024')
+  return { workerPath, ...(nativeAddonPath ? { nativeAddonPath } : {}), profile, samples, warmup, fixtures: target ? [] : fixtures, outputPath, ...(target ? { target: resolve(target) } : {}), allowLiveTarget: arguments_.includes('--allow-live-target'), cacheState: value('--cache-state') ?? (target ? 'uncontrolled' : 'warm'), timeoutMs, metadataConcurrency, batchSize, scanner, scenario: scenario as RefreshScenario }
 }
 
 function positiveInteger(value: string, name: string): number { const parsed = Number(value); if (!Number.isInteger(parsed) || parsed < 1) throw new Error(`${name} must be a positive integer`); return parsed }
@@ -602,6 +626,7 @@ function printSummary(reports: readonly FixtureReport[], outputPath: string): vo
   console.log(`Report: ${outputPath}`)
   console.table(reports.map((report) => ({
     fixture: report.fixture,
+    batch: options.batchSize,
     scenario: report.samples[0]?.scenario ?? options.scenario,
     strategy: report.samples[0]?.strategy ?? 'unknown',
     items: report.samples[0]?.scannedItems ?? 0,
@@ -615,6 +640,9 @@ function printSummary(reports: readonly FixtureReport[], outputPath: string): vo
     'max preview KiB': round(report.summary.maxPreviewPayloadBytes.median / 1024),
     'bulk entries': report.samples[0]?.bulkMetadataEntries ?? 0,
     'fallback entries': report.samples[0]?.fallbackMetadataEntries ?? 0,
+    'native read calls': report.samples[0]?.nativeCursorReadPageCalls ?? 0,
+    'Node read calls': report.samples[0]?.nodeCursorReadPageCalls ?? 0,
+    checkpoints: report.samples[0]?.checkpointCount ?? 0,
     'journal ms': round(report.samples[0]?.journalReplayMs ?? 0),
     'clone ms': round(report.samples[0]?.candidateCloneMs ?? 0),
     'incremental traversal ms': round(report.samples[0]?.incrementalTraversalMs ?? 0),

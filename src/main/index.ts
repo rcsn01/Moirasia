@@ -77,9 +77,9 @@ async function createApplication(): Promise<void> {
     if (timer) clearInterval(timer)
     nativeTheme.removeListener('updated', updateSystemBackground)
     disposeIpc()
+    stopNavigation()
     controller.close()
     void features.disposeAll().finally(() => {
-      stopNavigation()
       host.dispose()
       app.quit()
     })

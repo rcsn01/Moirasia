@@ -26,6 +26,7 @@ export function registerIpc(options: OrbisIpcRegistrationOptions): () => void {
     [IPC.startScan, (event) => { authorize(event as IpcMainInvokeEvent); return options.controller.startScan() }],
     [IPC.chooseFolder, (event) => { authorize(event as IpcMainInvokeEvent); return options.controller.chooseFolder() }],
     [IPC.cancelScan, (event) => { authorize(event as IpcMainInvokeEvent); return options.controller.cancelScan() }],
+    [IPC.discardSavedScan, (event) => { authorize(event as IpcMainInvokeEvent); return options.controller.discardSavedScan() }],
     [IPC.rescan, (event) => { authorize(event as IpcMainInvokeEvent); return options.controller.rescan() }],
     [IPC.focusNode, (event, id) => { authorize(event as IpcMainInvokeEvent); return options.controller.focusNode(nodeId(id)) }],
     [IPC.revealNode, (event, id) => { authorize(event as IpcMainInvokeEvent); return options.controller.revealNode(nodeId(id)) }],

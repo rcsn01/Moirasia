@@ -87,6 +87,7 @@ export interface OrbisSnapshot {
     readonly progress: ProgressSnapshot | null
     readonly totals: ScanTotals | null
     readonly error: string | null
+    readonly resume?: { readonly available: boolean; readonly checkpointedAt: string }
   }
 }
 
@@ -95,6 +96,7 @@ export interface OrbisApi {
   startScan(): Promise<OrbisSnapshot>
   chooseFolder(): Promise<OrbisSnapshot>
   cancelScan(): Promise<OrbisSnapshot>
+  discardSavedScan(): Promise<OrbisSnapshot>
   rescan(): Promise<OrbisSnapshot>
   focusNode(id: string): Promise<OrbisSnapshot>
   revealNode(id: string): Promise<void>
@@ -107,6 +109,7 @@ export const IPC = {
   startScan: "orbis:start-scan",
   chooseFolder: "orbis:choose-folder",
   cancelScan: "orbis:cancel-scan",
+  discardSavedScan: "orbis:discard-saved-scan",
   rescan: "orbis:rescan",
   focusNode: "orbis:focus-node",
   revealNode: "orbis:reveal-node",
@@ -139,6 +142,7 @@ function isScan(value: unknown): boolean {
   if (!statuses.includes(value.status as ScanStatus) || !integer(value.generation) || value.generation < 0) return false
   if (value.progress !== null && !isProgress(value.progress)) return false
   if (value.totals !== null && !isTotals(value.totals)) return false
+  if (value.resume !== undefined && (!isRecord(value.resume) || typeof value.resume.available !== 'boolean' || typeof value.resume.checkpointedAt !== 'string')) return false
   return value.error === null || typeof value.error === "string"
 }
 

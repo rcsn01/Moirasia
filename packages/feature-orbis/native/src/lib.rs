@@ -56,7 +56,7 @@ impl DirectoryCursor {
         if self.closed {
             return Ok(empty_page(true));
         }
-        let safe_limit = limit.clamp(1, 32) as usize;
+        let safe_limit = clamp_page_limit(limit);
         #[cfg(target_os = "macos")]
         {
             if let Some(names) = self.fallback_names.as_ref() {
@@ -74,28 +74,41 @@ impl DirectoryCursor {
                     entries,
                 });
             }
-            if self.pending_bulk.is_empty() && !self.bulk_done {
-                match read_bulk_names(self.file.as_raw_fd()) {
-                    Ok(names) if names.is_empty() => self.bulk_done = true,
-                    Ok(names) => self.pending_bulk.extend(names),
-                    Err(_) => {
-                        self.fallback_names =
-                            Some(read_fallback_names(&self.path, &self.emitted_names)?);
-                        return self.read_page(limit);
-                    }
-                }
-            }
+            let (names, bulk_error) = fill_requested_names(
+                &mut self.pending_bulk,
+                &mut self.bulk_done,
+                safe_limit,
+                || read_bulk_names(self.file.as_raw_fd()),
+            );
+            let bulk_entries = names.len();
             let mut entries = Vec::with_capacity(safe_limit);
-            while entries.len() < safe_limit {
-                let Some(name) = self.pending_bulk.pop_front() else {
-                    break;
-                };
+            for name in names {
                 self.emitted_names.insert(name.clone());
                 entries.push(metadata_entry(&self.path, &name, self.parent_device));
             }
+            if bulk_error.is_some() {
+                let fallback_names = read_fallback_names(&self.path, &self.emitted_names)?;
+                let take = (safe_limit - entries.len()).min(fallback_names.len());
+                entries.extend(
+                    fallback_names[..take]
+                        .iter()
+                        .map(|name| metadata_entry(&self.path, name, self.parent_device)),
+                );
+                self.fallback_index = take;
+                self.fallback_names = Some(fallback_names);
+                return Ok(MetadataPage {
+                    done: self
+                        .fallback_names
+                        .as_ref()
+                        .is_some_and(|fallback| self.fallback_index == fallback.len()),
+                    bulk_entries: bulk_entries as i64,
+                    fallback_entries: (entries.len() - bulk_entries) as i64,
+                    entries,
+                });
+            }
             let done = self.bulk_done && self.pending_bulk.is_empty();
             return Ok(MetadataPage {
-                bulk_entries: entries.len() as i64,
+                bulk_entries: bulk_entries as i64,
                 fallback_entries: 0,
                 entries,
                 done,
@@ -146,6 +159,34 @@ pub fn open_directory(path: String) -> Result<DirectoryCursor> {
             "getattrlistbulk is only available on macOS",
         ))
     }
+}
+
+fn clamp_page_limit(limit: u32) -> usize {
+    limit.clamp(1, 1_024) as usize
+}
+
+fn fill_requested_names<E>(
+    pending: &mut VecDeque<String>,
+    done: &mut bool,
+    limit: usize,
+    mut refill: impl FnMut() -> std::result::Result<Vec<String>, E>,
+) -> (Vec<String>, Option<E>) {
+    let mut names = Vec::with_capacity(limit);
+    while names.len() < limit {
+        if let Some(name) = pending.pop_front() {
+            names.push(name);
+            continue;
+        }
+        if *done {
+            break;
+        }
+        match refill() {
+            Ok(chunk) if chunk.is_empty() => *done = true,
+            Ok(chunk) => pending.extend(chunk),
+            Err(error) => return (names, Some(error)),
+        }
+    }
+    (names, None)
 }
 
 fn empty_page(done: bool) -> MetadataPage {
@@ -301,6 +342,29 @@ fn io_error(error: std::io::Error) -> Error {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn clamps_page_limits_to_supported_range() {
+        assert_eq!(clamp_page_limit(0), 1);
+        assert_eq!(clamp_page_limit(512), 512);
+        assert_eq!(clamp_page_limit(2_048), 1_024);
+    }
+
+    #[test]
+    fn fills_a_page_across_multiple_bulk_reads() {
+        let mut pending = VecDeque::new();
+        let mut done = false;
+        let mut chunks = VecDeque::from([
+            vec!["one".to_owned(), "two".to_owned()],
+            vec!["three".to_owned(), "four".to_owned()],
+        ]);
+        let (names, error) = fill_requested_names(&mut pending, &mut done, 3, || {
+            Ok::<_, ()>(chunks.pop_front().unwrap_or_default())
+        });
+        assert!(error.is_none());
+        assert_eq!(names, ["one", "two", "three"]);
+        assert_eq!(pending, VecDeque::from(["four".to_owned()]));
+    }
 
     #[test]
     fn empty_pages_are_terminal() {

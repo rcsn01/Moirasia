@@ -1,4 +1,6 @@
 import { DatabaseSync, type StatementSync } from "node:sqlite"
+import { createHmac, randomBytes } from "node:crypto"
+import { join } from "node:path"
 import type { Breadcrumb, DirectoryScanState, NodeSummary, SizeAccuracy } from "../shared/contracts"
 import type { FolderSizeEstimate } from "./scan-metadata"
 import type { ChartDataSource } from "./index-store"
@@ -22,7 +24,29 @@ export interface HardLinkOwner {
   readonly pathKey: string
 }
 
-type State = "building" | "committed" | "rolled-back" | "closed"
+type State = "building" | "paused" | "committed" | "rolled-back" | "closed"
+
+export interface ProgressiveConstructionOptions {
+  readonly scanId: string
+  readonly nodeIdSeed?: string
+  readonly journalDevice: string
+  readonly journalUuid: string
+  readonly journalBaseline: string
+}
+
+export interface ProgressiveSemanticTotals {
+  readonly scannedItems: number
+  readonly discoveredBytes: number
+  readonly skippedItems: number
+  readonly unreadableItems: number
+  readonly disappearingItems: number
+  readonly symlinks: number
+  readonly nestedMounts: number
+  readonly duplicateHardLinks: number
+  readonly bulkMetadataEntries: number
+  readonly fallbackMetadataEntries: number
+  readonly activeElapsedMs: number
+}
 
 export class ProgressiveScanDatabase implements ChartDataSource {
   readonly #database: DatabaseSync
@@ -32,11 +56,19 @@ export class ProgressiveScanDatabase implements ChartDataSource {
   #state: State = "building"
   #rootNodeId: string | undefined
 
-  constructor(path: string) {
+  static create(path: string, options: ProgressiveConstructionOptions): ProgressiveScanDatabase {
+    return new ProgressiveScanDatabase(path, options, false)
+  }
+
+  static openResumable(path: string): ProgressiveScanDatabase {
+    return new ProgressiveScanDatabase(path, undefined, true)
+  }
+
+  constructor(path: string, options?: ProgressiveConstructionOptions, openExisting = false) {
     this.#database = new DatabaseSync(path)
     try {
       this.#database.exec("PRAGMA journal_mode=DELETE; PRAGMA synchronous=FULL; PRAGMA foreign_keys=ON;")
-      this.#database.exec(`
+      if (!openExisting) this.#database.exec(`
         CREATE TABLE nodes (
           id TEXT PRIMARY KEY,
           parent_id TEXT REFERENCES nodes(id) ON DELETE CASCADE,
@@ -118,7 +150,40 @@ export class ProgressiveScanDatabase implements ChartDataSource {
           indexed_items INTEGER NOT NULL,
           physical_size_coverage REAL NOT NULL
         );
+        CREATE TABLE scan_run (
+          singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
+          scan_id TEXT NOT NULL UNIQUE,
+          node_id_seed TEXT NOT NULL,
+          phase TEXT NOT NULL CHECK (phase IN ('traversing', 'awaiting-reconciliation', 'finalizing')),
+          checkpoint_sequence INTEGER NOT NULL DEFAULT 0,
+          active_elapsed_ms INTEGER NOT NULL DEFAULT 0,
+          journal_device TEXT NOT NULL,
+          journal_uuid TEXT NOT NULL,
+          journal_baseline TEXT NOT NULL,
+          drained_through TEXT NOT NULL,
+          checkpointed_at TEXT NOT NULL
+        );
+        CREATE TABLE scan_counters (
+          singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
+          bulk_metadata_entries INTEGER NOT NULL DEFAULT 0,
+          fallback_metadata_entries INTEGER NOT NULL DEFAULT 0
+        );
+        CREATE TABLE dirty_scopes (path TEXT PRIMARY KEY);
       `)
+      if (!openExisting && options) {
+        const seed = options.nodeIdSeed ?? randomBytes(32).toString('hex')
+        if (!/^[0-9a-f]{64}$/u.test(seed)) throw new Error('Invalid progressive scan node ID seed')
+        this.#database.prepare(`INSERT INTO scan_run (singleton, scan_id, node_id_seed, phase, journal_device, journal_uuid,
+          journal_baseline, drained_through, checkpointed_at) VALUES (1, ?, ?, 'traversing', ?, ?, ?, ?, ?)`)
+          .run(options.scanId, seed, options.journalDevice, options.journalUuid, options.journalBaseline, options.journalBaseline, new Date().toISOString())
+        this.#database.exec('INSERT INTO scan_counters (singleton) VALUES (1)')
+      }
+      if (openExisting) {
+        const root = this.#database.prepare('SELECT id FROM nodes WHERE parent_id IS NULL').get() as { id?: string } | undefined
+        this.#rootNodeId = root?.id
+        const run = this.#database.prepare('SELECT 1 AS found FROM scan_run WHERE singleton = 1').get() as { found?: number } | undefined
+        if (!run?.found) throw new Error('Construction database has no scan run')
+      }
       this.#insertNode = this.#database.prepare(`
         INSERT INTO nodes (id, parent_id, name, path, kind, own_bytes, size_bytes, device, inode, scan_state, enumeration_complete, depth)
         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
@@ -224,10 +289,18 @@ export class ProgressiveScanDatabase implements ChartDataSource {
   nextTask(focused: boolean): DirectoryTask | undefined {
     this.#assertBuilding()
     const row = this.#database.prepare(`
-      SELECT node_id AS id, path, depth, focused, entries_read AS entriesRead
-      FROM directory_tasks
-      WHERE focused = ? AND status IN ('queued', 'scanning')
-      ORDER BY CASE WHEN depth <= 6 THEN 0 ELSE 1 END, depth, enqueue_order
+      SELECT task.node_id AS id, task.path, task.depth, task.focused, task.entries_read AS entriesRead
+      FROM directory_tasks task
+      WHERE task.focused = ? AND task.status IN ('queued', 'scanning')
+        AND NOT EXISTS (
+          WITH RECURSIVE ancestors(id, parent_id, enumeration_complete) AS (
+            SELECT parent.id, parent.parent_id, parent.enumeration_complete
+            FROM nodes child JOIN nodes parent ON parent.id = child.parent_id WHERE child.id = task.node_id
+            UNION ALL SELECT parent.id, parent.parent_id, parent.enumeration_complete
+            FROM nodes parent JOIN ancestors child ON parent.id = child.parent_id
+          ) SELECT 1 FROM ancestors WHERE enumeration_complete = 0
+        )
+      ORDER BY CASE WHEN task.depth <= 6 THEN 0 ELSE 1 END, task.depth, task.enqueue_order
       LIMIT 1
     `).get(focused ? 1 : 0) as unknown as { id: string; path: string; depth: number; focused: number; entriesRead: number } | undefined
     return row ? { id: row.id, path: row.path, depth: Number(row.depth), focused: Boolean(row.focused), entriesRead: Number(row.entriesRead) } : undefined
@@ -243,6 +316,20 @@ export class ProgressiveScanDatabase implements ChartDataSource {
     this.#database.prepare("UPDATE directory_tasks SET status = 'scanning' WHERE node_id = ? AND status = 'queued'").run(id)
     this.#database.prepare("UPDATE nodes SET scan_state = 'scanning' WHERE id = ? AND scan_state = 'queued'").run(id)
     this.#database.prepare("UPDATE directory_observations SET enumeration_status = 'scanning' WHERE node_id = ? AND enumeration_status = 'queued'").run(id)
+  }
+
+  applyMetadataBatch<T>(operation: () => T): T {
+    this.#assertBuilding()
+    this.#database.exec('SAVEPOINT metadata_batch')
+    try {
+      const result = operation()
+      this.#database.exec('RELEASE metadata_batch')
+      return result
+    } catch (error) {
+      this.#database.exec('ROLLBACK TO metadata_batch')
+      this.#database.exec('RELEASE metadata_batch')
+      throw error
+    }
   }
 
   advanceTask(id: string, count: number): void {
@@ -362,6 +449,118 @@ export class ProgressiveScanDatabase implements ChartDataSource {
     this.#database.prepare("DELETE FROM nodes WHERE id = ?").run(id)
   }
 
+  get scanId(): string | undefined {
+    const row = this.#database.prepare('SELECT scan_id AS scanId FROM scan_run WHERE singleton = 1').get() as { scanId?: string } | undefined
+    return row?.scanId
+  }
+
+  get nodeIdSeed(): string {
+    const row = this.#database.prepare('SELECT node_id_seed AS seed FROM scan_run WHERE singleton = 1').get() as { seed?: string } | undefined
+    if (!row?.seed) throw new Error('Construction database has no node ID seed')
+    return row.seed
+  }
+
+  get checkpointSequence(): number {
+    const row = this.#database.prepare('SELECT checkpoint_sequence AS sequence FROM scan_run WHERE singleton = 1').get() as { sequence?: number } | undefined
+    return Number(row?.sequence ?? 0)
+  }
+
+  checkpoint(activeElapsedDeltaMs = 0): number {
+    this.#assertBuilding()
+    const started = Date.now()
+    this.#database.prepare(`UPDATE scan_run SET checkpoint_sequence = checkpoint_sequence + 1,
+      active_elapsed_ms = active_elapsed_ms + ?, checkpointed_at = ? WHERE singleton = 1`)
+      .run(Math.max(0, Math.floor(activeElapsedDeltaMs)), new Date().toISOString())
+    measureScan('database-checkpoint', () => this.#database.exec('COMMIT'))
+    this.#database.exec('BEGIN')
+    void started
+    return this.checkpointSequence
+  }
+
+  pause(activeElapsedDeltaMs = 0): number {
+    const sequence = this.checkpoint(activeElapsedDeltaMs)
+    this.#database.exec('ROLLBACK')
+    this.#state = 'paused'
+    this.#close()
+    return sequence
+  }
+
+  setPhase(phase: 'traversing' | 'awaiting-reconciliation' | 'finalizing'): void {
+    this.#database.prepare('UPDATE scan_run SET phase = ? WHERE singleton = 1').run(phase)
+  }
+
+  addMetadataCounters(bulk: number, fallback: number): void {
+    this.#database.prepare(`UPDATE scan_counters SET bulk_metadata_entries = bulk_metadata_entries + ?,
+      fallback_metadata_entries = fallback_metadata_entries + ? WHERE singleton = 1`)
+      .run(Math.max(0, Math.floor(bulk)), Math.max(0, Math.floor(fallback)))
+  }
+
+  get drainedThrough(): string {
+    const row = this.#database.prepare('SELECT drained_through AS cursor FROM scan_run WHERE singleton = 1').get() as { cursor?: string } | undefined
+    return row?.cursor ?? '0'
+  }
+
+  get dirtyScopes(): readonly string[] {
+    return (this.#database.prepare('SELECT path FROM dirty_scopes ORDER BY path').all() as unknown as Array<{ path: string }>).map((row) => row.path)
+  }
+
+  setJournalDrain(scopes: readonly string[], throughEventId: string): void {
+    this.#assertBuilding()
+    if (scopes.length > 1024) throw new Error('resume-dirty-scopes-unbounded')
+    const insert = this.#database.prepare('INSERT OR IGNORE INTO dirty_scopes (path) VALUES (?)')
+    for (const path of scopes) insert.run(path)
+    const count = this.#database.prepare('SELECT COUNT(*) AS count FROM dirty_scopes').get() as { count: number }
+    if (Number(count.count) > 1024) throw new Error('resume-dirty-scopes-unbounded')
+    this.#database.prepare('UPDATE scan_run SET drained_through = ? WHERE singleton = 1').run(throughEventId)
+  }
+
+  semanticTotals(): ProgressiveSemanticTotals {
+    const nodes = this.#database.prepare(`SELECT COUNT(*) AS scannedItems,
+      COALESCE((SELECT size_bytes FROM nodes WHERE parent_id IS NULL), 0) AS discoveredBytes FROM nodes`).get() as { scannedItems: number; discoveredBytes: number }
+    const observations = this.#database.prepare(`SELECT COALESCE(SUM(direct_skipped_count), 0) AS skipped,
+      COALESCE(SUM(direct_unreadable_count), 0) AS unreadable, COALESCE(SUM(direct_disappearing_count), 0) AS disappearing,
+      COALESCE(SUM(direct_symlink_count), 0) AS symlinks, COALESCE(SUM(direct_nested_mount_count), 0) AS mounts,
+      COALESCE(SUM(direct_duplicate_count), 0) AS duplicates FROM directory_observations`).get() as Record<string, number>
+    const counters = this.#database.prepare(`SELECT bulk_metadata_entries AS bulk, fallback_metadata_entries AS fallback
+      FROM scan_counters WHERE singleton = 1`).get() as { bulk?: number; fallback?: number } | undefined
+    const run = this.#database.prepare('SELECT active_elapsed_ms AS elapsed FROM scan_run WHERE singleton = 1').get() as { elapsed?: number } | undefined
+    return {
+      scannedItems: Number(nodes.scannedItems), discoveredBytes: Number(nodes.discoveredBytes), skippedItems: Number(observations.skipped),
+      unreadableItems: Number(observations.unreadable), disappearingItems: Number(observations.disappearing), symlinks: Number(observations.symlinks),
+      nestedMounts: Number(observations.mounts), duplicateHardLinks: Number(observations.duplicates),
+      bulkMetadataEntries: Number(counters?.bulk ?? 0), fallbackMetadataEntries: Number(counters?.fallback ?? 0), activeElapsedMs: Number(run?.elapsed ?? 0)
+    }
+  }
+
+  recoverIncompleteDirectories(): { readonly retained: number; readonly reset: number } {
+    this.#assertBuilding()
+    this.#database.exec(`
+      CREATE TEMP TABLE recovery_roots (id TEXT PRIMARY KEY);
+      INSERT INTO recovery_roots SELECT task.node_id FROM directory_tasks task
+      WHERE task.status IN ('queued', 'scanning') AND NOT EXISTS (
+        WITH RECURSIVE ancestors(id, parent_id) AS (
+          SELECT parent.id, parent.parent_id FROM nodes child JOIN nodes parent ON parent.id = child.parent_id WHERE child.id = task.node_id
+          UNION ALL SELECT parent.id, parent.parent_id FROM nodes parent JOIN ancestors child ON parent.id = child.parent_id
+        ) SELECT 1 FROM ancestors JOIN directory_tasks ancestor_task ON ancestor_task.node_id = ancestors.id
+          WHERE ancestor_task.status IN ('queued', 'scanning')
+      );
+      DELETE FROM file_aliases WHERE parent_id IN (SELECT id FROM recovery_roots);
+      DELETE FROM nodes WHERE parent_id IN (SELECT id FROM recovery_roots);
+      DELETE FROM hardlink_owners;
+      UPDATE nodes SET size_bytes = own_bytes, direct_children = 0, descendant_count = 0,
+        unreadable_count = own_unreadable, scan_state = 'queued', enumeration_complete = 0 WHERE id IN (SELECT id FROM recovery_roots);
+      UPDATE directory_tasks SET status = 'queued', entries_read = 0 WHERE node_id IN (SELECT id FROM recovery_roots);
+      UPDATE directory_observations SET direct_skipped_count = 0, direct_unreadable_count = 0,
+        direct_disappearing_count = 0, direct_symlink_count = 0, direct_nested_mount_count = 0,
+        direct_duplicate_count = 0, enumeration_status = 'queued' WHERE node_id IN (SELECT id FROM recovery_roots);
+    `)
+    this.#rebuildConstructionState()
+    const counts = this.#database.prepare(`SELECT (SELECT COUNT(*) FROM directory_tasks WHERE status IN ('complete', 'unreadable')) AS retained,
+      (SELECT COUNT(*) FROM recovery_roots) AS reset`).get() as { retained: number; reset: number }
+    this.#database.exec('DROP TABLE recovery_roots')
+    return { retained: Number(counts.retained), reset: Number(counts.reset) }
+  }
+
   bumpRevision(): number {
     this.#database.prepare("UPDATE scan_state SET value = value + 1 WHERE key = 'revision'").run()
     return this.revision
@@ -424,6 +623,10 @@ export class ProgressiveScanDatabase implements ChartDataSource {
     this.#insertMetadata.run("indexRevision", String(meta.indexRevision ?? 1))
     this.#insertMetadata.run("capturedAt", meta.capturedAt ?? new Date().toISOString())
     this.#insertMetadata.run("refreshedAt", meta.refreshedAt ?? meta.capturedAt ?? new Date().toISOString())
+    if (meta.resume) {
+      this.#insertMetadata.run('resumeDrainedThrough', meta.resume.drainedThrough)
+      this.#insertMetadata.run('resumeDirtyScopes', JSON.stringify(meta.resume.dirtyScopes))
+    }
   }
 
   finalize(): void {
@@ -442,6 +645,9 @@ export class ProgressiveScanDatabase implements ChartDataSource {
       DROP TABLE scan_state;
       DROP TABLE size_estimates;
       DROP TABLE estimate_roots;
+      DROP TABLE dirty_scopes;
+      DROP TABLE scan_counters;
+      DROP TABLE scan_run;
     `)
   }
 
@@ -453,6 +659,8 @@ export class ProgressiveScanDatabase implements ChartDataSource {
     finally { this.#close() }
   }
 
+  discard(): void { this.abort() }
+
   abort(): void {
     if (this.#state === "closed" || this.#state === "rolled-back") return
     if (this.#state === "building") {
@@ -460,6 +668,48 @@ export class ProgressiveScanDatabase implements ChartDataSource {
       this.#state = "rolled-back"
     }
     try { this.#close() } catch { /* Preserve scan error. */ }
+  }
+
+  #rebuildConstructionState(): void {
+    this.#database.prepare(`UPDATE directory_observations SET direct_skipped_count = MAX(0, direct_skipped_count - direct_duplicate_count),
+      direct_duplicate_count = 0`).run()
+    const aliases = this.#database.prepare(`SELECT parent_id AS parentId, name, path_key AS pathKey, device, inode,
+      allocated_bytes AS allocatedBytes FROM file_aliases`).all() as unknown as Array<{ parentId: string; name: string; pathKey: string; device: string; inode: string; allocatedBytes: number }>
+    const groups = new Map<string, typeof aliases>()
+    for (const alias of aliases) {
+      if (alias.device === '' || alias.inode === '') continue
+      const key = `${alias.device}\0${alias.inode}`
+      const group = groups.get(key) ?? []
+      group.push(alias)
+      groups.set(key, group)
+    }
+    const seed = Buffer.from(this.nodeIdSeed, 'hex')
+    for (const group of groups.values()) {
+      group.sort((left, right) => Buffer.compare(Buffer.from(left.pathKey, 'utf8'), Buffer.from(right.pathKey, 'utf8')))
+      const owner = group[0]!
+      const existing = this.#database.prepare("SELECT id FROM nodes WHERE kind = 'file' AND device = ? AND inode = ?").all(owner.device, owner.inode) as unknown as Array<{ id: string }>
+      for (const row of existing) this.#database.prepare('DELETE FROM nodes WHERE id = ?').run(row.id)
+      const parent = this.#database.prepare('SELECT path, depth FROM nodes WHERE id = ?').get(owner.parentId) as { path?: string; depth?: number } | undefined
+      if (!parent?.path) continue
+      const id = `n-${createHmac('sha256', seed).update(owner.parentId).update('\0').update(owner.name).digest('hex').slice(0, 32)}`
+      this.#insertNode.run(id, owner.parentId, owner.name, join(parent.path, owner.name), 'file', owner.allocatedBytes, owner.allocatedBytes, owner.device, owner.inode, 'complete', 1, Number(parent.depth ?? 0) + 1)
+      this.setHardLinkOwner(owner.device, owner.inode, id, owner.pathKey)
+      for (const duplicate of group.slice(1)) this.#database.prepare(`UPDATE directory_observations SET direct_skipped_count = direct_skipped_count + 1,
+        direct_duplicate_count = direct_duplicate_count + 1 WHERE node_id = ?`).run(duplicate.parentId)
+    }
+    this.#database.exec(`
+      UPDATE nodes SET direct_children = (SELECT COUNT(*) FROM nodes child WHERE child.parent_id = nodes.id);
+      UPDATE nodes SET size_bytes = own_bytes, descendant_count = 0, unreadable_count = own_unreadable;
+      WITH RECURSIVE closure(ancestor, descendant) AS (
+        SELECT parent_id, id FROM nodes WHERE parent_id IS NOT NULL
+        UNION ALL SELECT nodes.parent_id, closure.descendant FROM nodes JOIN closure ON nodes.id = closure.ancestor WHERE nodes.parent_id IS NOT NULL
+      ), totals AS (
+        SELECT ancestor, SUM(nodes.own_bytes) AS bytes, COUNT(*) AS descendants, SUM(nodes.own_unreadable) AS unreadable
+        FROM closure JOIN nodes ON nodes.id = closure.descendant GROUP BY ancestor
+      ) UPDATE nodes SET size_bytes = own_bytes + COALESCE((SELECT bytes FROM totals WHERE ancestor = nodes.id), 0),
+        descendant_count = COALESCE((SELECT descendants FROM totals WHERE ancestor = nodes.id), 0),
+        unreadable_count = own_unreadable + COALESCE((SELECT unreadable FROM totals WHERE ancestor = nodes.id), 0);
+    `)
   }
 
   #applyAncestorDelta(parentId: string | null, bytes: number, descendants: number, unreadable: number): void {

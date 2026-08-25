@@ -90,11 +90,13 @@ export class IndexManifestStore {
   }
 
   async cleanup(activeIndexFile?: string): Promise<void> {
+    const resumeFiles = await descriptorReferencedFiles(join(this.directory, 'scan-resume.json'))
     const entries = await readdir(this.directory, { withFileTypes: true }).catch(() => [])
     await Promise.all(entries
       .filter((entry) => entry.isFile() || entry.isSymbolicLink())
       .filter((entry) => OWNED_INDEX_FILE.test(entry.name))
       .filter((entry) => activeIndexFile === undefined || !isActiveArtifact(entry.name, activeIndexFile))
+      .filter((entry) => !resumeFiles.some((file) => isActiveArtifact(entry.name, file)))
       .map((entry) => rm(join(this.directory, entry.name), { force: true })))
     await Promise.all(entries
       .filter((entry) => entry.isDirectory() && !entry.isSymbolicLink() && OWNED_RECONCILIATION_DIRECTORY.test(entry.name))
@@ -125,6 +127,18 @@ function decimal(value: unknown): value is string {
 
 function positiveInteger(value: unknown): value is number {
   return typeof value === 'number' && Number.isSafeInteger(value) && value >= 1
+}
+
+async function descriptorReferencedFiles(path: string): Promise<readonly string[]> {
+  try {
+    const stats = await lstat(path)
+    if (!stats.isFile() || stats.isSymbolicLink()) return []
+    const value = JSON.parse(await readFile(path, 'utf8')) as { scanId?: unknown; partialFile?: unknown; candidateFile?: unknown }
+    if (typeof value.scanId !== 'string' || !PUBLICATION_ID.test(value.scanId)) return []
+    const partial = `index-${value.scanId}.partial.sqlite`
+    const candidate = `index-${value.scanId}.sqlite`
+    return value.partialFile === partial && value.candidateFile === candidate ? [partial, candidate] : []
+  } catch { return [] }
 }
 
 async function syncDirectory(directory: string): Promise<void> {

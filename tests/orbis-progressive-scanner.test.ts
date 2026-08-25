@@ -209,6 +209,38 @@ describe('progressive Orbis scanner', () => {
     finally { database.close() }
   })
 
+  it('reads 32 root entries before the first preview and uses the configured batch afterward', async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'orbis-batch-policy-'))
+    cleanup.push(directory)
+    const root = join(directory, 'root')
+    const indexes = join(directory, 'indexes')
+    await mkdir(root, { recursive: true })
+    const events: string[] = []
+    const entries = Array.from({ length: 400 }, (_, index) => metadataEntry(`file-${index}`, 'file'))
+    const source: DirectoryMetadataSource = {
+      open: async () => {
+        let offset = 0
+        return {
+          readPage: async (limit) => {
+            events.push(`read:${limit}`)
+            const page = entries.slice(offset, offset + limit)
+            offset += page.length
+            return { entries: page, done: offset === entries.length, bulkEntries: page.length, fallbackEntries: 0 }
+          },
+          close: async () => undefined
+        }
+      }
+    }
+    const result = await scanFilesystem({
+      generation: 15, target: root, partialPath: join(indexes, 'partial.sqlite'), publishedPath: join(indexes, 'index.sqlite'),
+      indexDirectory: indexes, directoryMetadataSource: source, metadataBatchSize: 256,
+      onPreview: () => events.push('preview')
+    })
+    expect(events.slice(0, 3)).toEqual(['read:32', 'preview', 'read:256'])
+    expect(events.filter((event) => event.startsWith('read:'))).toEqual(['read:32', 'read:256', 'read:256'])
+    expect(result.totals.scannedItems).toBe(401)
+  })
+
   it('emits the first root-page preview before opening a descendant', async () => {
     const directory = await mkdtemp(join(tmpdir(), 'orbis-first-preview-'))
     cleanup.push(directory)

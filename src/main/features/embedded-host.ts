@@ -68,6 +68,7 @@ export class EmbeddedFeatureHost {
   }
 
   setActive(id: FeatureId | undefined): void {
+    if (this.#disposed || this.window.isDestroyed()) return
     if (id !== undefined && !isFeatureId(id)) throw new TypeError(`Invalid embedded feature '${String(id)}'`)
     if (this.#active === id) {
       this.#notify()

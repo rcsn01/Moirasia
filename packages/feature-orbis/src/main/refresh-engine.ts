@@ -1,16 +1,17 @@
 import { constants } from 'node:fs'
 import { copyFile, lstat, open, rename, statfs } from 'node:fs/promises'
-import { dirname, relative } from 'node:path'
+import { dirname, normalize, relative, resolve, sep } from 'node:path'
 import { DatabaseSync } from 'node:sqlite'
 import type { ChangeJournal } from './change-journal'
-import { createChangeJournal, nativeChangeJournalAddon } from './change-journal'
+import { createChangeJournal, FSEVENT_FLAGS, nativeChangeJournalAddon } from './change-journal'
 import { prepareDatabaseDirectory, readMetadata, removeDatabaseFiles } from './database'
 import { measureScanAsync, runWithScanDiagnostics } from './diagnostics'
+import { FullScanResumeStore, type FullScanResumeDescriptor } from './full-scan-resume'
 import type { IndexManifest, JournalCursor } from './index-manifest'
 import { planDirtyScopes, scanReplacementScopes } from './incremental-scanner'
 import { IncrementalFallbackError, replaceIndexSubtrees } from './persistent-index-database'
 import { loadNativeOrbisAddon } from './scan-metadata'
-import { ScanCanceledError, scanFilesystem, type ScanOptions, type ScanResult, type ScanTotals } from './scanner'
+import { ScanCanceledError, STARTUP_EXCLUSIONS, scanFilesystem, type ScanOptions, type ScanResult, type ScanTotals } from './scanner'
 
 export interface ActivePersistentIndex {
   readonly manifest: IndexManifest
@@ -41,6 +42,9 @@ async function refreshPersistentIndexImpl(request: RefreshRequest): Promise<Refr
   const addon = request.changeJournal ? undefined : await loadNativeOrbisAddon(request.nativeAddonPath)
   const journal = request.changeJournal ?? createChangeJournal(nativeChangeJournalAddon(addon))
   const activeCursor = request.active?.manifest.journal
+  const saved = journal && process.env.ORBIS_DISABLE_INCREMENTAL_SCAN !== '1'
+    ? await new FullScanResumeStore(request.indexDirectory).load(request.target) : { kind: 'none' as const }
+  if (saved.kind === 'construction' || saved.kind === 'candidate') return fullRefresh(request, journal)
   if (process.env.ORBIS_DISABLE_INCREMENTAL_SCAN === '1' || !request.active || !journal || !activeCursor) {
     return fullRefresh(request, journal)
   }
@@ -112,55 +116,85 @@ async function refreshPersistentIndexImpl(request: RefreshRequest): Promise<Refr
 }
 
 async function fullRefresh(request: RefreshRequest, journal: ChangeJournal | undefined, fallbackReason?: string, raceRetry = 0): Promise<RefreshOutcome> {
-  await Promise.all([removeDatabaseFiles(request.partialPath), removeDatabaseFiles(request.publishedPath)])
-  const checkpoint = journal && process.env.ORBIS_DISABLE_INCREMENTAL_SCAN !== '1'
-    ? safeCheckpoint(journal, request.target)
+  const resumeStore = new FullScanResumeStore(request.indexDirectory)
+  const resumable = journal && process.env.ORBIS_DISABLE_INCREMENTAL_SCAN !== '1'
+    ? await prepareResumableFullScan(request, journal, resumeStore)
     : undefined
-  let result = await scanFilesystem(request)
+  if (!resumable) await Promise.all([removeDatabaseFiles(request.partialPath), removeDatabaseFiles(request.publishedPath)])
+  const checkpoint = resumable
+    ? { device: resumable.descriptor.journalDevice, journalUuid: resumable.descriptor.journalUuid, eventId: resumable.descriptor.journalBaseline }
+    : journal && process.env.ORBIS_DISABLE_INCREMENTAL_SCAN !== '1' ? safeCheckpoint(journal, request.target) : undefined
+  let result: ScanResult
+  try {
+    result = resumable?.candidate
+      ? readCandidateResult(resumable.candidate, request.generation)
+      : await scanFilesystem({ ...request, partialPath: resumable?.partialPath ?? request.partialPath, publishedPath: resumable?.candidatePath ?? request.publishedPath,
+          ...(resumable ? {
+            resumable: { descriptor: resumable.descriptor, store: resumeStore, resume: resumable.resume },
+            drainResumeJournal: createResumeJournalDrain(request, journal!, resumable.descriptor)
+          } : {}) })
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error)
+    if (resumable && message.startsWith('resume-invalidated:')) {
+      await resumeStore.discard(resumable.descriptor.scanId)
+      return fullRefresh(request, journal, message.slice('resume-invalidated:'.length), raceRetry)
+    }
+    throw error
+  }
+  const privateDrain = result.metadata?.resume
   let cursor = checkpoint?.journalUuid && checkpoint.device === metadataTargetDevice(result.publishedPath)
-    ? { uuid: checkpoint.journalUuid, eventId: checkpoint.eventId }
+    ? { uuid: checkpoint.journalUuid, eventId: privateDrain?.drainedThrough ?? checkpoint.eventId }
     : null
 
   // Reconcile changes after the pre-traversal fence. Retry one full traversal
   // when that fence is untrustworthy; a repeated failure discards the candidate
   // rather than publishing a snapshot invalidated during traversal.
   if (cursor && journal) {
+    let reconciled = false
     const batch = await measureScanAsync('journal-replay', async () => journal.readChanges(request.target, cursor!, MAX_EVENTS, HISTORY_TIMEOUT_MS))
     if (batch.requiresFullScan) return retryFullRefresh(request, journal, batch.reason ?? 'post-scan-history-unavailable', raceRetry)
-    else if (batch.events.length === 0) cursor = { uuid: cursor.uuid, eventId: batch.throughEventId }
+    else if (batch.events.length === 0 && (privateDrain?.dirtyScopes.length ?? 0) === 0) cursor = { uuid: cursor.uuid, eventId: batch.throughEventId }
     else {
       try {
         const lookup = createIdentityLookup(result.publishedPath, request.target)
         let plan
-        try { plan = await planDirtyScopes({ target: request.target, indexDirectory: request.indexDirectory, events: batch.events, ...(request.startupRoot !== undefined ? { startupRoot: request.startupRoot } : {}), lookupIdentity: lookup.lookup }) }
+        try { plan = batch.events.length === 0
+          ? { kind: 'incremental' as const, scopes: [] as readonly string[] }
+          : await planDirtyScopes({ target: request.target, indexDirectory: request.indexDirectory, events: batch.events, ...(request.startupRoot !== undefined ? { startupRoot: request.startupRoot } : {}), lookupIdentity: lookup.lookup }) }
         finally { lookup.close() }
         if (plan.kind === 'full') return retryFullRefresh(request, journal, plan.reason, raceRetry)
-        if (plan.scopes.length === 0) cursor = { uuid: cursor.uuid, eventId: batch.throughEventId }
+        const reconciliationScopes = coalesceAbsoluteScopes([...(privateDrain?.dirtyScopes ?? []), ...plan.scopes])
+        if (reconciliationScopes.length === 0) cursor = { uuid: cursor.uuid, eventId: batch.throughEventId }
         else {
-          const scans = await scanReplacementScopes({
-            generation: request.generation, indexDirectory: request.indexDirectory, scopes: plan.scopes,
-            ...(request.nativeAddonPath ? { nativeAddonPath: request.nativeAddonPath } : {}),
-            ...(request.directoryMetadataSource ? { directoryMetadataSource: request.directoryMetadataSource } : {}),
-            ...(request.fileSystem ? { fileSystem: request.fileSystem } : {}),
-            ...(request.metadataConcurrency !== undefined ? { metadataConcurrency: request.metadataConcurrency } : {}),
-            ...(request.signal ? { signal: request.signal } : {})
-          })
-          try {
-            const volume = await volumeFor(request.target)
-            const updated = replaceIndexSubtrees({
-              candidatePath: result.publishedPath, target: request.target, replacements: scans.replacements,
-              indexRevision: metadataRevision(result.publishedPath) + 1,
-              capacityBytes: volume.capacityBytes, freeBytes: volume.freeBytes, elapsedMs: result.totals.elapsedMs,
-              targetAllocatedBytes: volume.targetAllocatedBytes
-            })
-            cursor = { uuid: cursor.uuid, eventId: batch.throughEventId }
-            result = { ...result, rootId: updated.rootId, scannedBytes: updated.scannedBytes, totals: updated.totals, capacityBytes: volume.capacityBytes, freeBytes: volume.freeBytes }
-          } finally { await scans.cleanup() }
+          result = await reconcileFullCandidate(request, result, reconciliationScopes)
+          reconciled = true
+          cursor = { uuid: cursor.uuid, eventId: batch.throughEventId }
         }
       } catch (error) {
         if (error instanceof ScanCanceledError || request.signal?.aborted) throw error
         return retryFullRefresh(request, journal, 'post-scan-reconciliation-failed', raceRetry)
       }
+    }
+    if (reconciled) {
+      let closed = false
+      for (let attempt = 0; attempt < 2; attempt += 1) {
+        const closing = await measureScanAsync('journal-replay', async () => journal.readChanges(request.target, cursor!, MAX_EVENTS, HISTORY_TIMEOUT_MS))
+        if (closing.requiresFullScan) return retryFullRefresh(request, journal, closing.reason ?? 'reconciliation-history-unavailable', raceRetry)
+        const newEvents = closing.events.filter((event) => BigInt(event.eventId) > BigInt(cursor!.eventId))
+        if (newEvents.length === 0) {
+          cursor = { uuid: cursor.uuid, eventId: closing.throughEventId }
+          closed = true
+          break
+        }
+        const lookup = createIdentityLookup(result.publishedPath, request.target)
+        let closingPlan
+        try { closingPlan = await planDirtyScopes({ target: request.target, indexDirectory: request.indexDirectory, events: newEvents, ...(request.startupRoot !== undefined ? { startupRoot: request.startupRoot } : {}), lookupIdentity: lookup.lookup }) }
+        finally { lookup.close() }
+        if (closingPlan.kind === 'full') return retryFullRefresh(request, journal, closingPlan.reason, raceRetry)
+        if (closingPlan.scopes.length > 0) result = await reconcileFullCandidate(request, result, closingPlan.scopes)
+        cursor = { uuid: cursor.uuid, eventId: closing.throughEventId }
+      }
+      if (!closed) return retryFullRefresh(request, journal, 'reconciliation-window-busy', raceRetry)
     }
   }
   return {
@@ -169,7 +203,142 @@ async function fullRefresh(request: RefreshRequest, journal: ChangeJournal | und
   }
 }
 
+async function reconcileFullCandidate(request: RefreshRequest, result: ScanResult, scopes: readonly string[]): Promise<ScanResult> {
+  const scans = await scanReplacementScopes({
+    generation: request.generation, indexDirectory: request.indexDirectory, scopes,
+    ...(request.nativeAddonPath ? { nativeAddonPath: request.nativeAddonPath } : {}),
+    ...(request.directoryMetadataSource ? { directoryMetadataSource: request.directoryMetadataSource } : {}),
+    ...(request.fileSystem ? { fileSystem: request.fileSystem } : {}),
+    ...(request.metadataConcurrency !== undefined ? { metadataConcurrency: request.metadataConcurrency } : {}),
+    ...(request.signal ? { signal: request.signal } : {})
+  })
+  try {
+    const volume = await volumeFor(request.target)
+    const updated = replaceIndexSubtrees({
+      candidatePath: result.publishedPath, target: request.target, replacements: scans.replacements,
+      indexRevision: metadataRevision(result.publishedPath) + 1, capacityBytes: volume.capacityBytes,
+      freeBytes: volume.freeBytes, elapsedMs: result.totals.elapsedMs, targetAllocatedBytes: volume.targetAllocatedBytes
+    })
+    return { ...result, rootId: updated.rootId, scannedBytes: updated.scannedBytes, totals: updated.totals, capacityBytes: volume.capacityBytes, freeBytes: volume.freeBytes }
+  } finally { await scans.cleanup() }
+}
+
+function createResumeJournalDrain(request: RefreshRequest, journal: ChangeJournal, descriptor: FullScanResumeDescriptor) {
+  return (eventId: string): { readonly throughEventId: string; readonly scopes: readonly string[]; readonly restartReason?: string } => {
+    const batch = journal.readChanges(request.target, { uuid: descriptor.journalUuid, eventId }, MAX_EVENTS, HISTORY_TIMEOUT_MS)
+    if (batch.requiresFullScan) return { throughEventId: eventId, scopes: [], restartReason: batch.reason ?? 'history-unavailable' }
+    const renameCount = batch.events.filter((event) => event.flags & FSEVENT_FLAGS.itemRenamed).length
+    if (renameCount % 2 !== 0) return { throughEventId: eventId, scopes: [], restartReason: 'ambiguous-rename' }
+    const target = normalize(resolve(request.target))
+    const indexDirectory = normalize(resolve(request.indexDirectory))
+    const requested: string[] = []
+    for (const event of batch.events) {
+      if (event.relativePath === '') return { throughEventId: eventId, scopes: [], restartReason: 'target-root-dirty' }
+      const path = normalize(resolve(target, event.relativePath))
+      if (!withinPath(path, target)) return { throughEventId: eventId, scopes: [], restartReason: 'malformed-history' }
+      if (withinPath(path, indexDirectory)) continue
+      if (target === '/' && request.startupRoot !== false && STARTUP_EXCLUSIONS.some((excluded) => withinPath(path, excluded))) continue
+      const isDirectory = Boolean(event.flags & FSEVENT_FLAGS.itemIsDir)
+      const membership = Boolean(event.flags & (FSEVENT_FLAGS.itemCreated | FSEVENT_FLAGS.itemRemoved | FSEVENT_FLAGS.itemRenamed))
+      requested.push(isDirectory || event.flags & FSEVENT_FLAGS.mustScanSubDirs ? path : dirname(path))
+      if (isDirectory && membership) requested.push(dirname(path))
+    }
+    const scopes = coalesceAbsoluteScopes(requested)
+    if (scopes.some((scope) => scope === target)) return { throughEventId: eventId, scopes: [], restartReason: 'target-root-dirty' }
+    if (scopes.length > 1024) return { throughEventId: eventId, scopes: [], restartReason: 'too-many-dirty-scopes' }
+    return { throughEventId: batch.throughEventId, scopes }
+  }
+}
+
+function coalesceAbsoluteScopes(paths: readonly string[]): readonly string[] {
+  const sorted = [...new Set(paths.map((path) => normalize(resolve(path))))].sort((left, right) => left.length - right.length || left.localeCompare(right))
+  const result: string[] = []
+  for (const path of sorted) if (!result.some((parent) => withinPath(path, parent))) result.push(path)
+  return result
+}
+
+function withinPath(path: string, parent: string): boolean {
+  const remainder = relative(parent, path)
+  return path === parent || remainder !== '' && remainder !== '..' && !remainder.startsWith(`..${sep}`)
+}
+
+interface PreparedResume {
+  readonly descriptor: FullScanResumeDescriptor
+  readonly partialPath: string
+  readonly candidatePath: string
+  readonly resume: boolean
+  readonly candidate?: string
+}
+
+async function prepareResumableFullScan(request: RefreshRequest, journal: ChangeJournal, store: FullScanResumeStore): Promise<PreparedResume | undefined> {
+  const loaded = await store.load(request.target)
+  if (loaded.kind === 'construction' || loaded.kind === 'candidate') {
+    const checkpoint = safeCheckpoint(journal, request.target)
+    if (!checkpoint || checkpoint.device !== loaded.descriptor.journalDevice || checkpoint.journalUuid !== loaded.descriptor.journalUuid) {
+      await store.discard(loaded.descriptor.scanId)
+      return createResumableFullScan(request, journal, store)
+    }
+    const history = journal.readChanges(request.target, store.cursor(loaded.descriptor), MAX_EVENTS, HISTORY_TIMEOUT_MS)
+    if (history.requiresFullScan) {
+      await store.discard(loaded.descriptor.scanId)
+      return createResumableFullScan(request, journal, store)
+    }
+    return loaded.kind === 'candidate'
+      ? { descriptor: loaded.descriptor, partialPath: joinOwned(store.directory, loaded.descriptor.partialFile), candidatePath: loaded.candidatePath, candidate: loaded.candidatePath, resume: true }
+      : { descriptor: loaded.descriptor, partialPath: loaded.partialPath, candidatePath: loaded.candidatePath, resume: true }
+  }
+  if (loaded.kind === 'restart') {
+    if (loaded.reason === 'target-unavailable') throw new Error('The saved scan target is unavailable')
+    if (loaded.reason === 'saved-scan-target-mismatch') return undefined
+    if (loaded.descriptor) await store.discard(loaded.descriptor.scanId)
+    else await store.removeDescriptor()
+  }
+  return createResumableFullScan(request, journal, store)
+}
+
+async function createResumableFullScan(request: RefreshRequest, journal: ChangeJournal, store: FullScanResumeStore): Promise<PreparedResume | undefined> {
+  const scanId = scanIdFromPaths(request.partialPath, request.publishedPath)
+  if (!scanId) return undefined
+  const checkpoint = safeCheckpoint(journal, request.target)
+  if (!checkpoint?.journalUuid) return undefined
+  const [target, directory] = await Promise.all([lstat(request.target), lstat(request.indexDirectory)])
+  if (!target.isDirectory() || target.isSymbolicLink() || !directory.isDirectory() || directory.isSymbolicLink() || checkpoint.device !== String(target.dev)) return undefined
+  const descriptor = store.descriptor({
+    scanId, target: request.target, targetDevice: String(target.dev), targetInode: String(target.ino),
+    indexDirectoryIdentity: `${String(directory.dev)}:${String(directory.ino)}`, startupRoot: request.startupRoot !== false,
+    checkpoint: { device: checkpoint.device, journalUuid: checkpoint.journalUuid, eventId: checkpoint.eventId }
+  })
+  return { descriptor, partialPath: request.partialPath, candidatePath: request.publishedPath, resume: false }
+}
+
+function scanIdFromPaths(partialPath: string, candidatePath: string): string | undefined {
+  const partial = /(?:^|\/)index-([0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12})\.partial\.sqlite$/u.exec(partialPath)?.[1]
+  const candidate = /(?:^|\/)index-([0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12})\.sqlite$/u.exec(candidatePath)?.[1]
+  return partial && partial === candidate ? partial : undefined
+}
+
+function joinOwned(directory: string, file: string): string { return `${directory}/${file}` }
+
+function readCandidateResult(path: string, generation: number): ScanResult {
+  const database = new DatabaseSync(path, { readOnly: true })
+  try {
+    const metadata = readMetadata(database)
+    const totals = JSON.parse(metadata.totals ?? '{}') as ScanTotals
+    const volume = JSON.parse(metadata.volume ?? '{}') as { capacityBytes?: number; freeBytes?: number }
+    const dirtyScopes = JSON.parse(metadata.resumeDirtyScopes ?? '[]') as unknown
+    const resume = typeof metadata.resumeDrainedThrough === 'string' && Array.isArray(dirtyScopes) && dirtyScopes.every((scope) => typeof scope === 'string')
+      ? { drainedThrough: metadata.resumeDrainedThrough, dirtyScopes: dirtyScopes as string[] } : undefined
+    return {
+      generation, target: metadata.target ?? '', rootId: metadata.rootId ?? '', publishedPath: path,
+      capacityBytes: Number(volume.capacityBytes ?? 0), freeBytes: Number(volume.freeBytes ?? 0),
+      scannedBytes: Number(metadata.scannedBytes ?? totals.discoveredBytes ?? 0), totals,
+      metadata: { bulkMetadataEntries: 0, fallbackMetadataEntries: 0, ...(resume ? { resume } : {}) }
+    }
+  } finally { database.close() }
+}
+
 async function retryFullRefresh(request: RefreshRequest, journal: ChangeJournal, reason: string, raceRetry: number): Promise<RefreshOutcome> {
+  await new FullScanResumeStore(request.indexDirectory).discard().catch(() => false)
   if (raceRetry < 1) return fullRefresh(request, journal, reason, raceRetry + 1)
   await Promise.all([removeDatabaseFiles(request.partialPath), removeDatabaseFiles(request.publishedPath)])
   throw new Error(`Unable to close the full-scan FSEvents window: ${reason}`)

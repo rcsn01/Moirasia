@@ -59,6 +59,20 @@ describe('Orbis dirty-scope planning', () => {
     expect(plan).toEqual({ kind: 'incremental', scopes: [] })
   })
 
+  it('does not ignore a recursive root event alongside excluded index noise', async () => {
+    const directory = await fixture()
+    const target = join(directory, 'target')
+    const indexDirectory = join(target, 'indexes')
+    await mkdir(indexDirectory, { recursive: true })
+    expect(await planDirtyScopes({
+      target, indexDirectory,
+      events: [
+        event('', FSEVENT_FLAGS.mustScanSubDirs | FSEVENT_FLAGS.itemIsDir),
+        event('indexes/candidate.sqlite', FSEVENT_FLAGS.itemModified | FSEVENT_FLAGS.itemIsFile)
+      ]
+    })).toEqual({ kind: 'full', reason: 'target-root-recursive' })
+  })
+
   it('falls back for a target-root mutation', async () => {
     const directory = await fixture()
     const target = join(directory, 'target')

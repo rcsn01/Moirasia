@@ -73,7 +73,7 @@ export function OrbisPanel({ bridge, appearance, onAppearanceChange, embeddedHea
   const displayTotal = useMemo(() => focus && snapshot ? focus.sizeBytes + (focus.id === snapshot.breadcrumbs[0]?.id && snapshot.target.isStartup ? snapshot.volume.unscannedBytes : 0) : 0, [focus, snapshot])
   const selectedPercent = selected ? selected.percentage : 0
   const startOrRescan = !scan || scan.status === "idle" ? bridge.startScan : bridge.rescan
-  const startOrRescanLabel = !scan || scan.status === "idle" ? "Scan" : "Rescan"
+  const startOrRescanLabel = scan?.resume?.available ? "Resume" : !scan || scan.status === "idle" ? "Scan" : "Rescan"
 
   const activateSegment = (segment: ChartSegment): void => {
     const segmentId = segment.id
@@ -98,14 +98,14 @@ export function OrbisPanel({ bridge, appearance, onAppearanceChange, embeddedHea
     <DesktopPage width="full" scroll="contained" className="orbis-feature-panel__page">
       <DesktopContentHeader title="Disk usage" description={snapshot ? `Scanning ${snapshot.target.name}` : "Read-only storage visualizer"} actions={<div className="orbis-feature-panel__actions">
         <Button size="sm" variant="outline" onClick={() => void run(() => bridge.chooseFolder())}>Choose Folder</Button>
-        {isScanning ? <Button size="sm" variant="destructive" onClick={() => void run(() => bridge.cancelScan())}><Square />Cancel</Button> : <Button size="sm" onClick={() => void run(startOrRescan)}>{scan?.status === "idle" ? null : <RefreshCw />}{startOrRescanLabel}</Button>}
+        {isScanning ? <Button size="sm" variant="outline" onClick={() => void run(() => bridge.cancelScan())}><Square />Pause</Button> : <Button size="sm" onClick={() => void run(startOrRescan)}>{scan?.status === "idle" ? null : <RefreshCw />}{startOrRescanLabel}</Button>}
       </div>} />
       {error && <Alert variant="destructive" className="orbis-feature-panel__alert"><AlertCircle /><AlertTitle>Orbis could not complete that action</AlertTitle><AlertDescription>{error}</AlertDescription></Alert>}
       {loading && <div className="orbis-feature-panel__state" role="status">Loading Orbis…</div>}
       {!loading && snapshot && <>
         <ScanStatus snapshot={snapshot} onCancel={() => void run(() => bridge.cancelScan())} onRescan={() => void run(() => bridge.rescan())} />
         {snapshot.scan.status === "fatal-error" && <Alert variant="destructive" className="orbis-feature-panel__alert"><AlertCircle /><AlertTitle>Scan failed</AlertTitle><AlertDescription><span>{snapshot.scan.error ?? "Orbis could not read this folder."}</span><Button size="sm" variant="outline" onClick={() => void run(async () => { await bridge.openFullDiskAccess(); return snapshot })}>Open Full Disk Access</Button></AlertDescription></Alert>}
-        {snapshot.scan.status === "canceled" && <Alert className="orbis-feature-panel__alert"><AlertTitle>Scan canceled</AlertTitle><AlertDescription>The last completed index remains available. Rescan when you are ready.</AlertDescription></Alert>}
+        {(snapshot.scan.status === "canceled" || snapshot.scan.resume?.available && snapshot.scan.status === "fatal-error") && <Alert className="orbis-feature-panel__alert"><AlertTitle>{snapshot.scan.resume?.available ? "Scan paused — progress saved" : "Scan canceled"}</AlertTitle><AlertDescription><span>{snapshot.scan.resume?.available ? "Orbis will resume from the last completed directory checkpoint." : "The last completed index remains available. Rescan when you are ready."}</span>{snapshot.scan.resume?.available && <Button size="sm" variant="outline" onClick={() => void run(() => bridge.discardSavedScan())}>Discard saved scan</Button>}</AlertDescription></Alert>}
         {snapshot.scan.totals && (snapshot.scan.totals.unreadableItems > 0 || snapshot.scan.totals.skippedItems > 0) && <PermissionWarning snapshot={snapshot} onOpen={() => void run(async () => { await bridge.openFullDiskAccess(); return snapshot })} />}
         {snapshot.committed && snapshot.volume.sizeAccuracy === "partial" && <Alert className="orbis-feature-panel__alert"><AlertTitle>Scan complete; some folders could not be measured</AlertTitle><AlertDescription>Orbis indexed the readable metadata and marked the remaining sizes as partial.</AlertDescription></Alert>}
         <VolumeSummary snapshot={snapshot} />
@@ -126,8 +126,8 @@ function ScanStatus({ snapshot, onCancel, onRescan }: { readonly snapshot: Orbis
   const progress = snapshot.scan.progress
   const percent = progress && snapshot.volume.scannedBytes > 0 ? Math.min(99, progress.discoveredBytes / Math.max(progress.discoveredBytes, snapshot.volume.scannedBytes) * 100) : progress ? Math.min(95, progress.scannedItems > 0 ? 8 + Math.log10(progress.scannedItems + 1) * 12 : 4) : snapshot.scan.status === "completed" ? 100 : 0
   return <div className="orbis-feature-panel__scan-status" aria-live="polite">
-    <div className="orbis-feature-panel__scan-status-copy" data-committed={snapshot.committed}><strong>{snapshot.scan.status === "scanning" ? progress?.stage === "indexing" ? "Building index…" : "Scanning…" : snapshot.scan.status === "completed" ? "Scan complete" : snapshot.scan.status === "canceled" ? "Scan canceled" : snapshot.scan.status === "fatal-error" ? "Scan unavailable" : "Waiting to scan"}</strong><span>{progress ? `${progress.scannedItems.toLocaleString()} items · ${formatBytes(progress.discoveredBytes)} · ${progress.currentItem}` : snapshot.scan.totals ? `${snapshot.scan.totals.scannedItems.toLocaleString()} items · ${formatBytes(snapshot.scan.totals.discoveredBytes)} in ${(snapshot.scan.totals.elapsedMs / 1000).toFixed(1)}s` : snapshot.committed ? "Committed index" : "Live preview"}</span></div>
-    {snapshot.scan.status === "scanning" ? <><Progress value={percent} max={100} className="orbis-feature-panel__scan-progress" /><Button size="sm" variant="outline" onClick={onCancel}>Cancel</Button></> : snapshot.scan.status === "canceled" ? <Button size="sm" onClick={onRescan}>Rescan</Button> : null}
+    <div className="orbis-feature-panel__scan-status-copy" data-committed={snapshot.committed}><strong>{snapshot.scan.status === "scanning" ? progress?.stage === "indexing" ? "Building index…" : "Scanning…" : snapshot.scan.status === "completed" ? "Scan complete" : snapshot.scan.status === "canceled" ? snapshot.scan.resume?.available ? "Scan paused — progress saved" : "Scan canceled" : snapshot.scan.status === "fatal-error" ? "Scan unavailable" : "Waiting to scan"}</strong><span>{progress ? `${progress.scannedItems.toLocaleString()} items · ${formatBytes(progress.discoveredBytes)} · ${progress.currentItem}` : snapshot.scan.totals ? `${snapshot.scan.totals.scannedItems.toLocaleString()} items · ${formatBytes(snapshot.scan.totals.discoveredBytes)} in ${(snapshot.scan.totals.elapsedMs / 1000).toFixed(1)}s` : snapshot.committed ? "Committed index" : "Live preview"}</span></div>
+    {snapshot.scan.status === "scanning" ? <><Progress value={percent} max={100} className="orbis-feature-panel__scan-progress" /><Button size="sm" variant="outline" onClick={onCancel}>Pause</Button></> : snapshot.scan.status === "canceled" ? <Button size="sm" onClick={onRescan}>{snapshot.scan.resume?.available ? "Resume" : "Rescan"}</Button> : null}
   </div>
 }
 

@@ -6,6 +6,7 @@ import { buildChart } from "./chart"
 import { prepareDatabaseDirectory, removeDatabaseFiles } from "./database"
 import { createScanTimingAccumulator, measureScan, measureScanAsync, runWithScanDiagnostics } from "./diagnostics"
 import { ProgressiveScanDatabase, type DirectoryTask } from "./progressive-database"
+import type { FullScanResumeDescriptor, FullScanResumeStore } from './full-scan-resume'
 import {
   createDirectoryMetadataSource, loadNativeMetadataAddon, NodeDirectoryMetadataSource,
   type DirectoryMetadataCursor, type DirectoryMetadataEntry, type DirectoryMetadataSource, type FolderSizeEstimate
@@ -34,10 +35,19 @@ export interface ProgressivePreview {
 
 export interface ProgressiveScanOptions extends ScanOptions {
   readonly control: ProgressiveScanControl
+  readonly resumable?: {
+    readonly descriptor: FullScanResumeDescriptor
+    readonly store: FullScanResumeStore
+    readonly resume: boolean
+  }
   readonly onPreview?: (preview: ProgressivePreview) => void
   readonly initialEstimate?: FolderSizeEstimate
   readonly directoryMetadataSource?: DirectoryMetadataSource
   readonly nativeAddonPath?: string
+  readonly onCheckpoint?: (sequence: number) => void
+  readonly drainResumeJournal?: (eventId: string) => { readonly throughEventId: string; readonly scopes: readonly string[]; readonly restartReason?: string }
+  /** Internal traversal tuning. The benchmark worker uses ORBIS_METADATA_BATCH_SIZE instead. */
+  readonly metadataBatchSize?: number
 }
 
 export class ProgressiveScanControl {
@@ -72,7 +82,9 @@ export class ProgressiveScanControl {
   resolveNode(id: string): string | undefined { return this.#database?.resolvePath(id) }
 }
 
-const PAGE_SIZE = 32
+const FIRST_PREVIEW_ENTRIES = 32
+const DEFAULT_METADATA_BATCH_SIZE = 256
+const MAX_METADATA_BATCH_SIZE = 1_024
 const MAX_OPEN_HANDLES = 8
 const PREVIEW_INTERVAL_MS = 100
 
@@ -92,13 +104,14 @@ async function scanImpl(options: ProgressiveScanOptions): Promise<ScanResult> {
   if (!isAbsolute(options.target)) throw new Error("Scan target must be an absolute path")
   const fileSystem = options.fileSystem ?? nativeFileSystem
   const metadataConcurrency = resolveConcurrency(options.metadataConcurrency)
+  const metadataBatchSize = resolveMetadataBatchSize(options.metadataBatchSize)
   const nativeAddon = await loadNativeMetadataAddon(options.nativeAddonPath)
   const nodeMetadataSource = new NodeDirectoryMetadataSource(fileSystem, metadataConcurrency)
   const bulkMetadataSource = options.directoryMetadataSource ?? createDirectoryMetadataSource(nativeAddon, fileSystem, metadataConcurrency)
   const startedAt = Date.now()
   const totals = mutableTotals()
   const reporter = new PreviewReporter(options, startedAt, totals)
-  const key = randomBytes(32)
+  let key = randomBytes(32)
   const nodeId = (parentId: string, name: string): string => `n-${createHmac("sha256", key).update(parentId).update("\0").update(name).digest("hex").slice(0, 32)}`
   const cursors = new Map<string, ActiveCursor>()
   const bulkFallbackDirectories = new Set<string>()
@@ -117,7 +130,7 @@ async function scanImpl(options: ProgressiveScanOptions): Promise<ScanResult> {
       throwIfCanceled(options.signal)
       if (rootStats.isSymbolicLink() || !rootStats.isDirectory()) throw new Error("Scan target must be a directory")
       const volume = await fileSystem.statfs(target)
-      await removeDatabaseFiles(options.partialPath)
+      if (!options.resumable?.resume) await removeDatabaseFiles(options.partialPath)
       return {
         indexRoot, indexIdentity, target, rootStats, rootDevice: part(rootStats.dev),
         targetRealpath: await fileSystem.realpath(target),
@@ -126,30 +139,82 @@ async function scanImpl(options: ProgressiveScanOptions): Promise<ScanResult> {
     })
   } catch (error) {
     options.control.detach()
-    await removeDatabaseFiles(options.partialPath)
+    if (!options.resumable) await removeDatabaseFiles(options.partialPath)
     throw error
   }
 
-  const rootId = nodeId("root", preflight.target)
+  let rootId = ''
+  let activeElapsedBefore = 0
+  let lastCheckpointAt = Date.now()
+  let entriesSinceCheckpoint = 0
+  let lastJournalDrainAt = Date.now()
+  let resumeJournal: { readonly drainedThrough: string; readonly dirtyScopes: readonly string[] } | undefined
   try {
-    database = measureScan("database-create", () => new ProgressiveScanDatabase(options.partialPath))
+    if (options.resumable?.resume) {
+      database = measureScan('database-resume', () => ProgressiveScanDatabase.openResumable(options.partialPath))
+      key = Buffer.from(database.nodeIdSeed, 'hex')
+      rootId = nodeId('root', preflight.target)
+      const recovered = database.recoverIncompleteDirectories()
+      const persisted = database.semanticTotals()
+      Object.assign(totals, persisted)
+      activeElapsedBefore = persisted.activeElapsedMs
+      void recovered
+      options.onCheckpoint?.(database.checkpoint())
+    } else if (options.resumable) {
+      const descriptor = options.resumable.descriptor
+      database = measureScan('database-create', () => ProgressiveScanDatabase.create(options.partialPath, {
+        scanId: descriptor.scanId, journalDevice: descriptor.journalDevice, journalUuid: descriptor.journalUuid,
+        journalBaseline: descriptor.journalBaseline
+      }))
+      key = Buffer.from(database.nodeIdSeed, 'hex')
+      rootId = nodeId('root', preflight.target)
+      options.onCheckpoint?.(database.checkpoint())
+      await options.resumable.store.publish(descriptor)
+    } else {
+      database = measureScan("database-create", () => new ProgressiveScanDatabase(options.partialPath))
+      rootId = nodeId('root', preflight.target)
+    }
     const rootBytes = allocatedBytes(preflight.rootStats)
-    database.insertRoot({ id: rootId, parentId: null, name: displayName(preflight.target), path: preflight.target, kind: "directory", ownBytes: rootBytes, device: preflight.rootDevice, inode: part(preflight.rootStats.ino) })
-    database.setHardLinkOwner(part(preflight.rootStats.dev), part(preflight.rootStats.ino), rootId, "")
+    if (!database.getNode(rootId)) {
+      database.insertRoot({ id: rootId, parentId: null, name: displayName(preflight.target), path: preflight.target, kind: "directory", ownBytes: rootBytes, device: preflight.rootDevice, inode: part(preflight.rootStats.ino) })
+      database.setHardLinkOwner(part(preflight.rootStats.dev), part(preflight.rootStats.ino), rootId, "")
+    }
     options.control.attach(database, rootId, () => {
       queueMicrotask(() => { if (database && constructionActive) reporter.focus(database, preflight) })
     })
-    totals.scannedItems = 1
-    totals.discoveredBytes = rootBytes
+    if (totals.scannedItems === 0) totals.scannedItems = 1
+    if (totals.discoveredBytes === 0) totals.discoveredBytes = rootBytes
     reporter.progress(displayName(preflight.target), true)
 
-    if (options.initialEstimate) {
+    if (options.initialEstimate && !options.resumable?.resume) {
       database.applyEstimates(options.initialEstimate)
       database.bumpRevision()
     }
+    if (options.resumable?.resume) reporter.resume(database, preflight)
 
     const aggregationTiming = createScanTimingAccumulator("aggregation")
     let focusTurns = 0
+    const checkpointNow = (finalDrain: boolean): void => {
+      if (!options.resumable || !database) return
+      const now = Date.now()
+      const drainDue = Boolean(options.drainResumeJournal) && (finalDrain || now - lastJournalDrainAt >= 30_000)
+      if (drainDue && options.drainResumeJournal) {
+        const drain = options.drainResumeJournal(database.drainedThrough)
+        if (drain.restartReason) throw new Error(`resume-invalidated:${drain.restartReason}`)
+        database.setJournalDrain(drain.scopes, drain.throughEventId)
+        lastJournalDrainAt = now
+      }
+      options.onCheckpoint?.(database.checkpoint(now - lastCheckpointAt))
+      lastCheckpointAt = now
+      entriesSinceCheckpoint = 0
+    }
+    const checkpointDue = (): void => {
+      if (!options.resumable || !database) return
+      const now = Date.now()
+      const journalDue = Boolean(options.drainResumeJournal) && now - lastJournalDrainAt >= 30_000
+      if (now - lastCheckpointAt >= 2_000 || entriesSinceCheckpoint >= 4_096 || journalDue) checkpointNow(false)
+    }
+    const checkpointForced = (finalDrain = false): void => checkpointNow(finalDrain)
 
     await measureScanAsync("traversal", async () => {
       while (database!.hasPendingTasks()) {
@@ -164,23 +229,19 @@ async function scanImpl(options: ProgressiveScanOptions): Promise<ScanResult> {
         else focusTurns = 0
         if (task.focused && focusTurns >= 3 && database!.hasPendingTasks(false)) focusTurns = 3
 
-        database!.startTask(task.id)
         let activeCursor = cursors.get(task.id)
         if (!activeCursor) {
           if (cursors.size >= MAX_OPEN_HANDLES) await closeOneCursor(cursors, task.id)
           try {
             activeCursor = await openCursor(task.path, preflight.targetRealpath, bulkMetadataSource, nodeMetadataSource, bulkFallbackDirectories)
-            await skipEntries(activeCursor.cursor, task.entriesRead, options.signal)
+            await skipEntries(activeCursor.cursor, task.entriesRead, metadataBatchSize, options.signal)
             cursors.set(task.id, activeCursor)
           } catch (error) {
             if (activeCursor) await activeCursor.cursor.close().catch(() => undefined)
             throwIfCanceled(options.signal)
             const disappearing = isDisappearing(error)
-            database!.markUnreadable(task.id, disappearing)
-            totals.skippedItems += 1
-            totals.unreadableItems += 1
-            if (disappearing) totals.disappearingItems += 1
-            database!.bumpRevision()
+            applyUnreadableBatch(database!, task, disappearing, totals)
+            checkpointDue()
             reporter.batch(database!, task.id, preflight, task.id === rootId)
             continue
           }
@@ -188,54 +249,70 @@ async function scanImpl(options: ProgressiveScanOptions): Promise<ScanResult> {
 
         let page
         try {
-          page = await activeCursor.cursor.readPage(PAGE_SIZE, options.signal ?? new AbortController().signal)
+          const firstRootBatch = Boolean(options.onPreview) && task.id === rootId && task.entriesRead === 0
+          page = await activeCursor.cursor.readPage(firstRootBatch ? FIRST_PREVIEW_ENTRIES : metadataBatchSize, options.signal ?? new AbortController().signal)
         } catch (error) {
           if (activeCursor.source === "bulk" && !options.signal?.aborted) {
             await closeCursor(cursors, task.id)
             bulkFallbackDirectories.add(task.path)
             try {
               const fallback = await nodeMetadataSource.open(task.path, preflight.targetRealpath)
-              await skipEntries(fallback, task.entriesRead, options.signal)
+              await skipEntries(fallback, task.entriesRead, metadataBatchSize, options.signal)
               activeCursor = { cursor: fallback, source: "node" }
               cursors.set(task.id, activeCursor)
               continue
             } catch (fallbackError) {
               await fallbackErrorCursor(fallbackError, options, database!, task, totals, reporter, preflight, rootId)
+              checkpointDue()
               continue
             }
           }
           await closeCursor(cursors, task.id)
           throwIfCanceled(options.signal)
           const disappearing = isDisappearing(error)
-          database!.markUnreadable(task.id, disappearing)
-          totals.skippedItems += 1
-          totals.unreadableItems += 1
-          if (disappearing) totals.disappearingItems += 1
-          database!.bumpRevision()
+          applyUnreadableBatch(database!, task, disappearing, totals)
+          checkpointDue()
           reporter.batch(database!, task.id, preflight, task.id === rootId)
           continue
         }
+        const totalsBeforeBatch = { ...totals }
+        const firstRootPage = task.id === rootId && task.entriesRead === 0
+        try {
+          database!.applyMetadataBatch(() => {
+            database!.startTask(task.id)
+            processPage(page.entries, task, database!, options, preflight, totals, nodeId, aggregationTiming.measure)
+            database!.addMetadataCounters(page.bulkEntries, page.fallbackEntries)
+            database!.advanceTask(task.id, page.entries.length)
+            database!.bumpRevision()
+            if (page.done) database!.finishEnumeration(task.id)
+            else database!.yieldTask(task.id)
+          })
+        } catch (error) {
+          Object.assign(totals, totalsBeforeBatch)
+          throw error
+        }
         totals.bulkMetadataEntries += page.bulkEntries
         totals.fallbackMetadataEntries += page.fallbackEntries
-        database!.advanceTask(task.id, page.entries.length)
-        await processPage(page.entries, task, database!, options, preflight, totals, nodeId, aggregationTiming.measure)
-        database!.bumpRevision()
-        if (page.done) {
-          await closeCursor(cursors, task.id)
-          database!.finishEnumeration(task.id)
-        } else database!.yieldTask(task.id)
-        reporter.batch(database!, task.id, preflight, task.id === rootId)
+        entriesSinceCheckpoint += page.entries.length
+        if (page.done) await closeCursor(cursors, task.id)
+        reporter.batch(database!, task.id, preflight, task.id === rootId && firstRootPage)
+        checkpointDue()
       }
     })
     aggregationTiming.publish()
     await closeAll(cursors)
     constructionActive = false
     throwIfCanceled(options.signal)
+    if (options.resumable) {
+      database.setPhase('awaiting-reconciliation')
+      checkpointForced(true)
+    }
     const root = database.getNode(rootId)
     if (!root || root.scanState !== "complete" && root.scanState !== "unreadable") throw new Error("Progressive scan root did not reach a terminal state")
     reporter.progress(displayName(preflight.target), true, "indexing")
+    if (options.resumable) resumeJournal = { drainedThrough: database.drainedThrough, dirtyScopes: database.dirtyScopes }
     measureScan("index-create", () => database!.finalize())
-    const elapsedMs = Date.now() - startedAt
+    const elapsedMs = activeElapsedBefore + Date.now() - startedAt
     const finalTotals: ScanTotals = {
       scannedItems: totals.scannedItems, discoveredBytes: root.confirmedBytes, elapsedMs, skippedItems: totals.skippedItems,
       unreadableItems: totals.unreadableItems, nestedMounts: totals.nestedMounts, symlinks: totals.symlinks,
@@ -246,7 +323,7 @@ async function scanImpl(options: ProgressiveScanOptions): Promise<ScanResult> {
       target: preflight.target, rootId, capacityBytes: preflight.capacityBytes, freeBytes: preflight.freeBytes,
       scannedBytes: root.confirmedBytes, totals: finalTotals, targetDevice: preflight.rootDevice,
       targetInode: part(preflight.rootStats.ino), ...(preflight.indexIdentity ? { indexDirectoryIdentity: preflight.indexIdentity } : {}),
-      indexRevision: 1, capturedAt, refreshedAt: capturedAt
+      indexRevision: 1, capturedAt, refreshedAt: capturedAt, ...(resumeJournal ? { resume: resumeJournal } : {})
     }))
     database.complete()
     database = undefined
@@ -259,7 +336,8 @@ async function scanImpl(options: ProgressiveScanOptions): Promise<ScanResult> {
       generation: options.generation, target: preflight.target, rootId, publishedPath: options.publishedPath,
       capacityBytes: preflight.capacityBytes, freeBytes: preflight.freeBytes, scannedBytes: root.confirmedBytes, totals: finalTotals,
       metadata: {
-        bulkMetadataEntries: totals.bulkMetadataEntries, fallbackMetadataEntries: totals.fallbackMetadataEntries
+        bulkMetadataEntries: totals.bulkMetadataEntries, fallbackMetadataEntries: totals.fallbackMetadataEntries,
+        ...(resumeJournal ? { resume: resumeJournal } : {})
       }
     }
   } catch (error) {
@@ -268,9 +346,20 @@ async function scanImpl(options: ProgressiveScanOptions): Promise<ScanResult> {
     options.control.detach()
     const failedDatabase = database
     database = undefined
-    failedDatabase?.abort()
-    await removeDatabaseFiles(options.partialPath)
-    await removeDatabaseFiles(options.publishedPath)
+    if (failedDatabase && options.resumable) {
+      try {
+        if (options.drainResumeJournal) {
+          const drain = options.drainResumeJournal(failedDatabase.drainedThrough)
+          if (!drain.restartReason) failedDatabase.setJournalDrain(drain.scopes, drain.throughEventId)
+        }
+        options.onCheckpoint?.(failedDatabase.checkpoint(Date.now() - lastCheckpointAt))
+      } catch { /* The previous committed checkpoint remains resumable. */ }
+      failedDatabase.abort()
+    } else failedDatabase?.abort()
+    if (!options.resumable) {
+      await removeDatabaseFiles(options.partialPath)
+      await removeDatabaseFiles(options.publishedPath)
+    }
     throw error
   }
 }
@@ -297,10 +386,10 @@ async function openCursor(
   return { cursor: await node.open(path, targetRealpath), source: "node" }
 }
 
-async function skipEntries(cursor: DirectoryMetadataCursor, count: number, signal: AbortSignal | undefined): Promise<void> {
+async function skipEntries(cursor: DirectoryMetadataCursor, count: number, batchSize: number, signal: AbortSignal | undefined): Promise<void> {
   let remaining = Math.max(0, Math.floor(count))
   while (remaining > 0) {
-    const page = await cursor.readPage(Math.min(PAGE_SIZE, remaining), signal ?? new AbortController().signal)
+    const page = await cursor.readPage(Math.min(batchSize, remaining), signal ?? new AbortController().signal)
     if (page.entries.length === 0) return
     remaining -= page.entries.length
     if (page.done) return
@@ -313,19 +402,34 @@ async function fallbackErrorCursor(
 ): Promise<void> {
   throwIfCanceled(options.signal)
   const disappearing = isDisappearing(error)
-  database.markUnreadable(task.id, disappearing)
-  totals.skippedItems += 1
-  totals.unreadableItems += 1
-  if (disappearing) totals.disappearingItems += 1
-  database.bumpRevision()
+  applyUnreadableBatch(database, task, disappearing, totals)
   reporter.batch(database, task.id, preflight, task.id === rootId)
 }
 
-async function processPage(
+function applyUnreadableBatch(
+  database: ProgressiveScanDatabase, task: DirectoryTask, disappearing: boolean, totals: ReturnType<typeof mutableTotals>
+): void {
+  const totalsBeforeBatch = { ...totals }
+  try {
+    database.applyMetadataBatch(() => {
+      database.startTask(task.id)
+      database.markUnreadable(task.id, disappearing)
+      database.bumpRevision()
+      totals.skippedItems += 1
+      totals.unreadableItems += 1
+      if (disappearing) totals.disappearingItems += 1
+    })
+  } catch (error) {
+    Object.assign(totals, totalsBeforeBatch)
+    throw error
+  }
+}
+
+function processPage(
   entries: readonly DirectoryMetadataEntry[], task: DirectoryTask, database: ProgressiveScanDatabase, options: ProgressiveScanOptions,
   preflight: Awaited<ReturnType<typeof preflightShape>>, totals: ReturnType<typeof mutableTotals>,
   nodeId: (parentId: string, name: string) => string, recordAggregation: (operation: () => void) => void
-): Promise<number> {
+): number {
   let accepted = 0
   for (const entry of entries) {
     throwIfCanceled(options.signal)
@@ -400,6 +504,10 @@ class PreviewReporter {
     if (!this.#firstPreview) return
     this.emit(database, volume, false)
   }
+  resume(database: ProgressiveScanDatabase, volume: { target: string; capacityBytes: number; freeBytes: number }): void {
+    if (!this.options.onPreview) return
+    this.emit(database, volume, true)
+  }
   batch(database: ProgressiveScanDatabase, taskId: string, volume: { target: string; capacityBytes: number; freeBytes: number }, rootPageCompleted: boolean): void {
     this.progress(database.getNode(taskId)?.name ?? "")
     this.options.control.consumeFocusRequest()
@@ -456,6 +564,10 @@ function mutableTotals() {
   }
 }
 function resolveConcurrency(value: number | undefined): number { const configured = value ?? Number(process.env.ORBIS_SCAN_CONCURRENCY ?? DEFAULT_METADATA_CONCURRENCY); return Number.isFinite(configured) ? Math.max(1, Math.min(64, Math.floor(configured))) : DEFAULT_METADATA_CONCURRENCY }
+function resolveMetadataBatchSize(value: number | undefined): number {
+  const configured = value ?? Number(process.env.ORBIS_METADATA_BATCH_SIZE ?? DEFAULT_METADATA_BATCH_SIZE)
+  return Number.isFinite(configured) ? Math.max(1, Math.min(MAX_METADATA_BATCH_SIZE, Math.floor(configured))) : DEFAULT_METADATA_BATCH_SIZE
+}
 function shouldExclude(path: string, options: ScanOptions, indexRoot: string): boolean { return isWithin(path, indexRoot) || options.startupRoot !== false && normalize(options.target) === "/" && STARTUP_EXCLUSIONS.some((excluded) => isWithin(path, excluded)) }
 function isWithin(path: string, parent: string): boolean { const child = normalize(path); const root = normalize(parent); const remainder = relative(root, child); return child === root || remainder !== "" && remainder !== ".." && !remainder.startsWith(`..${sep}`) }
 function comparePaths(left: string, right: string): number { return Buffer.compare(Buffer.from(left, 'utf8'), Buffer.from(right, 'utf8')) }

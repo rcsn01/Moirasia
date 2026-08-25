@@ -4,8 +4,11 @@ import { join } from 'node:path'
 import { describe, expect, it, vi } from "vitest"
 import {
   BulkExactMetadataSource,
+  NodeDirectoryMetadataSource,
   loadNativeMetadataAddon,
   loadNativeOrbisAddon,
+  readMetadataCursorDiagnostics,
+  resetMetadataCursorDiagnostics,
   type NativeMetadataAddon,
   type NativeDirectoryCursor,
   type ScanStats
@@ -39,6 +42,7 @@ describe("Orbis scan metadata adapters", () => {
     }
     const addon: NativeMetadataAddon = { openDirectory: vi.fn(() => cursor) }
     const fileSystem = minimalFileSystem()
+    resetMetadataCursorDiagnostics()
     const source = new BulkExactMetadataSource(addon, fileSystem)
     const page = await (await source.open("/target", "/target")).readPage(32, new AbortController().signal)
 
@@ -46,6 +50,37 @@ describe("Orbis scan metadata adapters", () => {
     expect(page.fallbackEntries).toBe(0)
     expect(page.entries[0]).toMatchObject({ name: "folder", kind: "directory", allocatedBytes: 512 })
     expect(page.entries[1]?.error).toBeInstanceOf(Error)
+    expect(readMetadataCursorDiagnostics()).toMatchObject({ nativeReadPageCalls: 1, nodeReadPageCalls: 0 })
+  })
+
+  it('passes 256 and 512 entry requests to native cursors and caps larger requests', async () => {
+    const requested: number[] = []
+    const cursor: NativeDirectoryCursor = {
+      readPage: (limit) => { requested.push(limit); return { entries: [], done: false } },
+      close: () => undefined
+    }
+    const source = new BulkExactMetadataSource({ openDirectory: () => cursor }, minimalFileSystem())
+    const opened = await source.open('/target', '/target')
+    const signal = new AbortController().signal
+    await opened.readPage(256, signal)
+    await opened.readPage(512, signal)
+    await opened.readPage(2_048, signal)
+    expect(requested).toEqual([256, 512, 1_024])
+  })
+
+  it('caps Node cursor pages at 1,024 entries', async () => {
+    let reads = 0
+    const fileSystem: ScanFileSystem & { opendir(path: string): Promise<{ read(): Promise<{ name: string } | null>; close(): Promise<void> }> } = {
+      ...minimalFileSystem(),
+      opendir: async () => ({
+        read: async () => reads++ < 1_100 ? { name: `file-${reads}` } : null,
+        close: async () => undefined
+      })
+    }
+    const source = new NodeDirectoryMetadataSource(fileSystem)
+    const page = await (await source.open('/target', '/target')).readPage(2_048, new AbortController().signal)
+    expect(page.entries).toHaveLength(1_024)
+    expect(reads).toBe(1_024)
   })
 
   it('can disable bulk metadata without disabling the FSEvents addon API', async () => {

@@ -51,6 +51,7 @@ export interface ScanDatabaseMeta {
   readonly indexRevision?: number
   readonly capturedAt?: string
   readonly refreshedAt?: string
+  readonly resume?: { readonly drainedThrough: string; readonly dirtyScopes: readonly string[] }
   readonly totals: {
     readonly scannedItems: number
     readonly discoveredBytes: number

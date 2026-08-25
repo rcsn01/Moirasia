@@ -39,6 +39,19 @@ describe('EmbeddedFeatureHost', () => {
     expect(amove.state).toEqual({ active: false, focused: false })
   })
 
+  it('does not deliver navigation after the shell window is destroyed', () => {
+    const window = new FakeWindow()
+    const host = new EmbeddedFeatureHost(window as never)
+    const navigate = vi.fn(() => { if (window.destroyed) throw new TypeError('Object has been destroyed') })
+    host.subscribeNavigation(navigate)
+    host.setActive('orbis')
+    navigate.mockClear()
+    window.destroyed = true
+
+    expect(() => host.setActive(undefined)).not.toThrow()
+    expect(navigate).not.toHaveBeenCalled()
+  })
+
   it('does not deliver navigation or state callbacks after disposal', () => {
     const window = new FakeWindow()
     const host = new EmbeddedFeatureHost(window as never)

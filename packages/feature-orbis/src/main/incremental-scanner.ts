@@ -35,10 +35,10 @@ export async function planDirtyScopes(options: DirtyScopeOptions): Promise<Dirty
     .map((event) => normalize(resolve(target, event.relativePath)))
   const specific = options.events.filter((event) => event.relativePath !== '' && !isExcludedEvent(target, indexDirectory, event.relativePath, options.startupRoot))
   const rootEvents = options.events.filter((event) => event.relativePath === '')
+  if (rootEvents.some((event) => event.flags & FSEVENT_FLAGS.mustScanSubDirs)) return { kind: 'full', reason: 'target-root-recursive' }
   if (specific.length === 0 && rootEvents.length > 0) {
     return excludedPaths.length > 0 ? { kind: 'incremental', scopes: [] } : { kind: 'full', reason: 'target-root-dirty' }
   }
-  if (rootEvents.some((event) => event.flags & FSEVENT_FLAGS.mustScanSubDirs)) return { kind: 'full', reason: 'target-root-recursive' }
   if (specific.length === 0) return { kind: 'incremental', scopes: [] }
 
   const renameFailure = await validateRenameEvents(target, specific, options.lookupIdentity)

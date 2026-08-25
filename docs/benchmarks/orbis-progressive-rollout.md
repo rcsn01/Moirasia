@@ -50,6 +50,14 @@ pnpm -C apps/Orbis benchmark:scan -- --scenario dropped-history-fallback --fixtu
 
 The dropped-history scenario uses a UUID mismatch because benchmark fixtures cannot safely force the kernel or FSEvents daemon to emit a dropped-history flag. It exercises the same full-refresh dispatch and cursor non-advancement path.
 
+## Resume scenarios
+
+Resume adds `synchronous=FULL` checkpoint commits to uninterrupted full scans. Acceptance requires a matched uninterrupted run, a checkpointed run, app restart, a wide incomplete directory, no-change resume, and mutations during downtime. Compare the final rows and counters with a fresh scan, not with the provisional database. The current directory may be enumerated again after restart.
+
+Record checkpoint count and latency, retained and reset directory counts, active and wall-clock elapsed time, and saved-database bytes. The median uninterrupted full-scan overhead must remain within 10 percent on baseline fixtures. If it does not, adjust checkpoint cadence without weakening recovery or publication checks. Resume results are not yet included in the tables above, so this gate remains open.
+
+A benchmark that changes target identity, invalidates the FSEvents UUID, drops history, changes a policy version, or explicitly discards progress must report a fresh full scan. `ORBIS_LEGACY_SCAN=1` and `ORBIS_DISABLE_INCREMENTAL_SCAN=1` remain non-resumable controls. `ORBIS_DISABLE_BULK_METADATA=1` still exercises resumable scans through Node metadata fallback.
+
 ## Reproduction
 
 ```sh
