@@ -14,8 +14,8 @@ export interface ChartOptions {
   /** Minimum share of a parent directory's bytes for a file to remain visible. */
   readonly minimumFilePercentage?: number
   readonly minimumArcDegrees?: number
-  readonly extraRootBytes?: number
-  readonly extraRootName?: string
+  /** Scale the root ring against this total while leaving unrepresented bytes blank. */
+  readonly rootTotalBytes?: number
 }
 
 interface ParentArc {
@@ -47,43 +47,43 @@ const DEFAULT_OPTIONS: Required<ChartOptions> = {
   maxVisibleFiles: 8,
   minimumFilePercentage: 1,
   minimumArcDegrees: 1,
-  extraRootBytes: 0,
-  extraRootName: "Unscanned or system data"
+  rootTotalBytes: 0
 }
 
 export function buildChart(source: ChartDataSource, root: DatabaseNode, options: ChartOptions = {}): readonly ChartSegment[] {
   const settings = { ...DEFAULT_OPTIONS, ...options }
-  const extraRootBytes = Math.max(0, settings.extraRootBytes)
-  const totalBytes = Math.max(0, chartBytes(root) + extraRootBytes)
+  const representedRootBytes = Math.max(0, chartBytes(root))
+  const totalBytes = Math.max(representedRootBytes, settings.rootTotalBytes)
   if (totalBytes <= 0 && root.scanState === "complete") return []
+  const rootEndAngle = totalBytes > 0 ? Math.min(360, representedRootBytes / totalBytes * 360) : 360
   const segments: ChartSegment[] = []
-  let frontier: ParentArc[] = [{ node: root, startAngle: 0, endAngle: 360, depth: 0, colorKey: "root" }]
+  let frontier: ParentArc[] = [{ node: root, startAngle: 0, endAngle: rootEndAngle, depth: 0, colorKey: "root" }]
 
   for (let depth = 1; depth <= settings.maxRings && frontier.length > 0 && segments.length < settings.maxSegments; depth += 1) {
     const next: ParentArc[] = []
     for (const parent of frontier) {
       if (parent.endAngle - parent.startAngle < settings.minimumArcDegrees) continue
-      const candidates = candidatesFor(source, parent, settings, depth === 1, extraRootBytes, settings.extraRootName)
+      const candidates = candidatesFor(source, parent, settings, depth === 1)
       if (candidates.length === 0) continue
       const available = settings.maxSegments - segments.length
       const selected = candidates.slice(0, available)
       if (selected.length === 0) break
       const needsOther = selected.length < candidates.length
       const retained = needsOther ? selected.slice(0, Math.max(0, available - 1)) : selected
-      const parentBytes = Math.max(0, chartBytes(parent.node) + (depth === 1 ? extraRootBytes : 0))
+      const parentBytes = Math.max(0, chartBytes(parent.node))
       const retainedBytes = retained.reduce((sum, candidate) => sum + candidate.bytes, 0)
       const omittedBytes = Math.max(0, parentBytes - retainedBytes)
       const omittedItemCount = sumItemCount(candidates.slice(retained.length))
       const finalCandidates = needsOther && omittedBytes > 0
         ? [...retained, {
             node: null,
-            name: depth === 1 && extraRootBytes > 0 && omittedItemCount === 0 ? settings.extraRootName : "Other",
+            name: "Other",
             bytes: omittedBytes,
             weight: omittedBytes,
             kind: "other" as const,
             colorKey: `${parent.colorKey}:other`,
-            scanState: depth === 1 && extraRootBytes > 0 && omittedItemCount === 0 ? "complete" as const : parent.node.scanState,
-            sizeAccuracy: depth === 1 && extraRootBytes > 0 && omittedItemCount === 0 ? "estimated" as const : parent.node.sizeAccuracy,
+            scanState: parent.node.scanState,
+            sizeAccuracy: parent.node.sizeAccuracy,
             ...(omittedItemCount > 0 ? { itemCount: omittedItemCount } : {})
           }]
         : retained
@@ -125,10 +125,10 @@ export function buildChart(source: ChartDataSource, root: DatabaseNode, options:
   return segments.slice(0, settings.maxSegments)
 }
 
-function candidatesFor(source: ChartDataSource, parent: ParentArc, settings: Required<ChartOptions>, rootRing: boolean, extraRootBytes: number, extraRootName: string): Candidate[] {
+function candidatesFor(source: ChartDataSource, parent: ParentArc, settings: Required<ChartOptions>, rootRing: boolean): Candidate[] {
   const children = source.getChildren(parent.node.id, settings.childrenPerDirectory)
   const childCount = source.countChildren(parent.node.id)
-  const parentBytes = Math.max(0, chartBytes(parent.node) + (rootRing ? extraRootBytes : 0))
+  const parentBytes = Math.max(0, chartBytes(parent.node))
   const parentArc = Math.max(settings.minimumArcDegrees, parent.endAngle - parent.startAngle)
   const minimumFileFraction = Math.max(settings.minimumFilePercentage / 100, settings.minimumArcDegrees / parentArc)
   const minimumFileBytes = parentBytes * minimumFileFraction
@@ -172,16 +172,6 @@ function candidatesFor(source: ChartDataSource, parent: ParentArc, settings: Req
     scanState: parent.node.scanState,
     sizeAccuracy: parent.node.sizeAccuracy,
     ...(omittedChildCount > 0 ? { itemCount: omittedChildCount } : {})
-  })
-  if (rootRing && extraRootBytes > 0) result.push({
-    node: null,
-    name: extraRootName,
-    bytes: extraRootBytes,
-    weight: extraRootBytes,
-    kind: "other",
-    colorKey: `${parent.colorKey}:extra-root`,
-    scanState: "complete",
-    sizeAccuracy: "estimated"
   })
   return result
 }

@@ -18,6 +18,7 @@ pub struct MetadataEntry {
     pub device: String,
     pub inode: String,
     pub allocated_bytes: i64,
+    pub link_count: i64,
     pub mount_point: bool,
     pub error_code: Option<i32>,
 }
@@ -219,6 +220,7 @@ fn metadata_entry(directory: &Path, name: &str, parent_device: u64) -> MetadataE
                 device: metadata.dev().to_string(),
                 inode: metadata.ino().to_string(),
                 allocated_bytes: (metadata.blocks() as i128 * 512).min(i64::MAX as i128) as i64,
+                link_count: metadata.nlink().min(i64::MAX as u64) as i64,
                 mount_point: metadata.is_dir() && metadata.dev() != parent_device,
                 error_code: None,
             }
@@ -229,6 +231,7 @@ fn metadata_entry(directory: &Path, name: &str, parent_device: u64) -> MetadataE
             device: String::new(),
             inode: String::new(),
             allocated_bytes: 0,
+            link_count: 0,
             mount_point: false,
             error_code: error.raw_os_error(),
         },

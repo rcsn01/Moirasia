@@ -264,7 +264,6 @@ async function runSample(target: string, manifest: ScanFixtureManifest | LiveMan
 
 async function preparePersistentBaseline(target: string, indexDirectory: string): Promise<void> {
   const environment: NodeJS.ProcessEnv = { ...process.env }
-  delete environment.ORBIS_LEGACY_SCAN
   const factory: OrbisWorkerFactory = {
     create: () => new Worker(options.workerPath, { env: environment, ...(options.nativeAddonPath ? { workerData: { nativeAddonPath: options.nativeAddonPath } } : {}) }) as unknown as OrbisWorker
   }
@@ -355,6 +354,8 @@ function readActiveResult(indexDirectory: string, generation: number): ScanResul
 function readPersistentStats(path: string): { aliasRows: number; tableBytes: number } {
   const database = new DatabaseSync(path, { readOnly: true })
   try {
+    const hasAliases = database.prepare("SELECT 1 AS found FROM sqlite_master WHERE type = 'table' AND name = 'file_aliases'").get() as { found?: number } | undefined
+    if (!hasAliases?.found) return { aliasRows: 0, tableBytes: 0 }
     const aliases = database.prepare('SELECT COUNT(*) AS count FROM file_aliases').get() as { count: number }
     let tableBytes = 0
     try {
@@ -410,9 +411,8 @@ class MeasuredWorker implements OrbisWorker {
 
   constructor(path: string, scanner: 'progressive' | 'legacy', nativeAddonPath: string | undefined) {
     const environment: NodeJS.ProcessEnv = { ...process.env, ORBIS_SCAN_DIAGNOSTICS: '1' }
-    if (scanner === 'legacy') environment.ORBIS_LEGACY_SCAN = '1'
-    else delete environment.ORBIS_LEGACY_SCAN
-    this.#worker = new Worker(path, { env: environment, ...(nativeAddonPath ? { workerData: { nativeAddonPath } } : {}) })
+    const workerData = { ...(nativeAddonPath ? { nativeAddonPath } : {}), ...(scanner === 'legacy' ? { referenceScan: true } : {}) }
+    this.#worker = new Worker(path, { env: environment, workerData })
     this.workerStartupMs = new Promise((resolveOnline) => this.#worker.once('online', () => resolveOnline(performance.now() - this.#createdAt)))
     this.#worker.on('message', (message: unknown) => {
       const value = message as {

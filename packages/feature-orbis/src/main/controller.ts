@@ -3,9 +3,10 @@ import { lstat, mkdir, readFile, realpath, rename, rm, writeFile } from 'node:fs
 import { basename, isAbsolute, join, normalize, relative, resolve, sep } from 'node:path'
 import type { OrbisSnapshot, ProgressSnapshot, SizeAccuracy } from '../shared/contracts'
 import { buildChart } from './chart'
+import { readConstructionPreview, resolveConstructionNodePath, type ConstructionResumeLoad } from './construction-preview'
 import { removeDatabaseFiles } from './database'
 import { measureController, measureControllerAsync } from './diagnostics'
-import { FullScanResumeStore } from './full-scan-resume'
+import { FullScanResumeStore, type FullScanResumeLoad } from './full-scan-resume'
 import { DiskIndex } from './index-store'
 import {
   EXCLUSION_POLICY_VERSION, HARD_LINK_ORDERING_VERSION, IndexManifestStore, PERSISTENT_ACCOUNTING_VERSION,
@@ -45,7 +46,7 @@ interface WorkerCompleteMessage {
   readonly generation: number
   readonly requestId: number
   readonly result: ScanResult
-  readonly refresh?: { readonly strategy: 'full' | 'incremental'; readonly journal: JournalCursor | null; readonly basePublicationId?: string; readonly fallbackReason?: string }
+  readonly refresh?: { readonly strategy: 'full' | 'incremental'; readonly journal: JournalCursor | null; readonly basePublicationId?: string; readonly fallbackReason?: string; readonly reference?: true }
 }
 interface WorkerUnchangedMessage { readonly type: 'unchanged'; readonly generation: number; readonly requestId: number; readonly journal: JournalCursor; readonly totals: ScanTotals; readonly basePublicationId: string }
 interface WorkerCanceledMessage { readonly type: 'canceled'; readonly generation: number; readonly requestId: number }
@@ -98,6 +99,7 @@ export class OrbisController {
   #run: ScanRun | undefined
   #scanStatus: OrbisSnapshot['scan'] = { status: 'idle', generation: 0, progress: null, totals: null, error: null }
   #resume: { readonly available: boolean; readonly checkpointedAt: string } | undefined
+  #savedConstruction: ConstructionResumeLoad | undefined
   #listeners = new Set<(snapshot: OrbisSnapshot) => void>()
   #pendingTasks = new Set<Promise<void>>()
   #startQueue: Promise<void> = Promise.resolve()
@@ -152,7 +154,9 @@ export class OrbisController {
     const root = timed('snapshot-root-query', () => compatible ? active!.root : undefined)
     const volume = compatible ? parseVolume(active!.metadata.volume, root?.sizeBytes ?? 0, active!.target, root?.sizeAccuracy ?? 'partial') : emptyVolume()
     const breadcrumbs = timed('snapshot-breadcrumbs-query', () => focus && active ? active.getBreadcrumbs(focus.id) : [])
-    const chart = timed('snapshot-chart-query', () => focus && active ? buildChart(active, focus, { extraRootBytes: focus.id === active.rootId && active.target === '/' ? volume.unscannedBytes : 0 }) : [])
+    const chart = timed('snapshot-chart-query', () => focus && active ? buildChart(active, focus, {
+      rootTotalBytes: focus.id === active.rootId && active.target === '/' ? volume.capacityBytes : 0
+    }) : [])
     const largestItems = timed('snapshot-largest-items-query', () => focus && active ? active.getLargestItems(focus.id) : [])
     return {
       version: 3, committed: compatible,
@@ -181,12 +185,16 @@ export class OrbisController {
     }
     this.#run = undefined
     this.#preview = undefined
+    this.#savedConstruction = undefined
     this.#rejectPendingReveals('Scan paused')
     await this.#stopRun(run, true)
+    if (this.#closed || this.#generation !== run.generation || this.#run) return this.snapshot()
     const saved = await this.#resumeStore.load(run.target)
+    if (this.#closed || this.#generation !== run.generation || this.#run) return this.snapshot()
     this.#resume = saved.kind === 'construction' || saved.kind === 'candidate'
       ? { available: true, checkpointedAt: saved.kind === 'construction' ? saved.checkpointedAt : saved.descriptor.createdAt }
       : undefined
+    await this.#restoreConstructionPreview(saved, run.generation)
     this.#scanStatus = { status: 'canceled', generation: run.generation, progress: null, totals: null, error: null }
     this.#emit()
     return this.snapshot()
@@ -199,6 +207,9 @@ export class OrbisController {
       this.#run = undefined
       await this.#stopRun(run, true)
     }
+    this.#preview = undefined
+    this.#savedConstruction = undefined
+    this.#rejectPendingReveals('Saved scan discarded')
     await this.#resumeStore.discard()
     this.#resume = undefined
     if (this.#scanStatus.status === 'canceled') this.#scanStatus = { status: 'idle', generation: this.#scanStatus.generation, progress: null, totals: null, error: null }
@@ -216,6 +227,16 @@ export class OrbisController {
       const requestId = ++this.#requestId
       run.latestRequestId = requestId
       run.worker.postMessage({ type: 'focus', generation: run.generation, requestId, id })
+      return this.snapshot()
+    }
+    const saved = this.#savedConstruction
+    if (saved && this.#preview) {
+      const preview = await readConstructionPreview(saved, this.#scanStatus.generation, id)
+      if (!preview) throw new Error('Unknown Orbis node')
+      if (this.#closed || this.#run || this.#savedConstruction !== saved) throw new Error('The scan changed before the folder could be opened')
+      this.#rejectPendingReveals('The focused folder changed before the item could be revealed')
+      this.#preview = preview
+      this.#emit()
       return this.snapshot()
     }
     const active = this.#active
@@ -241,6 +262,15 @@ export class OrbisController {
       })
       if (this.#run !== run) throw new Error('The scan changed before the item could be revealed')
       const safePath = await validateRevealPath(path, run.target)
+      this.#shell.showItemInFolder(safePath)
+      return
+    }
+    const saved = this.#savedConstruction
+    if (saved && this.#preview) {
+      const path = await resolveConstructionNodePath(saved, id)
+      if (!path) throw new Error('Unknown Orbis node')
+      const safePath = await validateRevealPath(path, saved.descriptor.target)
+      if (this.#closed || this.#run || this.#savedConstruction !== saved) throw new Error('The scan changed before the item could be revealed')
       this.#shell.showItemInFolder(safePath)
       return
     }
@@ -273,6 +303,7 @@ export class OrbisController {
     try { this.#active?.close() } catch { /* Shutdown continues so owned artifacts can still be removed. */ }
     this.#active = undefined
     this.#preview = undefined
+    this.#savedConstruction = undefined
     this.#rejectPendingReveals('Orbis is shutting down')
     this.#focusId = undefined
     // Preserve both possible publications if the manifest-directory sync failed.
@@ -287,7 +318,7 @@ export class OrbisController {
     const manifest = await this.#manifestStore.load()
     this.#activeManifest = manifest
     let saved = await this.#resumeStore.load()
-    if ((process.env.ORBIS_LEGACY_SCAN === '1' || process.env.ORBIS_DISABLE_INCREMENTAL_SCAN === '1') && saved.kind !== 'none') {
+    if (process.env.ORBIS_DISABLE_INCREMENTAL_SCAN === '1' && saved.kind !== 'none') {
       if (saved.kind === 'construction' || saved.kind === 'candidate' || saved.descriptor) await this.#resumeStore.discard(saved.descriptor?.scanId)
       else await this.#resumeStore.removeDescriptor()
       saved = { kind: 'none' }
@@ -308,8 +339,9 @@ export class OrbisController {
       if (saved.descriptor) await this.#resumeStore.discard(saved.descriptor.scanId)
       else await this.#resumeStore.removeDescriptor()
     }
+    if (saved.kind === 'construction' && saved.descriptor.target === this.#target) await this.#restoreConstructionPreview(saved, 0)
     await this.#manifestStore.cleanup(manifest?.indexFile)
-    if (process.env.ORBIS_LEGACY_SCAN === '1' || !manifest || this.#explicitInitialTarget && manifest.target !== this.#target) return
+    if (!manifest || this.#explicitInitialTarget && manifest.target !== this.#target) return
     let index: DiskIndex | undefined
     try {
       index = new DiskIndex(join(this.indexDirectory, manifest.indexFile))
@@ -384,7 +416,7 @@ export class OrbisController {
     if (this.#closed) throw new Error('Orbis is shutting down')
     const generation = ++this.#generation
     let saved = await this.#resumeStore.load()
-    if ((process.env.ORBIS_LEGACY_SCAN === '1' || process.env.ORBIS_DISABLE_INCREMENTAL_SCAN === '1') && saved.kind !== 'none') {
+    if (process.env.ORBIS_DISABLE_INCREMENTAL_SCAN === '1' && saved.kind !== 'none') {
       if (saved.kind === 'construction' || saved.kind === 'candidate' || saved.descriptor) await this.#resumeStore.discard(saved.descriptor?.scanId)
       else await this.#resumeStore.removeDescriptor()
       saved = { kind: 'none' }
@@ -398,18 +430,19 @@ export class OrbisController {
       await removeOwnedDatabaseFiles(publishedPath, this.indexDirectory)
     }
     const initialEstimate = this.#active?.target === target ? estimateFromIndex(this.#active) : await this.#estimateCache.load(target)
+    this.#preview = undefined
+    this.#savedConstruction = undefined
+    this.#rejectPendingReveals('A newer scan started')
     const worker = this.workers.create()
     const startRequestId = ++this.#requestId
     const run: ScanRun = { generation, publicationId, target, partialPath, publishedPath, worker, startRequestId, latestRequestId: startRequestId, completed: false, published: false, terminated: false }
     this.#run = run
     this.#target = target
-    this.#preview = undefined
-    this.#rejectPendingReveals('A newer scan started')
     this.#resume = undefined
     this.#scanStatus = { status: 'scanning', generation, progress: null, totals: null, error: null }
     try {
       this.#wireWorker(run)
-      const active = process.env.ORBIS_LEGACY_SCAN !== '1' && this.#active?.target === target && this.#activeManifest
+      const active = this.#active?.target === target && this.#activeManifest
         ? { manifest: this.#activeManifest, path: this.#active.path }
         : undefined
       worker.postMessage({
@@ -475,9 +508,10 @@ export class OrbisController {
     } else if (message.type === 'canceled') {
       this.#run = undefined
       this.#preview = undefined
+      this.#savedConstruction = undefined
       this.#rejectPendingReveals('Scan paused')
       this.#scanStatus = { status: 'canceled', generation: run.generation, progress: null, totals: null, error: null }
-      this.#startTask(this.#refreshResumeState().then(() => this.#emit()))
+      this.#startTask(this.#refreshResumeState(run.generation, true).then(() => this.#emit()))
     } else if (message.type === 'error' && message.error) {
       this.#fail(run, message.error.message)
     }
@@ -509,7 +543,7 @@ export class OrbisController {
       const oldFocusId = this.#focusId
       try {
         next = measureController(run.generation, 'index-open', () => new DiskIndex(result.publishedPath))
-        const persistent = process.env.ORBIS_LEGACY_SCAN !== '1'
+        const persistent = refresh?.reference !== true
         if (persistent && !await indexDirectoryIdentityIsCompatible(next, this.indexDirectory)) throw new Error('The scan worker returned an index for another index directory')
         const manifest = persistent ? manifestFor(run, next, refresh?.journal ?? null) : undefined
         if (manifest) {
@@ -517,6 +551,7 @@ export class OrbisController {
           this.#manifestDurable = manifestPublicationWasDurable(this.#manifestStore)
           await this.#resumeStore.complete(run.publicationId).catch(() => false)
           this.#resume = undefined
+          this.#savedConstruction = undefined
         }
         if (this.#run !== run) {
           try { next.close() } catch { /* A newer run owns controller state. */ }
@@ -527,6 +562,7 @@ export class OrbisController {
         this.#active = next
         if (manifest) this.#activeManifest = manifest
         this.#preview = undefined
+        this.#savedConstruction = undefined
         this.#rejectPendingReveals('Scan completed')
         this.#focusId = restoreFocus(next, old, oldFocusId)
         this.#target = next.target
@@ -576,6 +612,8 @@ export class OrbisController {
       if (this.#run !== run || this.#closed) return
       this.#activeManifest = nextManifest
       this.#preview = undefined
+      this.#savedConstruction = undefined
+      this.#resume = undefined
       this.#scanStatus = { status: 'completed', generation: run.generation, progress: null, totals, error: null }
       this.#run = undefined
       await this.#removeRunFiles(run)
@@ -592,23 +630,38 @@ export class OrbisController {
     await removeOwnedDatabaseFiles(path, this.indexDirectory)
   }
 
-  async #refreshResumeState(): Promise<void> {
+  async #refreshResumeState(generation: number, restorePreview = false): Promise<void> {
     const saved = await this.#resumeStore.load(this.#target)
+    if (this.#closed || this.#generation !== generation || this.#run) return
     this.#resume = saved.kind === 'construction' || saved.kind === 'candidate'
       ? { available: true, checkpointedAt: saved.kind === 'construction' ? saved.checkpointedAt : saved.descriptor.createdAt }
       : undefined
+    this.#savedConstruction = undefined
+    if (restorePreview) await this.#restoreConstructionPreview(saved, generation)
+  }
+
+  async #restoreConstructionPreview(saved: FullScanResumeLoad, generation: number): Promise<void> {
+    if (saved.kind !== 'construction' || saved.descriptor.target !== this.#target) return
+    const preview = await readConstructionPreview(saved, generation)
+    if (!preview || this.#closed || this.#generation !== generation || this.#run || saved.descriptor.target !== this.#target) return
+    this.#savedConstruction = saved
+    this.#preview = preview
   }
 
   #fail(run: ScanRun, error: string): void {
     if (this.#run !== run) return
     this.#run = undefined
     this.#preview = undefined
+    this.#savedConstruction = undefined
     this.#rejectPendingReveals('Scan failed')
     this.#scanStatus = { status: 'fatal-error', generation: run.generation, progress: null, totals: null, error }
     this.#startTask(this.#stopRun(run, true).then(async () => {
-      await this.#refreshResumeState()
-      if (!this.#resume) await this.#removeRunFiles(run)
-    }).then(() => this.#emit()))
+      await this.#refreshResumeState(run.generation, true)
+      if (this.#closed || this.#generation !== run.generation || this.#run) return
+      if (this.#resume) this.#scanStatus = { status: 'canceled', generation: run.generation, progress: null, totals: null, error: null }
+      else await this.#removeRunFiles(run)
+      this.#emit()
+    }))
   }
 
   #rejectPendingReveals(message: string): void {

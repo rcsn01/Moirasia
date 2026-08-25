@@ -36,7 +36,7 @@ export function refreshPersistentIndex(request: RefreshRequest): Promise<Refresh
 
 async function refreshPersistentIndexImpl(request: RefreshRequest): Promise<RefreshOutcome> {
   const refreshStartedAt = Date.now()
-  if (process.env.ORBIS_LEGACY_SCAN === '1') {
+  if (request.referenceScan === true) {
     return { kind: 'candidate', strategy: 'full', result: await scanFilesystem(request), journal: null }
   }
   const addon = request.changeJournal ? undefined : await loadNativeOrbisAddon(request.nativeAddonPath)

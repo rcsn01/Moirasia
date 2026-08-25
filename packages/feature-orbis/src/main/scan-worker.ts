@@ -72,7 +72,7 @@ async function execute(message: WorkerStartMessage, run: NonNullable<typeof acti
       ...(message.initialEstimate ? { initialEstimate: message.initialEstimate } : {}),
       ...(message.active ? { active: message.active } : {}),
       signal: run.abort.signal, control: run.control,
-      ...nativeAddonPath(),
+      ...nativeAddonPath(), ...referenceScan(),
       onCheckpoint: (sequence) => { run.checkpointSequence = sequence; run.checkpointCount += 1 },
       onProgress: (progress) => { if (active === run) port.postMessage({ type: "progress", generation: message.generation, requestId: run.lastRequestId, progress }) },
       onPreview: (preview) => { if (active === run) port.postMessage({ type: "preview", generation: message.generation, requestId: run.lastRequestId, preview }) }
@@ -84,7 +84,7 @@ async function execute(message: WorkerStartMessage, run: NonNullable<typeof acti
     } else {
       port.postMessage({
         type: 'complete', generation: message.generation, requestId: run.lastRequestId, result: outcome.result,
-        refresh: { strategy: outcome.strategy, journal: outcome.journal, ...(outcome.basePublicationId ? { basePublicationId: outcome.basePublicationId } : {}), ...(outcome.fallbackReason ? { fallbackReason: outcome.fallbackReason } : {}) }
+        refresh: { strategy: outcome.strategy, journal: outcome.journal, ...(outcome.basePublicationId ? { basePublicationId: outcome.basePublicationId } : {}), ...(outcome.fallbackReason ? { fallbackReason: outcome.fallbackReason } : {}), ...(isReferenceScan() ? { reference: true as const } : {}) }
       })
     }
   } catch (error) {
@@ -110,6 +110,10 @@ function postDiagnostics(generation: number, requestId: number, checkpointCount:
 function nativeAddonPath(): { readonly nativeAddonPath?: string } {
   const value = workerData && typeof workerData === "object" && "nativeAddonPath" in workerData ? (workerData as { nativeAddonPath?: unknown }).nativeAddonPath : undefined
   return typeof value === "string" && value.length > 0 ? { nativeAddonPath: value } : {}
+}
+function referenceScan(): { readonly referenceScan?: true } { return isReferenceScan() ? { referenceScan: true } : {} }
+function isReferenceScan(): boolean {
+  return Boolean(workerData && typeof workerData === "object" && "referenceScan" in workerData && (workerData as { referenceScan?: unknown }).referenceScan === true)
 }
 
 function serializeError(error: unknown): { readonly message: string; readonly code?: string } {

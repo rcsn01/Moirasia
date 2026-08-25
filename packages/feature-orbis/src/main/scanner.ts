@@ -17,11 +17,13 @@ export interface ScanOptions extends LegacyScanOptions {
   readonly metadataBatchSize?: number
   readonly resumable?: { readonly descriptor: FullScanResumeDescriptor; readonly store: FullScanResumeStore; readonly resume: boolean }
   readonly onCheckpoint?: (sequence: number) => void
+  /** Benchmark-only reference implementation; production callers must omit it. */
+  readonly referenceScan?: boolean
   readonly drainResumeJournal?: (eventId: string) => { readonly throughEventId: string; readonly scopes: readonly string[]; readonly restartReason?: string }
 }
 
 export function scanFilesystem(options: ScanOptions): Promise<ScanResult> {
-  if (process.env.ORBIS_LEGACY_SCAN === "1") return scanFilesystemLegacy(options)
+  if (options.referenceScan === true) return scanFilesystemLegacy(options)
   const control = options.control ?? new ProgressiveScanControl()
   return scanFilesystemProgressive({ ...options, control })
 }

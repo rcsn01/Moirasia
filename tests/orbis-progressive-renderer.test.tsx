@@ -17,6 +17,17 @@ describe('progressive Orbis renderer', () => {
     expect(screen.getByRole('button', { name: /Folder, directory, 0 B, 0.0 percent, Estimated/ })).toBeInTheDocument()
   })
 
+  it('shows the currently known size for an unfinished folder without an estimate', () => {
+    render(<Sunburst segments={[{ ...base, sizeBytes: 4096, sizeAccuracy: 'partial' }]} onActivate={vi.fn()} />)
+    expect(screen.getByRole('button', { name: /Folder, directory, 4\.0 KB, 0.0 percent, Scanning/ })).toBeInTheDocument()
+  })
+
+  it('labels the partial root circle as a share of disk capacity', () => {
+    render(<Sunburst segments={[{ ...base, sizeBytes: 4096, percentage: 2.8, endAngle: 10.08 }]} diskUsagePercentage={2.8} onActivate={vi.fn()} />)
+    expect(screen.getByText('2.8%')).toBeInTheDocument()
+    expect(screen.getByText('disk capacity')).toBeInTheDocument()
+  })
+
   it('removes hatching when a segment becomes complete', () => {
     const { container, rerender } = render(<Sunburst segments={[base]} onActivate={vi.fn()} />)
     rerender(<Sunburst segments={[{ ...base, scanState: 'complete' }]} onActivate={vi.fn()} />)

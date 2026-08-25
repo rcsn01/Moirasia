@@ -15,12 +15,12 @@ try {
   relativeExecutable = (await readFile(pathFile, "utf8")).trim()
 } catch {
   console.error("Electron is installed as a package but its binary is missing (node_modules/electron/path.txt was not generated).")
-  console.error("Repair it with: pnpm rebuild electron")
+  console.error("Repair it with: pnpm exec install-electron")
   process.exit(1)
 }
 
 if (!relativeExecutable) {
-  console.error("Electron path.txt is empty. Repair it with: pnpm rebuild electron")
+  console.error("Electron path.txt is empty. Repair it with: pnpm exec install-electron")
   process.exit(1)
 }
 
@@ -29,7 +29,7 @@ try {
   await access(executable, constants.X_OK)
 } catch {
   console.error(`Electron executable is missing or not executable: ${executable}`)
-  console.error("Repair it with: pnpm rebuild electron")
+  console.error("Repair it with: pnpm exec install-electron")
   process.exit(1)
 }
 

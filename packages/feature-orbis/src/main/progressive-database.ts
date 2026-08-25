@@ -41,10 +41,39 @@ interface ObservationDelta {
   duplicates: number
 }
 
+interface PendingFileNode {
+  readonly id: string
+  readonly parentId: string
+  readonly name: string
+  readonly path: string
+  readonly ownBytes: number
+  readonly device: string
+  readonly inode: string
+  readonly depth: number
+}
+
+interface PendingFileAlias {
+  readonly parentId: string
+  readonly name: string
+  readonly pathKey: string
+  readonly device: string
+  readonly inode: string
+  readonly allocatedBytes: number
+}
+
+interface PendingHardLinkOwner extends HardLinkOwner {
+  readonly device: string
+  readonly inode: string
+}
+
 interface MetadataBatch {
   readonly ancestorDeltas: Map<string, AncestorDelta>
   readonly directChildDeltas: Map<string, number>
   readonly observationDeltas: Map<string, ObservationDelta>
+  readonly fileNodes: Map<string, PendingFileNode>
+  readonly fileAliases: PendingFileAlias[]
+  readonly hardLinkOwners: Map<string, PendingHardLinkOwner>
+  readonly consumedEstimateRoots: Set<string>
 }
 
 export interface ProgressiveConstructionOptions {
@@ -72,6 +101,7 @@ export interface ProgressiveSemanticTotals {
 export class ProgressiveScanDatabase implements ChartDataSource {
   readonly #database: DatabaseSync
   readonly #insertNode: StatementSync
+  readonly #insertFileNodeBatch: StatementSync
   readonly #insertTask: StatementSync
   readonly #insertMetadata: StatementSync
   readonly #insertDirectoryObservation: StatementSync
@@ -79,8 +109,10 @@ export class ProgressiveScanDatabase implements ChartDataSource {
   readonly #incrementDirectChildren: StatementSync
   readonly #observeSkipped: StatementSync
   readonly #insertFileAlias: StatementSync
+  readonly #insertFileAliasBatch: StatementSync
   readonly #getHardLinkOwner: StatementSync
   readonly #setHardLinkOwner: StatementSync
+  readonly #setHardLinkOwnerBatch: StatementSync
   readonly #selectOwnedFile: StatementSync
   readonly #deleteNode: StatementSync
   readonly #applyAncestorDeltaStatement: StatementSync
@@ -90,6 +122,7 @@ export class ProgressiveScanDatabase implements ChartDataSource {
   readonly #taskIsFocused: StatementSync
   readonly #getNodeStatement: StatementSync
   readonly #parentIdStatement: StatementSync
+  readonly #estimateRootNames = new Set<string>()
   #metadataBatch: MetadataBatch | undefined
   #state: State = "building"
   #rootNodeId: string | undefined
@@ -125,7 +158,7 @@ export class ProgressiveScanDatabase implements ChartDataSource {
           enumeration_complete INTEGER NOT NULL DEFAULT 0,
           depth INTEGER NOT NULL
         );
-        CREATE INDEX nodes_parent_preview ON nodes (parent_id, size_bytes DESC, name COLLATE NOCASE ASC, id ASC);
+        CREATE INDEX nodes_parent_preview ON nodes (parent_id);
         CREATE TABLE directory_tasks (
           node_id TEXT PRIMARY KEY REFERENCES nodes(id) ON DELETE CASCADE,
           path TEXT NOT NULL,
@@ -226,6 +259,13 @@ export class ProgressiveScanDatabase implements ChartDataSource {
         INSERT INTO nodes (id, parent_id, name, path, kind, own_bytes, size_bytes, device, inode, scan_state, enumeration_complete, depth)
         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `)
+      this.#insertFileNodeBatch = this.#database.prepare(`
+        INSERT INTO nodes (id, parent_id, name, path, kind, own_bytes, size_bytes, device, inode, scan_state, enumeration_complete, depth)
+        SELECT json_extract(value, '$.id'), json_extract(value, '$.parentId'), json_extract(value, '$.name'),
+          json_extract(value, '$.path'), 'file', json_extract(value, '$.ownBytes'), json_extract(value, '$.ownBytes'),
+          json_extract(value, '$.device'), json_extract(value, '$.inode'), 'complete', 1, json_extract(value, '$.depth')
+        FROM json_each(?)
+      `)
       this.#insertTask = this.#database.prepare(`
         INSERT INTO directory_tasks (node_id, path, depth, enqueue_order, focused, status)
         VALUES (?, ?, ?, (SELECT value FROM scan_state WHERE key = 'enqueue'), ?, 'queued')
@@ -243,9 +283,21 @@ export class ProgressiveScanDatabase implements ChartDataSource {
       this.#insertFileAlias = this.#database.prepare(`
         INSERT INTO file_aliases (parent_id, name, path_key, device, inode, allocated_bytes) VALUES (?, ?, ?, ?, ?, ?)
       `)
+      this.#insertFileAliasBatch = this.#database.prepare(`
+        INSERT INTO file_aliases (parent_id, name, path_key, device, inode, allocated_bytes)
+        SELECT json_extract(value, '$.parentId'), json_extract(value, '$.name'), json_extract(value, '$.pathKey'),
+          json_extract(value, '$.device'), json_extract(value, '$.inode'), json_extract(value, '$.allocatedBytes')
+        FROM json_each(?)
+      `)
       this.#getHardLinkOwner = this.#database.prepare("SELECT node_id AS nodeId, path_key AS pathKey FROM hardlink_owners WHERE device = ? AND inode = ?")
       this.#setHardLinkOwner = this.#database.prepare(`
         INSERT INTO hardlink_owners (device, inode, node_id, path_key) VALUES (?, ?, ?, ?)
+        ON CONFLICT(device, inode) DO UPDATE SET node_id = excluded.node_id, path_key = excluded.path_key
+      `)
+      this.#setHardLinkOwnerBatch = this.#database.prepare(`
+        INSERT INTO hardlink_owners (device, inode, node_id, path_key)
+        SELECT json_extract(value, '$.device'), json_extract(value, '$.inode'), json_extract(value, '$.nodeId'), json_extract(value, '$.pathKey')
+        FROM json_each(?) WHERE true
         ON CONFLICT(device, inode) DO UPDATE SET node_id = excluded.node_id, path_key = excluded.path_key
       `)
       this.#selectOwnedFile = this.#database.prepare("SELECT parent_id AS parentId, size_bytes AS sizeBytes FROM nodes WHERE id = ? AND kind = 'file'")
@@ -267,6 +319,8 @@ export class ProgressiveScanDatabase implements ChartDataSource {
       this.#taskIsFocused = this.#database.prepare("SELECT focused FROM directory_tasks WHERE node_id = ?")
       this.#getNodeStatement = this.#database.prepare(`${NODE_SELECT} WHERE n.id = ?`)
       this.#parentIdStatement = this.#database.prepare("SELECT parent_id AS parentId FROM nodes WHERE id = ?")
+      const estimateRoots = this.#database.prepare("SELECT name FROM estimate_roots").all() as unknown as Array<{ name: string }>
+      for (const estimate of estimateRoots) this.#estimateRootNames.add(estimate.name)
       this.#database.exec("BEGIN")
     } catch (error) {
       try { this.#database.close() } catch { /* Preserve construction error. */ }
@@ -309,7 +363,7 @@ export class ProgressiveScanDatabase implements ChartDataSource {
       const child = this.#database.prepare("SELECT id, kind, scan_state AS scanState FROM nodes WHERE parent_id = ? AND name = ?").get(rootId, name) as unknown as { id?: string; kind?: string; scanState?: string } | undefined
       if (child?.id && child.kind === "directory" && child.scanState !== "complete" && child.scanState !== "unreadable") {
         this.#upsertEstimate(child.id, estimatedBytes, indexedItems, coverage)
-        this.#database.prepare("DELETE FROM estimate_roots WHERE name = ?").run(name)
+        this.#consumeEstimateRoot(name)
       } else if (!child) {
         this.#database.prepare(`
           INSERT INTO estimate_roots (name, estimated_bytes, indexed_items, physical_size_coverage)
@@ -317,18 +371,25 @@ export class ProgressiveScanDatabase implements ChartDataSource {
           ON CONFLICT(name) DO UPDATE SET estimated_bytes = excluded.estimated_bytes,
             indexed_items = excluded.indexed_items, physical_size_coverage = excluded.physical_size_coverage
         `).run(name, estimatedBytes, indexedItems, coverage)
+        this.#estimateRootNames.add(name)
       } else {
-        this.#database.prepare("DELETE FROM estimate_roots WHERE name = ?").run(name)
+        this.#consumeEstimateRoot(name)
       }
     }
   }
 
   #attachPendingEstimate(node: InsertNode): void {
-    if (!this.#rootNodeId || node.parentId !== this.#rootNodeId) return
+    if (!this.#rootNodeId || node.parentId !== this.#rootNodeId || !this.#estimateRootNames.has(node.name)) return
     if (node.kind === "directory") this.#attachEstimate.run(node.id, node.name)
     // Files do not receive provisional rows, but a stale cached entry must
     // still be consumed once exact traversal discovers them.
-    this.#deleteEstimateRoot.run(node.name)
+    this.#consumeEstimateRoot(node.name)
+  }
+
+  #consumeEstimateRoot(name: string): void {
+    if (!this.#estimateRootNames.delete(name)) return
+    this.#metadataBatch?.consumedEstimateRoots.add(name)
+    this.#deleteEstimateRoot.run(name)
   }
 
   #upsertEstimate(id: string, estimatedBytes: number, indexedItems: number, coverage: number): void {
@@ -346,7 +407,13 @@ export class ProgressiveScanDatabase implements ChartDataSource {
 
   #insert(node: InsertNode, depth: number, state: DirectoryScanState): void {
     this.#assertBuilding()
-    this.#insertNode.run(node.id, node.parentId, node.name, node.path, node.kind, safeBytes(node.ownBytes), safeBytes(node.ownBytes), node.device, node.inode, state, node.kind === "file" ? 1 : 0, depth)
+    const ownBytes = safeBytes(node.ownBytes)
+    const batch = this.#metadataBatch
+    if (batch && node.kind === "file" && node.parentId) {
+      batch.fileNodes.set(node.id, { id: node.id, parentId: node.parentId, name: node.name, path: node.path, ownBytes, device: node.device, inode: node.inode, depth })
+      return
+    }
+    this.#insertNode.run(node.id, node.parentId, node.name, node.path, node.kind, ownBytes, ownBytes, node.device, node.inode, state, node.kind === "file" ? 1 : 0, depth)
     if (node.kind === "directory") this.#insertDirectoryObservation.run(node.id, state)
   }
 
@@ -355,12 +422,15 @@ export class ProgressiveScanDatabase implements ChartDataSource {
     this.#insertTask.run(id, path, depth, focused ? 1 : 0)
   }
 
-  nextTask(focused: boolean): DirectoryTask | undefined {
+  nextTask(focused: boolean, excludedIds: ReadonlySet<string> = new Set()): DirectoryTask | undefined {
     this.#assertBuilding()
+    const exclusions = [...excludedIds]
+    const excludedClause = exclusions.length > 0 ? `AND task.node_id NOT IN (${exclusions.map(() => "?").join(",")})` : ""
     const row = this.#database.prepare(`
       SELECT task.node_id AS id, task.path, task.depth, task.focused, task.entries_read AS entriesRead
       FROM directory_tasks task
       WHERE task.focused = ? AND task.status IN ('queued', 'scanning')
+        ${excludedClause}
         AND NOT EXISTS (
           WITH RECURSIVE ancestors(id, parent_id, enumeration_complete) AS (
             SELECT parent.id, parent.parent_id, parent.enumeration_complete
@@ -371,7 +441,7 @@ export class ProgressiveScanDatabase implements ChartDataSource {
         )
       ORDER BY CASE WHEN task.depth <= 6 THEN 0 ELSE 1 END, task.depth, task.enqueue_order
       LIMIT 1
-    `).get(focused ? 1 : 0) as unknown as { id: string; path: string; depth: number; focused: number; entriesRead: number } | undefined
+    `).get(focused ? 1 : 0, ...exclusions) as unknown as { id: string; path: string; depth: number; focused: number; entriesRead: number } | undefined
     return row ? { id: row.id, path: row.path, depth: Number(row.depth), focused: Boolean(row.focused), entriesRead: Number(row.entriesRead) } : undefined
   }
 
@@ -389,13 +459,15 @@ export class ProgressiveScanDatabase implements ChartDataSource {
 
   applyMetadataBatch<T>(operation: () => T): T {
     this.#assertBuilding()
+    if (this.#metadataBatch) throw new Error('Nested metadata batches are not supported')
     // Metadata pages contain siblings from one directory. Keep aggregate work
     // in memory until the page is complete so one page does not run the same
     // ancestor walk and direct-child update once per sibling.
     const parentBatch = this.#metadataBatch
     this.#database.exec('SAVEPOINT metadata_batch')
     const batch: MetadataBatch = {
-      ancestorDeltas: new Map(), directChildDeltas: new Map(), observationDeltas: new Map()
+      ancestorDeltas: new Map(), directChildDeltas: new Map(), observationDeltas: new Map(),
+      fileNodes: new Map(), fileAliases: [], hardLinkOwners: new Map(), consumedEstimateRoots: new Set()
     }
     this.#metadataBatch = batch
     try {
@@ -406,6 +478,7 @@ export class ProgressiveScanDatabase implements ChartDataSource {
       return result
     } catch (error) {
       this.#metadataBatch = parentBatch
+      for (const name of batch.consumedEstimateRoots) this.#estimateRootNames.add(name)
       this.#database.exec('ROLLBACK TO metadata_batch')
       this.#database.exec('RELEASE metadata_batch')
       throw error
@@ -413,6 +486,9 @@ export class ProgressiveScanDatabase implements ChartDataSource {
   }
 
   #flushMetadataBatch(batch: MetadataBatch): void {
+    if (batch.fileNodes.size > 0) this.#insertFileNodeBatch.run(JSON.stringify([...batch.fileNodes.values()]))
+    if (batch.fileAliases.length > 0) this.#insertFileAliasBatch.run(JSON.stringify(batch.fileAliases))
+    if (batch.hardLinkOwners.size > 0) this.#setHardLinkOwnerBatch.run(JSON.stringify([...batch.hardLinkOwners.values()]))
     for (const [parentId, delta] of batch.ancestorDeltas) {
       if (delta.bytes === 0 && delta.descendants === 0 && delta.unreadable === 0) continue
       this.#applyAncestorDeltaStatement.run(parentId, delta.bytes, delta.descendants, delta.unreadable)
@@ -424,6 +500,9 @@ export class ProgressiveScanDatabase implements ChartDataSource {
       if (delta.skipped === 0 && delta.unreadable === 0 && delta.disappearing === 0 && delta.symlinks === 0 && delta.nestedMounts === 0 && delta.duplicates === 0) continue
       this.#observeSkipped.run(delta.skipped, delta.unreadable, delta.disappearing, delta.symlinks, delta.nestedMounts, delta.duplicates, id)
     }
+    batch.fileNodes.clear()
+    batch.fileAliases.length = 0
+    batch.hardLinkOwners.clear()
     batch.ancestorDeltas.clear()
     batch.directChildDeltas.clear()
     batch.observationDeltas.clear()
@@ -494,7 +573,10 @@ export class ProgressiveScanDatabase implements ChartDataSource {
   }
 
   insertFileAlias(parentId: string, name: string, pathKey: string, device: string, inode: string, allocatedBytes: number): void {
-    this.#insertFileAlias.run(parentId, name, pathKey, device, inode, safeBytes(allocatedBytes))
+    const bytes = safeBytes(allocatedBytes)
+    const batch = this.#metadataBatch
+    if (batch) batch.fileAliases.push({ parentId, name, pathKey, device, inode, allocatedBytes: bytes })
+    else this.#insertFileAlias.run(parentId, name, pathKey, device, inode, bytes)
   }
 
   #completeReady(startId: string): void {
@@ -552,15 +634,25 @@ export class ProgressiveScanDatabase implements ChartDataSource {
   }
 
   getHardLinkOwner(device: string, inode: string): HardLinkOwner | undefined {
-    const row = this.#getHardLinkOwner.get(device, inode) as unknown as HardLinkOwner | undefined
-    return row
+    const pending = this.#metadataBatch?.hardLinkOwners.get(hardLinkIdentity(device, inode))
+    if (pending) return { nodeId: pending.nodeId, pathKey: pending.pathKey }
+    return this.#getHardLinkOwner.get(device, inode) as unknown as HardLinkOwner | undefined
   }
 
   setHardLinkOwner(device: string, inode: string, nodeId: string, pathKey: string): void {
-    this.#setHardLinkOwner.run(device, inode, nodeId, pathKey)
+    const batch = this.#metadataBatch
+    if (batch) batch.hardLinkOwners.set(hardLinkIdentity(device, inode), { device, inode, nodeId, pathKey })
+    else this.#setHardLinkOwner.run(device, inode, nodeId, pathKey)
   }
 
   removeOwnedFile(id: string): void {
+    const pending = this.#metadataBatch?.fileNodes.get(id)
+    if (pending) {
+      this.#metadataBatch?.fileNodes.delete(id)
+      this.#applyAncestorDelta(pending.parentId, -pending.ownBytes, -1, 0)
+      this.#applyDirectChildDelta(pending.parentId, -1)
+      return
+    }
     const row = this.#selectOwnedFile.get(id) as unknown as { parentId: string | null; sizeBytes: number } | undefined
     if (!row) return
     this.#applyAncestorDelta(row.parentId, -Number(row.sizeBytes), -1, 0)
@@ -759,9 +851,11 @@ export class ProgressiveScanDatabase implements ChartDataSource {
     this.#database.exec(`
       CREATE INDEX nodes_parent_size ON nodes (parent_id, size_bytes DESC, name COLLATE NOCASE ASC, id ASC);
       INSERT INTO hardlink_groups (device, inode, owner_path_key, node_id, allocated_bytes)
-        SELECT owners.device, owners.inode, owners.path_key, owners.node_id, nodes.own_bytes
-        FROM hardlink_owners owners JOIN nodes ON nodes.id = owners.node_id
-        WHERE nodes.kind = 'file' AND owners.device <> '' AND owners.inode <> '';
+        SELECT nodes.device, nodes.inode, aliases.path_key, nodes.id, nodes.own_bytes
+        FROM nodes JOIN file_aliases aliases
+          ON aliases.parent_id = nodes.parent_id AND aliases.name = nodes.name
+            AND aliases.device = nodes.device AND aliases.inode = nodes.inode
+        WHERE nodes.kind = 'file' AND nodes.device <> '' AND nodes.inode <> '';
       DROP INDEX nodes_parent_preview;
       DROP TABLE directory_tasks;
       DROP TABLE hardlink_owners;
@@ -893,4 +987,5 @@ function databaseNode(row: Record<string, unknown>): DatabaseNode {
   }
 }
 
+function hardLinkIdentity(device: string, inode: string): string { return `${device}\0${inode}` }
 function safeBytes(value: unknown): number { const number = typeof value === "bigint" ? Number(value) : Number(value); return Number.isFinite(number) && number > 0 ? number : 0 }

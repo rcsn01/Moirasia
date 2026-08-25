@@ -1,5 +1,5 @@
 import { DatabaseSync } from 'node:sqlite'
-import { link, mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises'
+import { link, lstat, mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
@@ -54,7 +54,10 @@ describe('progressive Orbis scanner', () => {
       for (const table of ['file_aliases', 'hardlink_groups', 'directory_observations']) expect(() => database.prepare(`SELECT * FROM ${table}`).all()).not.toThrow()
       const observationCount = database.prepare('SELECT COUNT(*) AS count FROM directory_observations').get() as { count: number }
       const directoryCount = database.prepare("SELECT COUNT(*) AS count FROM nodes WHERE kind = 'directory'").get() as { count: number }
+      const fileCount = database.prepare("SELECT COUNT(*) AS count FROM nodes WHERE kind = 'file'").get() as { count: number }
+      const hardLinkGroupCount = database.prepare('SELECT COUNT(*) AS count FROM hardlink_groups').get() as { count: number }
       expect(observationCount.count).toBe(directoryCount.count)
+      expect(hardLinkGroupCount.count).toBe(fileCount.count)
       expect(database.prepare("SELECT value FROM metadata WHERE key = 'schemaVersion'").get()).toEqual({ value: '2' })
     } finally { database.close() }
   })
@@ -142,6 +145,24 @@ describe('progressive Orbis scanner', () => {
     } finally { database.abort() }
   })
 
+  it('rolls back JSON page writes and pending hard-link ownership when a batch fails', async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'orbis-page-rollback-'))
+    cleanup.push(directory)
+    const database = new ProgressiveScanDatabase(join(directory, 'construction.sqlite'))
+    try {
+      database.insertRoot({ id: 'root', parentId: null, name: 'root', path: directory, kind: 'directory', ownBytes: 0, device: '1', inode: '1' })
+      expect(() => database.applyMetadataBatch(() => {
+        database.insertChild({ id: 'file', parentId: 'root', name: 'file', path: join(directory, 'file'), kind: 'file', ownBytes: 512, device: '1', inode: '2' }, 1, false)
+        database.insertFileAlias('root', 'file', 'file', '1', '2', 512)
+        database.insertFileAlias('root', 'file-copy', 'file', '1', '2', 512)
+        database.setHardLinkOwner('1', '2', 'file', 'file')
+      })).toThrow()
+      expect(database.getNode('file')).toBeUndefined()
+      expect(database.getHardLinkOwner('1', '2')).toBeUndefined()
+      expect(database.semanticTotals().scannedItems).toBe(1)
+    } finally { database.abort() }
+  })
+
   it('rolls back the construction database when canceled after a preview', async () => {
     const directory = await mkdtemp(join(tmpdir(), 'orbis-cancel-'))
     cleanup.push(directory)
@@ -186,6 +207,46 @@ describe('progressive Orbis scanner', () => {
       expect(groups[0]!.allocatedBytes).toBeGreaterThan(0)
       expect(result.totals.duplicateHardLinks).toBe(1)
       expect(result.totals.skippedItems).toBe(1)
+    } finally { database.close() }
+  })
+
+  it('replaces a hard-link owner discovered on an earlier metadata page', async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'orbis-hardlink-pages-'))
+    cleanup.push(directory)
+    const root = join(directory, 'root')
+    const indexes = join(directory, 'indexes')
+    await mkdir(root, { recursive: true })
+    const lexicalOwner = join(root, 'a.dat')
+    const firstAlias = join(root, 'z.dat')
+    await writeFile(lexicalOwner, Buffer.alloc(2048, 3))
+    await link(lexicalOwner, firstAlias)
+    const stats = await lstat(lexicalOwner)
+    const entries = ['z.dat', 'a.dat'].map((name) => metadataEntry(name, 'file', {
+      device: String(stats.dev), inode: String(stats.ino), allocatedBytes: Number(stats.blocks) * 512
+    }))
+    const source: DirectoryMetadataSource = {
+      open: async () => {
+        let offset = 0
+        return {
+          readPage: async () => {
+            const page = entries.slice(offset, offset + 1)
+            offset += page.length
+            return { entries: page, done: offset === entries.length, bulkEntries: page.length, fallbackEntries: 0 }
+          },
+          close: async () => undefined
+        }
+      }
+    }
+    const result = await scanFilesystem({
+      generation: 1, target: root, partialPath: join(indexes, 'pages.partial.sqlite'),
+      publishedPath: join(indexes, 'pages.sqlite'), indexDirectory: indexes,
+      directoryMetadataSource: source, metadataBatchSize: 1
+    })
+    const database = new DatabaseSync(result.publishedPath, { readOnly: true })
+    try {
+      expect(database.prepare("SELECT path FROM nodes WHERE kind = 'file'").all()).toEqual([{ path: lexicalOwner }])
+      expect(database.prepare('SELECT path_key AS pathKey FROM file_aliases ORDER BY path_key').all()).toEqual([{ pathKey: 'a.dat' }, { pathKey: 'z.dat' }])
+      expect(database.prepare('SELECT owner_path_key AS ownerPathKey FROM hardlink_groups').all()).toEqual([{ ownerPathKey: 'a.dat' }])
     } finally { database.close() }
   })
 
@@ -393,7 +454,7 @@ describe('progressive Orbis scanner', () => {
     expect(fileSystem.maximumOpenHandles).toBeLessThanOrEqual(8)
   })
 
-  it('keeps progressive and legacy totals and indexed fields equivalent', async () => {
+  it('keeps ORBIS_LEGACY_SCAN on the feature-rich progressive scanner', async () => {
     const directory = await mkdtemp(join(tmpdir(), 'orbis-equivalence-'))
     cleanup.push(directory)
     const root = join(directory, 'root')
@@ -403,12 +464,18 @@ describe('progressive Orbis scanner', () => {
     const previousLegacy = process.env.ORBIS_LEGACY_SCAN
     try {
       process.env.ORBIS_LEGACY_SCAN = '1'
-      const legacy = await scanFilesystem({ generation: 10, target: root, partialPath: join(directory, 'legacy.partial.sqlite'), publishedPath: join(directory, 'legacy.sqlite'), indexDirectory: join(directory, 'legacy-indexes') })
+      let previews = 0
+      const compatibility = await scanFilesystem({
+        generation: 10, target: root, partialPath: join(directory, 'compatibility.partial.sqlite'),
+        publishedPath: join(directory, 'compatibility.sqlite'), indexDirectory: join(directory, 'compatibility-indexes'),
+        onPreview: () => { previews += 1 }
+      })
       delete process.env.ORBIS_LEGACY_SCAN
       const progressive = await scanFilesystem({ generation: 11, target: root, partialPath: join(directory, 'progressive.partial.sqlite'), publishedPath: join(directory, 'progressive.sqlite'), indexDirectory: join(directory, 'progressive-indexes') })
-      expect(normalizeTotals(legacy.totals)).toEqual(normalizeTotals(progressive.totals))
-      expect(legacy.scannedBytes).toBe(progressive.scannedBytes)
-      expect(readComparableRows(legacy.publishedPath)).toEqual(readComparableRows(progressive.publishedPath))
+      expect(previews).toBeGreaterThan(0)
+      expect(normalizeTotals(compatibility.totals)).toEqual(normalizeTotals(progressive.totals))
+      expect(compatibility.scannedBytes).toBe(progressive.scannedBytes)
+      expect(readComparableRows(compatibility.publishedPath)).toEqual(readComparableRows(progressive.publishedPath))
     } finally {
       if (previousLegacy === undefined) delete process.env.ORBIS_LEGACY_SCAN
       else process.env.ORBIS_LEGACY_SCAN = previousLegacy

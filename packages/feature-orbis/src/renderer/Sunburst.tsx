@@ -5,9 +5,10 @@ interface SunburstProps {
   readonly segments: readonly ChartSegment[]
   readonly onActivate: (segment: ChartSegment) => void
   readonly provisionalState?: DirectoryScanState
+  readonly diskUsagePercentage?: number | undefined
 }
 
-export function Sunburst({ segments, onActivate, provisionalState = "complete" }: SunburstProps): React.JSX.Element {
+export function Sunburst({ segments, onActivate, provisionalState = "complete", diskUsagePercentage }: SunburstProps): React.JSX.Element {
   const [tooltip, setTooltip] = useState<{ readonly segment: ChartSegment; readonly x: number; readonly y: number }>()
   const maxDepth = Math.max(1, ...segments.map((segment) => segment.depth))
   const ringWidth = 42
@@ -54,8 +55,8 @@ export function Sunburst({ segments, onActivate, provisionalState = "complete" }
         </g>
       })}
       <circle cx={center} cy={center} r={innerRadius - 2} className="orbis-feature-panel__sunburst-center" />
-      <text x={center} y={center - 4} textAnchor="middle" className="orbis-feature-panel__sunburst-center-label">100%</text>
-      <text x={center} y={center + 17} textAnchor="middle" className="orbis-feature-panel__sunburst-center-caption">selected folder</text>
+      <text x={center} y={center - 4} textAnchor="middle" className="orbis-feature-panel__sunburst-center-label">{diskUsagePercentage === undefined ? "100%" : `${Math.max(0, Math.min(100, diskUsagePercentage)).toFixed(1)}%`}</text>
+      <text x={center} y={center + 17} textAnchor="middle" className="orbis-feature-panel__sunburst-center-caption">{diskUsagePercentage === undefined ? "selected folder" : "disk capacity"}</text>
     </svg>
     {tooltip && <div className="orbis-feature-panel__sunburst-tooltip" role="tooltip" style={{ left: tooltip.x + 12, top: tooltip.y + 12 }}>
       <strong>{tooltip.segment.name}</strong>
@@ -68,7 +69,6 @@ export function Sunburst({ segments, onActivate, provisionalState = "complete" }
 
 function segmentSizePresentation(segment: ChartSegment): { readonly value: string; readonly estimating: boolean } {
   const pending = segment.scanState === "queued" || segment.scanState === "scanning"
-  if (segment.kind === "directory" && pending && segment.sizeAccuracy !== "estimated" && segment.estimatedSizeBytes === undefined) return { value: "Estimating", estimating: true }
   return { value: formatBytes(pending ? segment.estimatedSizeBytes ?? segment.sizeBytes : segment.sizeBytes), estimating: false }
 }
 

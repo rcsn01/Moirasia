@@ -8,6 +8,7 @@ export interface ScanStats {
   readonly blocks?: number | bigint
   readonly dev: number | bigint
   readonly ino: number | bigint
+  readonly nlink?: number | bigint
   isDirectory(): boolean
   isFile(): boolean
   isSymbolicLink(): boolean

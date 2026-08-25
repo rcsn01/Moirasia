@@ -1,6 +1,7 @@
 import { createRequire } from "node:module"
 import { normalize, relative, resolve, sep } from "node:path"
 import type { ScanFileSystem, ScanStats } from "./legacy-scanner"
+import { createOrderedConcurrentMapper, type OrderedConcurrentMapper } from "./ordered-concurrent-map"
 
 export interface FolderEstimateItem {
   readonly name: string
@@ -19,6 +20,8 @@ export interface DirectoryMetadataEntry {
   readonly device: string
   readonly inode: string
   readonly allocatedBytes: number
+  /** Exact filesystem link count when supplied by the metadata backend. */
+  readonly linkCount?: number
   readonly mountPoint: boolean
   readonly error?: unknown
 }
@@ -36,7 +39,10 @@ export interface DirectoryMetadataCursor {
 }
 
 export interface DirectoryMetadataSource {
+  /** Number of directory pages this source can read concurrently. */
+  readonly pageConcurrency?: number
   open(path: string, targetRealpath: string): Promise<DirectoryMetadataCursor>
+  close?(): Promise<void>
 }
 
 export interface NativeMetadataEntry {
@@ -45,6 +51,7 @@ export interface NativeMetadataEntry {
   readonly device: string
   readonly inode: string
   readonly allocatedBytes: number
+  readonly linkCount?: number
   readonly mountPoint: boolean
   readonly errorCode?: number | null
 }
@@ -85,11 +92,13 @@ export type NativeOrbisAddon = Partial<NativeMetadataAddon> & Record<string, unk
 
 export class NodeDirectoryMetadataSource implements DirectoryMetadataSource {
   readonly #fileSystem: ScanFileSystem & { opendir?: (path: string) => Promise<NodeDirectoryHandle> }
-  readonly #metadataConcurrency: number
+  readonly #metadataMapper: OrderedConcurrentMapper
+  readonly pageConcurrency: number
 
   constructor(fileSystem: ScanFileSystem, metadataConcurrency = 4) {
     this.#fileSystem = fileSystem as ScanFileSystem & { opendir?: (path: string) => Promise<NodeDirectoryHandle> }
-    this.#metadataConcurrency = Math.max(1, Math.min(64, Math.floor(metadataConcurrency)))
+    this.pageConcurrency = Math.max(1, Math.min(64, Math.floor(metadataConcurrency)))
+    this.#metadataMapper = createOrderedConcurrentMapper(this.pageConcurrency)
   }
 
   async open(path: string, targetRealpath: string): Promise<DirectoryMetadataCursor> {
@@ -98,7 +107,7 @@ export class NodeDirectoryMetadataSource implements DirectoryMetadataSource {
     const handle = this.#fileSystem.opendir
       ? await this.#fileSystem.opendir(path)
       : await createReaddirHandle(this.#fileSystem, path)
-    return new NodeDirectoryMetadataCursor(path, handle, this.#fileSystem.lstat.bind(this.#fileSystem), this.#metadataConcurrency)
+    return new NodeDirectoryMetadataCursor(path, handle, this.#fileSystem.lstat.bind(this.#fileSystem), this.#metadataMapper)
   }
 }
 
@@ -110,7 +119,7 @@ class NodeDirectoryMetadataCursor implements DirectoryMetadataCursor {
     private readonly directory: string,
     private readonly handle: NodeDirectoryHandle,
     private readonly lstat: (path: string) => Promise<ScanStats>,
-    private readonly concurrency: number
+    private readonly metadataMapper: OrderedConcurrentMapper
   ) {}
 
   async readPage(limit: number, signal: AbortSignal): Promise<DirectoryMetadataPage> {
@@ -127,7 +136,9 @@ class NodeDirectoryMetadataCursor implements DirectoryMetadataCursor {
       }
       names.push(entry.name)
     }
-    const entries = await mapLimit(names, this.concurrency, async (name): Promise<DirectoryMetadataEntry> => {
+    names.sort(compareNames)
+    const entries: DirectoryMetadataEntry[] = []
+    const metadata = this.metadataMapper.map(names, { signal }, async (name): Promise<DirectoryMetadataEntry> => {
       throwIfAborted(signal)
       const path = normalize(resolve(this.directory, name))
       try {
@@ -137,6 +148,7 @@ class NodeDirectoryMetadataCursor implements DirectoryMetadataCursor {
         return { name, kind: "other", device: "", inode: "", allocatedBytes: 0, mountPoint: false, error }
       }
     })
+    for await (const entry of metadata) entries.push(entry)
     return { entries, done: this.#done && entries.length === names.length, bulkEntries: 0, fallbackEntries: entries.length }
   }
 
@@ -174,26 +186,31 @@ class NativeDirectoryMetadataCursor implements DirectoryMetadataCursor {
     metadataCursorDiagnostics.nativeReadPageCalls += 1
     const page = this.cursor.readPage(clampPageLimit(limit))
     throwIfAborted(signal)
-    return {
-      entries: page.entries.map((entry) => ({
-        name: entry.name,
-        kind: normalizeKind(entry.kind),
-        device: String(entry.device ?? ""),
-        inode: String(entry.inode ?? ""),
-        allocatedBytes: finiteBytes(entry.allocatedBytes),
-        mountPoint: Boolean(entry.mountPoint),
-        ...(entry.errorCode == null ? {} : { error: nativeError(entry.errorCode) })
-      })),
-      done: Boolean(page.done),
-      bulkEntries: finiteCount(page.bulkEntries ?? page.entries.length),
-      fallbackEntries: finiteCount(page.fallbackEntries ?? 0)
-    }
+    return nativePage(page)
   }
 
   async close(): Promise<void> {
     if (this.#closed) return
     this.#closed = true
     this.cursor.close()
+  }
+}
+
+function nativePage(page: NativeMetadataPage): DirectoryMetadataPage {
+  return {
+    entries: page.entries.map((entry) => ({
+      name: entry.name,
+      kind: normalizeKind(entry.kind),
+      device: String(entry.device ?? ""),
+      inode: String(entry.inode ?? ""),
+      allocatedBytes: finiteBytes(entry.allocatedBytes),
+      ...(entry.linkCount === undefined ? {} : { linkCount: finiteCount(entry.linkCount) }),
+      mountPoint: Boolean(entry.mountPoint),
+      ...(entry.errorCode == null ? {} : { error: nativeError(entry.errorCode) })
+    })),
+    done: Boolean(page.done),
+    bulkEntries: finiteCount(page.bulkEntries ?? page.entries.length),
+    fallbackEntries: finiteCount(page.fallbackEntries ?? 0)
   }
 }
 
@@ -240,6 +257,7 @@ function fromStats(name: string, stats: ScanStats): DirectoryMetadataEntry {
     device: String(stats.dev),
     inode: String(stats.ino),
     allocatedBytes: finiteBytes(stats.blocks === undefined ? 0 : number(stats.blocks) * 512),
+    ...(stats.nlink === undefined ? {} : { linkCount: finiteCount(stats.nlink) }),
     mountPoint: false
   }
 }
@@ -254,19 +272,5 @@ function throwIfAborted(signal: AbortSignal): void { if (signal.aborted) throw n
 function compareNames(left: string, right: string): number { const value = left.localeCompare(right, undefined, { numeric: true, sensitivity: "base" }); return value || (left < right ? -1 : left > right ? 1 : 0) }
 function isWithin(path: string, parent: string): boolean { const child = normalize(resolve(path)); const root = normalize(resolve(parent)); const remainder = relative(root, child); return child === root || remainder !== "" && remainder !== ".." && !remainder.startsWith(`..${sep}`) }
 
-async function mapLimit<T, R>(values: readonly T[], limit: number, operation: (value: T) => Promise<R>): Promise<R[]> {
-  const result = new Array<R>(values.length)
-  let next = 0
-  const worker = async (): Promise<void> => {
-    while (true) {
-      const index = next
-      next += 1
-      if (index >= values.length) return
-      result[index] = await operation(values[index]!)
-    }
-  }
-  await Promise.all(Array.from({ length: Math.min(limit, values.length) }, () => worker()))
-  return result
-}
 
 export type { ScanStats }

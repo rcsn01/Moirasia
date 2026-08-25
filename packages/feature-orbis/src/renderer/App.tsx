@@ -70,7 +70,11 @@ export function OrbisPanel({ bridge, appearance, onAppearanceChange, embeddedHea
   const focus = snapshot?.focus
   const scan = snapshot?.scan
   const isScanning = scan?.status === "scanning"
-  const displayTotal = useMemo(() => focus && snapshot ? focus.sizeBytes + (focus.id === snapshot.breadcrumbs[0]?.id && snapshot.target.isStartup ? snapshot.volume.unscannedBytes : 0) : 0, [focus, snapshot])
+  const diskRoot = Boolean(focus && snapshot?.target.isStartup && focus.id === snapshot.breadcrumbs[0]?.id)
+  const displayTotal = useMemo(() => focus && snapshot ? (diskRoot ? snapshot.volume.capacityBytes : focus.sizeBytes) : 0, [diskRoot, focus, snapshot])
+  const diskUsagePercentage = diskRoot && focus && displayTotal > 0
+    ? (isPending(focus) ? focus.estimatedSizeBytes ?? focus.sizeBytes : focus.sizeBytes) / displayTotal * 100
+    : undefined
   const selectedPercent = selected ? selected.percentage : 0
   const startOrRescan = !scan || scan.status === "idle" ? bridge.startScan : bridge.rescan
   const startOrRescanLabel = scan?.resume?.available ? "Resume" : !scan || scan.status === "idle" ? "Scan" : "Rescan"
@@ -113,9 +117,9 @@ export function OrbisPanel({ bridge, appearance, onAppearanceChange, embeddedHea
           <section className="orbis-feature-panel__chart-panel" aria-labelledby="chart-heading">
             <div className="orbis-feature-panel__panel-heading"><div><p className="orbis-feature-panel__eyebrow">LOCATION</p><h2 id="chart-heading">{focus.name}</h2><FolderSize node={focus} /></div>{focus.parentId && <Button size="sm" variant="ghost" onClick={() => void run(() => bridge.focusNode(focus.parentId!))}><ChevronLeft />Up</Button>}</div>
             <Breadcrumbs snapshot={snapshot} onFocus={(id) => void run(() => bridge.focusNode(id))} />
-            {focus.directChildren === 0 && focus.scanState === "complete" && !(focus.id === snapshot.breadcrumbs[0]?.id && snapshot.target.isStartup && snapshot.volume.unscannedBytes > 0) ? <div className="orbis-feature-panel__empty" role="status"><strong>This folder is empty</strong><span>No readable child files or folders were found.</span></div> : <Sunburst segments={snapshot.chart} onActivate={activateSegment} provisionalState={focus.scanState} />}
+            {focus.directChildren === 0 && focus.scanState === "complete" && !(diskRoot && snapshot.volume.unscannedBytes > 0) ? <div className="orbis-feature-panel__empty" role="status"><strong>This folder is empty</strong><span>No readable child files or folders were found.</span></div> : <Sunburst segments={snapshot.chart} onActivate={activateSegment} provisionalState={focus.scanState} diskUsagePercentage={diskUsagePercentage} />}
           </section>
-          <Inspector snapshot={snapshot} selected={selected} selectedPercent={selectedPercent} onSelect={selectLargest} onReveal={() => selected?.id && void run(async () => { await bridge.revealNode(selected.id!); return snapshot })} />
+          <Inspector snapshot={snapshot} selected={selected} selectedPercent={selectedPercent} percentageContext={diskRoot ? "disk capacity" : "this folder"} onSelect={selectLargest} onReveal={() => selected?.id && void run(async () => { await bridge.revealNode(selected.id!); return snapshot })} />
         </div> : <EmptyScanState snapshot={snapshot} onStart={() => void run(() => bridge.startScan())} />}
       </>}
     </DesktopPage>
@@ -151,7 +155,6 @@ function Metric({ label, value, muted = false }: { readonly label: string; reado
 }
 
 function FolderSize({ node }: { readonly node: NodeSummary }): React.JSX.Element {
-  if (isPending(node) && node.estimatedSizeBytes === undefined) return <p className="orbis-feature-panel__folder-size" aria-label="Estimating folder size"><strong>Estimating…</strong></p>
   const value = formatBytes(isPending(node) ? node.estimatedSizeBytes ?? node.sizeBytes : node.sizeBytes)
   const label = node.sizeAccuracy === "estimated" ? "Estimated size" : node.sizeAccuracy === "exact" ? "Size" : "Known size"
   const accessibleLabel = node.sizeAccuracy === "estimated" ? `Estimated folder size, ${value}` : node.sizeAccuracy === "exact" ? `Folder size, ${value}` : `Known folder size, ${value}`
@@ -162,9 +165,9 @@ function Breadcrumbs({ snapshot, onFocus }: { readonly snapshot: OrbisSnapshot; 
   return <nav className="orbis-feature-panel__breadcrumbs" aria-label="Folder breadcrumbs">{snapshot.breadcrumbs.map((breadcrumb, index) => <span key={breadcrumb.id}><button type="button" onClick={() => onFocus(breadcrumb.id)} aria-current={index === snapshot.breadcrumbs.length - 1 ? "location" : undefined}>{breadcrumb.name}</button>{index < snapshot.breadcrumbs.length - 1 && <span aria-hidden="true">/</span>}</span>)}</nav>
 }
 
-function Inspector({ snapshot, selected, selectedPercent, onSelect, onReveal }: { readonly snapshot: OrbisSnapshot; readonly selected: SelectedNode | undefined; readonly selectedPercent: number; readonly onSelect: (item: NodeSummary) => void; readonly onReveal: () => void }): React.JSX.Element {
+function Inspector({ snapshot, selected, selectedPercent, percentageContext, onSelect, onReveal }: { readonly snapshot: OrbisSnapshot; readonly selected: SelectedNode | undefined; readonly selectedPercent: number; readonly percentageContext: "disk capacity" | "this folder"; readonly onSelect: (item: NodeSummary) => void; readonly onReveal: () => void }): React.JSX.Element {
   return <aside className="orbis-feature-panel__inspector" aria-labelledby="largest-heading">
-    {selected ? <Card className="orbis-feature-panel__selection-card"><CardHeader><div className="orbis-feature-panel__panel-heading"><div><p className="orbis-feature-panel__eyebrow">SELECTED ITEM</p><CardTitle>{selected.name}</CardTitle></div><Badge variant="outline">{selected.kind}</Badge></div><CardDescription>{formatBytes(selected.sizeBytes)} · {selectedPercent.toFixed(1)}% of this folder · {accuracyLabel(selected.sizeAccuracy, selected.scanState)}</CardDescription></CardHeader><CardContent><Button size="sm" variant="outline" disabled={!selected.id} onClick={onReveal}>Reveal in Finder</Button></CardContent></Card> : <Card className="orbis-feature-panel__selection-card orbis-feature-panel__selection-card--empty"><CardHeader><CardTitle>Select an item</CardTitle><CardDescription>Choose a file in the chart or list to see its size and reveal it in Finder.</CardDescription></CardHeader></Card>}
+    {selected ? <Card className="orbis-feature-panel__selection-card"><CardHeader><div className="orbis-feature-panel__panel-heading"><div><p className="orbis-feature-panel__eyebrow">SELECTED ITEM</p><CardTitle>{selected.name}</CardTitle></div><Badge variant="outline">{selected.kind}</Badge></div><CardDescription>{formatBytes(selected.sizeBytes)} · {selectedPercent.toFixed(1)}% of {percentageContext} · {accuracyLabel(selected.sizeAccuracy, selected.scanState)}</CardDescription></CardHeader><CardContent><Button size="sm" variant="outline" disabled={!selected.id} onClick={onReveal}>Reveal in Finder</Button></CardContent></Card> : <Card className="orbis-feature-panel__selection-card orbis-feature-panel__selection-card--empty"><CardHeader><CardTitle>Select an item</CardTitle><CardDescription>Choose a file in the chart or list to see its size and reveal it in Finder.</CardDescription></CardHeader></Card>}
     <Card className="orbis-feature-panel__largest-card"><CardHeader><CardTitle id="largest-heading">Largest items</CardTitle><CardDescription>Direct children of {snapshot.focus?.name ?? snapshot.target.name}, sorted by allocated space.</CardDescription></CardHeader><CardContent>{snapshot.largestItems.length === 0 ? <p className="orbis-feature-panel__muted">No readable items in this folder.</p> : <ul className="orbis-feature-panel__largest-list">{snapshot.largestItems.map((item) => { const size = nodeSizePresentation(item); return <li key={item.id}><button type="button" onClick={() => onSelect(item)} aria-label={`${item.name}, ${item.kind}, ${size.accessible}`}><span className="orbis-feature-panel__largest-list-name"><span className={`orbis-feature-panel__node-dot orbis-feature-panel__node-dot--${item.kind}`} aria-hidden="true" />{item.name}</span><span className="orbis-feature-panel__largest-list-size">{size.visible}</span></button></li> })}</ul>}</CardContent></Card>
   </aside>
 }
@@ -174,7 +177,6 @@ function EmptyScanState({ snapshot, onStart }: { readonly snapshot: OrbisSnapsho
 }
 
 function nodeSizePresentation(node: NodeSummary): { readonly visible: string; readonly accessible: string } {
-  if (node.kind === "directory" && isPending(node) && node.estimatedSizeBytes === undefined) return { visible: "Estimating…", accessible: "Estimating" }
   const value = formatBytes(isPending(node) ? node.estimatedSizeBytes ?? node.sizeBytes : node.sizeBytes)
   return { visible: value, accessible: `${value}, ${accuracyLabel(node.sizeAccuracy, node.scanState)}` }
 }

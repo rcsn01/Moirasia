@@ -83,6 +83,32 @@ describe("Orbis scan metadata adapters", () => {
     expect(reads).toBe(1_024)
   })
 
+  it('shares the Stage 5 ordered metadata admission limit across cursors', async () => {
+    let active = 0
+    let maximum = 0
+    const fileSystem: ScanFileSystem & { opendir(path: string): Promise<{ read(): Promise<{ name: string } | null>; close(): Promise<void> }> } = {
+      ...minimalFileSystem(),
+      lstat: async (path) => {
+        active += 1
+        maximum = Math.max(maximum, active)
+        try { await new Promise((resolve) => setTimeout(resolve, 5)); return stats('file', 1, path.charCodeAt(path.length - 1)) }
+        finally { active -= 1 }
+      },
+      opendir: async (path) => {
+        const names = [`${path.at(-1)}-a`, `${path.at(-1)}-b`, `${path.at(-1)}-c`, `${path.at(-1)}-d`]
+        let offset = 0
+        return { read: async () => offset < names.length ? { name: names[offset++]! } : null, close: async () => undefined }
+      }
+    }
+    const source = new NodeDirectoryMetadataSource(fileSystem, 3)
+    const [left, right] = await Promise.all([source.open('/target/a', '/target'), source.open('/target/b', '/target')])
+    const signal = new AbortController().signal
+    const [leftPage, rightPage] = await Promise.all([left.readPage(4, signal), right.readPage(4, signal)])
+    expect(maximum).toBe(3)
+    expect(leftPage.entries.map((entry) => entry.name)).toEqual(['a-a', 'a-b', 'a-c', 'a-d'])
+    expect(rightPage.entries.map((entry) => entry.name)).toEqual(['b-a', 'b-b', 'b-c', 'b-d'])
+  })
+
   it('can disable bulk metadata without disabling the FSEvents addon API', async () => {
     const directory = await mkdtemp(join(tmpdir(), 'orbis-native-loader-'))
     const addonPath = join(directory, 'addon.cjs')
