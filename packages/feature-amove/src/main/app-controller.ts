@@ -8,7 +8,7 @@ import { isReservedShortcut, validateBindings } from '../shared/shortcuts'
 import { NativeBackend } from './native-backend'
 import { SettingsStore } from './settings-store'
 import { ShelfController } from './shelf-controller'
-import { desktopWindowChromeOptions, neutralWindowBackground, registerProductAppearance } from '@moirasia/desktop-shell/main'
+import { desktopWindowChromeOptions, neutralWindowBackground, registerProductAppearance, sendToRenderer } from '@moirasia/desktop-shell/main'
 
 export class AppController {
   readonly platform: Platform
@@ -321,7 +321,7 @@ export class AppController {
 
   private broadcast(): void {
     const target = this.getMainWebContents()
-    if (target && !target.isDestroyed()) target.send(IPC.mainStateChanged, this.getState())
+    if (target) sendToRenderer(target, IPC.mainStateChanged, this.getState())
   }
 }
 

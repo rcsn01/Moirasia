@@ -1,5 +1,6 @@
 import { ipcMain, type BrowserWindow, type IpcMainEvent, type IpcMainInvokeEvent } from 'electron'
 import { isAppearance, isProductId } from '@moirasia/desktop-shell'
+import { sendToRenderer } from '@moirasia/desktop-shell/main'
 import { IPC, isApplicationId, isControllerPage } from '../shared/contracts'
 import type { ApplicationController } from './application-controller'
 import type { ShellSettingsStore } from './settings'
@@ -22,8 +23,13 @@ export function registerControllerIpc(options: { window: BrowserWindow; controll
   ipcMain.handle(IPC.reportPage, (event, page) => { authorize(event); if (!isControllerPage(page)) throw new TypeError('Invalid controller page'); options.controller.reportPage(page) })
   ipcMain.handle(IPC.relaunch, (event) => { authorize(event); options.controller.relaunch() })
   ipcMain.handle(IPC.openLoginItemsSettings, (event) => { authorize(event); return options.controller.openLoginItemsSettings() })
-  const unsubscribe = options.controller.subscribe((snapshot) => { if (!options.window.isDestroyed()) options.window.webContents.send(IPC.snapshot, snapshot) })
+  const unsubscribe = options.controller.subscribe((snapshot) => { sendToRenderer(options.window.webContents, IPC.snapshot, snapshot) })
   const handlers = Object.values(IPC).filter((value) => value !== IPC.snapshot && value !== IPC.navigate)
   return () => { unsubscribe(); handlers.forEach((channel) => ipcMain.removeHandler(channel)) }
 }
-function appSetLoginItem(openAtLogin: boolean): void { void import('electron').then(({ app }) => app.setLoginItemSettings({ openAtLogin })) }
+function appSetLoginItem(openAtLogin: boolean): void {
+  void import('electron').then(({ app }) => {
+    if (process.platform === 'darwin' && !app.isPackaged) return
+    app.setLoginItemSettings({ openAtLogin })
+  })
+}

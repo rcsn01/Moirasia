@@ -17,6 +17,12 @@ mkdirSync('native/staged/features/amove/assets', { recursive: true })
 copyFileSync(`${amoveRoot}/native/amove-native.darwin-arm64.node`, 'native/staged/features/amove/native/amove-native.darwin-arm64.node')
 cpSync('packages/feature-amove/assets', 'native/staged/features/amove/assets', { recursive: true })
 
+const orbisRoot = 'apps/Orbis'
+if (!existsSync(`${orbisRoot}/node_modules/.bin/napi`)) run('pnpm', ['install', '--frozen-lockfile', '--ignore-workspace', '--ignore-scripts'], orbisRoot)
+run('pnpm', ['native:mac'], orbisRoot)
+mkdirSync('native/staged/features/orbis/native', { recursive: true })
+copyFileSync(`${orbisRoot}/native/orbis-metadata.darwin-arm64.node`, 'native/staged/features/orbis/native/orbis-metadata.darwin-arm64.node')
+
 const exithibitionRoot = 'apps/Exithibition'
 const result = spawnSync('env', ['-u', 'SDKROOT', 'CLANG_MODULE_CACHE_PATH=/private/tmp/exithibition-module-cache', 'swift', 'build', '--disable-sandbox', '-c', 'release', '--arch', 'arm64'], { cwd: exithibitionRoot, stdio: 'inherit' })
 if (result.status !== 0) process.exit(result.status ?? 1)

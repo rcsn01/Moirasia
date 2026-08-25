@@ -20,10 +20,11 @@ export class OrbisFeature implements MoirasiaFeature {
       ? { preloads: ['main'], renderers: ['main'], workers: ['scan'], dataDirectory: true }
       : { workers: ['scan'], dataDirectory: true })
     const workerPath = ctx.paths.workers?.scan
+    const nativeAddonPath = ctx.paths.native?.metadata
     const dataDirectory = ctx.paths.dataDirectory
     if (!workerPath || !dataDirectory) throw new Error('Orbis feature resources are incomplete')
 
-    const controller = new OrbisController(createWorkerFactory(workerPath), {
+    const controller = new OrbisController(createWorkerFactory(workerPath, nativeAddonPath), {
       dataDirectory,
       ...(process.env.ORBIS_SCAN_ROOT ? { initialTarget: process.env.ORBIS_SCAN_ROOT } : {}),
       ...(ctx.mode === 'standalone'
@@ -39,6 +40,10 @@ export class OrbisFeature implements MoirasiaFeature {
     let disposeIpc: (() => void) | undefined
     let disposeAppearance: (() => void) | undefined
     try {
+      // Publish the controller before initialization so dispose() can close an
+      // index that is loading while the host is shutting down.
+      this.#controller = controller
+      await controller.initialize()
       const surface = ctx.mode === 'suite' ? ctx.surface : undefined
       let target: WebContents
       if (surface) target = surface.webContents
@@ -54,9 +59,6 @@ export class OrbisFeature implements MoirasiaFeature {
         installWindowGuards(standaloneWindow)
       }
       disposeIpc = registerIpc({ webContents: target, controller })
-      // Publish the controller before loading or starting the standalone scan so
-      // a quit during startup can cancel the worker through dispose().
-      this.#controller = controller
       this.#window = window
       this.#surface = surface
       this.#disposeIpc = disposeIpc
@@ -116,8 +118,8 @@ export class OrbisFeature implements MoirasiaFeature {
 
 export const feature = new OrbisFeature()
 
-function createWorkerFactory(workerPath: string): OrbisWorkerFactory {
-  return { create: () => new Worker(workerPath) }
+function createWorkerFactory(workerPath: string, nativeAddonPath: string | undefined): OrbisWorkerFactory {
+  return { create: () => nativeAddonPath ? new Worker(workerPath, { workerData: { nativeAddonPath } }) : new Worker(workerPath) }
 }
 
 function createWindow(ctx: FeatureContext): BrowserWindow {

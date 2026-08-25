@@ -1,4 +1,4 @@
-import { app, ipcMain, nativeTheme, type BrowserWindow, type BrowserWindowConstructorOptions, type NativeTheme } from 'electron'
+import { app, ipcMain, nativeTheme, type BrowserWindow, type BrowserWindowConstructorOptions, type NativeTheme, type WebContents } from 'electron'
 import { copyFile, mkdir, open, readFile, rename, rm, stat, watch } from 'node:fs/promises'
 import { writeSync } from 'node:fs'
 import { dirname, join } from 'node:path'
@@ -136,7 +136,7 @@ export async function registerProductAppearance(product: ProductId, window: Brow
     const value = snapshot.values[product]
     if (applyNativeTheme) applyWindowAppearance(nativeTheme, window, value)
     else if (!window.isDestroyed()) window.setBackgroundColor(neutralWindowBackground(value, nativeTheme.shouldUseDarkColors))
-    if (!window.isDestroyed()) window.webContents.send(changedChannel, value)
+    sendToRenderer(window.webContents, changedChannel, value)
   }
   const updateSystemBackground = () => { const value = registry.get().values[product]; if (value === 'system' && !window.isDestroyed()) window.setBackgroundColor(neutralWindowBackground(value, nativeTheme.shouldUseDarkColors)) }
   apply()
@@ -223,6 +223,101 @@ async function withFileLock<T>(path: string, operation: () => Promise<T>): Promi
       await new Promise((resolve) => setTimeout(resolve, 25))
     }
   }
+}
+
+interface RendererSender {
+  send(channel: string, ...args: unknown[]): boolean
+}
+
+interface LifecycleTarget {
+  readonly on?: (event: string, listener: (...args: any[]) => void) => unknown
+  readonly removeListener?: (event: string, listener: (...args: any[]) => void) => unknown
+  readonly isDestroyed?: () => boolean
+  readonly isLoading?: () => boolean
+  readonly getURL?: () => string
+  readonly send: (channel: string, ...args: unknown[]) => void
+}
+
+const rendererSenders = new WeakMap<WebContents, RendererSender>()
+
+/**
+ * Best-effort delivery for main-process renderer notifications.
+ *
+ * A WebContents can outlive its WebFrameMain while a navigation, reload, or
+ * renderer teardown is in progress. Electron logs before throwing if send()
+ * is called in that interval, so checking isDestroyed() alone is insufficient.
+ * This gate suppresses sends during the lifecycle events that make the frame
+ * unavailable and retains a final catch for the unavoidable check/send race.
+ */
+export function sendToRenderer(target: WebContents, channel: string, ...args: unknown[]): boolean {
+  let sender = rendererSenders.get(target)
+  if (!sender) {
+    sender = createRendererSender(target)
+    rendererSenders.set(target, sender)
+  }
+  return sender.send(channel, ...args)
+}
+
+function createRendererSender(target: WebContents): RendererSender {
+  const contents = target as unknown as LifecycleTarget
+  let ready = initiallyReady(contents)
+  let disposed = false
+  const listeners: Array<[string, (...args: any[]) => void]> = []
+
+  const addListener = (event: string, listener: (...args: any[]) => void): void => {
+    if (!contents.on) return
+    contents.on(event, listener)
+    listeners.push([event, listener])
+  }
+  const removeListeners = (): void => {
+    if (!contents.removeListener) return
+    for (const [event, listener] of listeners) contents.removeListener(event, listener)
+    listeners.length = 0
+  }
+  const markNotReady = (): void => { ready = false }
+  const markReady = (): void => { if (!contents.isDestroyed?.()) ready = true }
+  const markMainFrameNotReady = (...eventArgs: any[]): void => {
+    if (eventArgs.length < 4 || eventArgs[3] === true) ready = false
+  }
+  const markMainFrameLoadFailed = (...eventArgs: any[]): void => {
+    if (eventArgs.length < 5 || eventArgs[4] === true) ready = false
+  }
+  const onDestroyed = (): void => {
+    disposed = true
+    ready = false
+    removeListeners()
+    rendererSenders.delete(target)
+  }
+
+  addListener('did-start-loading', markNotReady)
+  addListener('did-start-navigation', markMainFrameNotReady)
+  addListener('did-fail-load', markMainFrameLoadFailed)
+  addListener('render-process-gone', markNotReady)
+  addListener('did-finish-load', markReady)
+  addListener('destroyed', onDestroyed)
+
+  return {
+    send(channel, ...args): boolean {
+      if (disposed || !ready || contents.isDestroyed?.() || contents.isLoading?.()) return false
+      try {
+        contents.send(channel, ...args)
+        return true
+      } catch {
+        return false
+      }
+    }
+  }
+}
+
+function initiallyReady(target: LifecycleTarget): boolean {
+  if (target.isDestroyed?.()) return false
+  // Minimal test doubles and legacy hosts may not expose the lifecycle API;
+  // keep their previous send behavior and let the catch handle a fake race.
+  if (!target.isLoading || !target.getURL) return true
+  try {
+    const url = target.getURL()
+    return !target.isLoading() && url !== '' && url !== 'about:blank'
+  } catch { return false }
 }
 
 export { APPEARANCES, PRODUCT_IDS }

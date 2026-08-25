@@ -12,6 +12,8 @@
     "build:app": "electron-vite build",
     "agent:build": "node scripts/build-application-agent.mjs",
     "features:stage": "node scripts/stage-feature-binaries.mjs",
+    "features:native": "pnpm -C apps/Orbis native:mac",
+    "features:native:test": "cargo test --manifest-path packages/feature-orbis/native/Cargo.toml",
     "features:worker": "node packages/feature-orbis/scripts/build-worker.mjs --outDir native/staged/features/orbis/worker",
     "preview": "electron-vite preview",
     "typecheck": "tsc -p tsconfig.node.json --noEmit && tsc -p tsconfig.react.json --noEmit && tsc -p packages/ui-react/tsconfig.json --noEmit",

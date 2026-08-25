@@ -1,7 +1,7 @@
 import { app, BrowserWindow, nativeTheme } from 'electron'
 import { join } from 'node:path'
 import { pathToFileURL } from 'node:url'
-import { AppearanceRegistry, applyAppearance, applyWindowAppearance, desktopWindowChromeOptions, neutralWindowBackground } from '@moirasia/desktop-shell/main'
+import { AppearanceRegistry, applyAppearance, applyWindowAppearance, desktopWindowChromeOptions, neutralWindowBackground, sendToRenderer } from '@moirasia/desktop-shell/main'
 import { IPC } from '../shared/contracts'
 import { ApplicationController } from './application-controller'
 import { EmbeddedFeatureHost } from './features/embedded-host'
@@ -22,7 +22,7 @@ async function createApplication(): Promise<void> {
   const appearances = new AppearanceRegistry()
   await appearances.load(legacyAppearance ? { moirasia: legacyAppearance } : {})
   applyAppearance(nativeTheme, appearances.get().values.moirasia)
-  app.setLoginItemSettings({ openAtLogin: settings.get().launchAtLogin })
+  setLoginItemSettings(settings.get().launchAtLogin)
 
   // Feature IPC targets must exist before any installed backend registers. The
   // feature host never gives a feature ownership of this BrowserWindow.
@@ -34,7 +34,7 @@ async function createApplication(): Promise<void> {
   })
   const host = new EmbeddedFeatureHost(window)
   const stopNavigation = host.subscribeNavigation((feature) => {
-    if (!window.isDestroyed()) window.webContents.send(IPC.navigate, feature ?? 'apps')
+    sendToRenderer(window.webContents, IPC.navigate, feature ?? 'apps')
   })
   const features = new FeatureRuntime(settings, {
     host,
@@ -84,6 +84,12 @@ async function createApplication(): Promise<void> {
       app.quit()
     })
   })
+}
+
+function setLoginItemSettings(openAtLogin: boolean): void {
+  // macOS rejects login-item writes from the unsigned Electron dev binary.
+  if (process.platform === 'darwin' && !app.isPackaged) return
+  app.setLoginItemSettings({ openAtLogin })
 }
 
 async function legacyShellAppearance(path: string): Promise<'system' | 'light' | 'dark' | undefined> {

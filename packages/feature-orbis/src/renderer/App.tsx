@@ -16,6 +16,8 @@ interface SelectedNode {
   readonly kind: "directory" | "file" | "other"
   readonly sizeBytes: number
   readonly percentage: number
+  readonly scanState: NodeSummary["scanState"]
+  readonly sizeAccuracy: NodeSummary["sizeAccuracy"]
 }
 
 export function App(): React.JSX.Element {
@@ -52,29 +54,43 @@ export function OrbisPanel({ bridge, appearance, onAppearanceChange, embeddedHea
     catch (reason) { setError(message(reason)) }
   }
 
+  useEffect(() => {
+    if (!snapshot || !selected?.id) return
+    const segment = snapshot.chart.find((item) => item.id === selected.id)
+    const item = snapshot.largestItems.find((candidate) => candidate.id === selected.id)
+    const next = segment && segment.id !== null
+      ? { id: segment.id, name: segment.name, kind: segment.kind === "file" ? "file" as const : "directory" as const, sizeBytes: segment.sizeBytes, percentage: segment.percentage, scanState: segment.scanState, sizeAccuracy: segment.sizeAccuracy }
+      : item && snapshot.focus
+        ? { id: item.id, name: item.name, kind: item.kind, sizeBytes: item.sizeBytes, percentage: snapshot.focus.sizeBytes > 0 ? item.sizeBytes / snapshot.focus.sizeBytes * 100 : 0, scanState: item.scanState, sizeAccuracy: item.sizeAccuracy }
+        : undefined
+    if (!next) setSelected(undefined)
+    else if (next.sizeBytes !== selected.sizeBytes || next.percentage !== selected.percentage || next.name !== selected.name || next.scanState !== selected.scanState || next.sizeAccuracy !== selected.sizeAccuracy) setSelected(next)
+  }, [snapshot, selected])
+
   const focus = snapshot?.focus
   const scan = snapshot?.scan
   const isScanning = scan?.status === "scanning"
-  const displayTotal = useMemo(() => focus && snapshot ? focus.sizeBytes + (focus.id === "n-1" && snapshot.target.isStartup ? snapshot.volume.unscannedBytes : 0) : 0, [focus, snapshot])
+  const displayTotal = useMemo(() => focus && snapshot ? focus.sizeBytes + (focus.id === snapshot.breadcrumbs[0]?.id && snapshot.target.isStartup ? snapshot.volume.unscannedBytes : 0) : 0, [focus, snapshot])
   const selectedPercent = selected ? selected.percentage : 0
   const startOrRescan = !scan || scan.status === "idle" ? bridge.startScan : bridge.rescan
   const startOrRescanLabel = !scan || scan.status === "idle" ? "Scan" : "Rescan"
 
   const activateSegment = (segment: ChartSegment): void => {
     const segmentId = segment.id
-    if (segment.kind === "directory" && segmentId && segment.drillable) {
+    if (segment.kind === "directory") {
+      if (!segment.drillable || !segmentId) return
       setSelected(undefined)
       void run(() => bridge.focusNode(segmentId))
       return
     }
-    if (segment.id !== null) setSelected({ id: segment.id, name: segment.name, kind: segment.kind === "file" ? "file" : "directory", sizeBytes: segment.sizeBytes, percentage: segment.percentage })
+    if (segment.kind === "file" && segmentId) setSelected({ id: segment.id, name: segment.name, kind: "file", sizeBytes: segment.sizeBytes, percentage: segment.percentage, scanState: segment.scanState, sizeAccuracy: segment.sizeAccuracy })
   }
   const selectLargest = (item: NodeSummary): void => {
     const percentage = displayTotal > 0 ? (item.sizeBytes / displayTotal) * 100 : 0
-    if (item.kind === "directory" && item.directChildren > 0) {
+    if (item.kind === "directory" && (item.directChildren > 0 || item.scanState !== "complete")) {
       setSelected(undefined)
       void run(() => bridge.focusNode(item.id))
-    } else setSelected({ id: item.id, name: item.name, kind: item.kind, sizeBytes: item.sizeBytes, percentage })
+    } else setSelected({ id: item.id, name: item.name, kind: item.kind, sizeBytes: item.sizeBytes, percentage, scanState: item.scanState, sizeAccuracy: item.sizeAccuracy })
   }
 
   return <AppearanceScope appearance={appearance} className="orbis-feature-panel">
@@ -91,12 +107,13 @@ export function OrbisPanel({ bridge, appearance, onAppearanceChange, embeddedHea
         {snapshot.scan.status === "fatal-error" && <Alert variant="destructive" className="orbis-feature-panel__alert"><AlertCircle /><AlertTitle>Scan failed</AlertTitle><AlertDescription><span>{snapshot.scan.error ?? "Orbis could not read this folder."}</span><Button size="sm" variant="outline" onClick={() => void run(async () => { await bridge.openFullDiskAccess(); return snapshot })}>Open Full Disk Access</Button></AlertDescription></Alert>}
         {snapshot.scan.status === "canceled" && <Alert className="orbis-feature-panel__alert"><AlertTitle>Scan canceled</AlertTitle><AlertDescription>The last completed index remains available. Rescan when you are ready.</AlertDescription></Alert>}
         {snapshot.scan.totals && (snapshot.scan.totals.unreadableItems > 0 || snapshot.scan.totals.skippedItems > 0) && <PermissionWarning snapshot={snapshot} onOpen={() => void run(async () => { await bridge.openFullDiskAccess(); return snapshot })} />}
+        {snapshot.committed && snapshot.volume.sizeAccuracy === "partial" && <Alert className="orbis-feature-panel__alert"><AlertTitle>Scan complete; some folders could not be measured</AlertTitle><AlertDescription>Orbis indexed the readable metadata and marked the remaining sizes as partial.</AlertDescription></Alert>}
         <VolumeSummary snapshot={snapshot} />
         {focus ? <div className="orbis-feature-panel__workspace">
           <section className="orbis-feature-panel__chart-panel" aria-labelledby="chart-heading">
-            <div className="orbis-feature-panel__panel-heading"><div><p className="orbis-feature-panel__eyebrow">LOCATION</p><h2 id="chart-heading">{focus.name}</h2></div>{focus.parentId && <Button size="sm" variant="ghost" onClick={() => void run(() => bridge.focusNode(focus.parentId!))}><ChevronLeft />Up</Button>}</div>
+            <div className="orbis-feature-panel__panel-heading"><div><p className="orbis-feature-panel__eyebrow">LOCATION</p><h2 id="chart-heading">{focus.name}</h2><FolderSize node={focus} /></div>{focus.parentId && <Button size="sm" variant="ghost" onClick={() => void run(() => bridge.focusNode(focus.parentId!))}><ChevronLeft />Up</Button>}</div>
             <Breadcrumbs snapshot={snapshot} onFocus={(id) => void run(() => bridge.focusNode(id))} />
-            {focus.directChildren === 0 && !(focus.id === "n-1" && snapshot.target.isStartup && snapshot.volume.unscannedBytes > 0) ? <div className="orbis-feature-panel__empty" role="status"><strong>This folder is empty</strong><span>No readable child files or folders were found.</span></div> : <Sunburst segments={snapshot.chart} onActivate={activateSegment} />}
+            {focus.directChildren === 0 && focus.scanState === "complete" && !(focus.id === snapshot.breadcrumbs[0]?.id && snapshot.target.isStartup && snapshot.volume.unscannedBytes > 0) ? <div className="orbis-feature-panel__empty" role="status"><strong>This folder is empty</strong><span>No readable child files or folders were found.</span></div> : <Sunburst segments={snapshot.chart} onActivate={activateSegment} provisionalState={focus.scanState} />}
           </section>
           <Inspector snapshot={snapshot} selected={selected} selectedPercent={selectedPercent} onSelect={selectLargest} onReveal={() => selected?.id && void run(async () => { await bridge.revealNode(selected.id!); return snapshot })} />
         </div> : <EmptyScanState snapshot={snapshot} onStart={() => void run(() => bridge.startScan())} />}
@@ -109,7 +126,7 @@ function ScanStatus({ snapshot, onCancel, onRescan }: { readonly snapshot: Orbis
   const progress = snapshot.scan.progress
   const percent = progress && snapshot.volume.scannedBytes > 0 ? Math.min(99, progress.discoveredBytes / Math.max(progress.discoveredBytes, snapshot.volume.scannedBytes) * 100) : progress ? Math.min(95, progress.scannedItems > 0 ? 8 + Math.log10(progress.scannedItems + 1) * 12 : 4) : snapshot.scan.status === "completed" ? 100 : 0
   return <div className="orbis-feature-panel__scan-status" aria-live="polite">
-    <div className="orbis-feature-panel__scan-status-copy"><strong>{snapshot.scan.status === "scanning" ? progress?.stage === "indexing" ? "Building index…" : "Scanning…" : snapshot.scan.status === "completed" ? "Scan complete" : snapshot.scan.status === "canceled" ? "Scan canceled" : snapshot.scan.status === "fatal-error" ? "Scan unavailable" : "Waiting to scan"}</strong><span>{progress ? `${progress.scannedItems.toLocaleString()} items · ${formatBytes(progress.discoveredBytes)} · ${progress.currentItem}` : snapshot.scan.totals ? `${snapshot.scan.totals.scannedItems.toLocaleString()} items · ${formatBytes(snapshot.scan.totals.discoveredBytes)} in ${(snapshot.scan.totals.elapsedMs / 1000).toFixed(1)}s` : ""}</span></div>
+    <div className="orbis-feature-panel__scan-status-copy" data-committed={snapshot.committed}><strong>{snapshot.scan.status === "scanning" ? progress?.stage === "indexing" ? "Building index…" : "Scanning…" : snapshot.scan.status === "completed" ? "Scan complete" : snapshot.scan.status === "canceled" ? "Scan canceled" : snapshot.scan.status === "fatal-error" ? "Scan unavailable" : "Waiting to scan"}</strong><span>{progress ? `${progress.scannedItems.toLocaleString()} items · ${formatBytes(progress.discoveredBytes)} · ${progress.currentItem}` : snapshot.scan.totals ? `${snapshot.scan.totals.scannedItems.toLocaleString()} items · ${formatBytes(snapshot.scan.totals.discoveredBytes)} in ${(snapshot.scan.totals.elapsedMs / 1000).toFixed(1)}s` : snapshot.committed ? "Committed index" : "Live preview"}</span></div>
     {snapshot.scan.status === "scanning" ? <><Progress value={percent} max={100} className="orbis-feature-panel__scan-progress" /><Button size="sm" variant="outline" onClick={onCancel}>Cancel</Button></> : snapshot.scan.status === "canceled" ? <Button size="sm" onClick={onRescan}>Rescan</Button> : null}
   </div>
 }
@@ -120,8 +137,8 @@ function PermissionWarning({ snapshot, onOpen }: { readonly snapshot: OrbisSnaps
 }
 
 function VolumeSummary({ snapshot }: { readonly snapshot: OrbisSnapshot }): React.JSX.Element {
-  const { capacityBytes, freeBytes, scannedBytes, unscannedBytes } = snapshot.volume
-  return <div className="orbis-feature-panel__volume-summary" aria-label="Storage summary">
+  const { capacityBytes, freeBytes, scannedBytes, unscannedBytes, sizeAccuracy } = snapshot.volume
+  return <div className="orbis-feature-panel__volume-summary" aria-label={`Storage summary, ${accuracyLabel(sizeAccuracy, snapshot.focus?.scanState ?? "queued")}`}>
     <Metric label="Capacity" value={formatBytes(capacityBytes)} />
     <Metric label="Free" value={formatBytes(freeBytes)} />
     <Metric label="Readable scanned" value={formatBytes(scannedBytes)} />
@@ -133,14 +150,22 @@ function Metric({ label, value, muted = false }: { readonly label: string; reado
   return <div className={`orbis-feature-panel__volume-metric${muted ? " orbis-feature-panel__volume-metric--muted" : ""}`}><span>{label}</span><strong>{value}</strong></div>
 }
 
+function FolderSize({ node }: { readonly node: NodeSummary }): React.JSX.Element {
+  if (isPending(node) && node.estimatedSizeBytes === undefined) return <p className="orbis-feature-panel__folder-size" aria-label="Estimating folder size"><strong>Estimating…</strong></p>
+  const value = formatBytes(isPending(node) ? node.estimatedSizeBytes ?? node.sizeBytes : node.sizeBytes)
+  const label = node.sizeAccuracy === "estimated" ? "Estimated size" : node.sizeAccuracy === "exact" ? "Size" : "Known size"
+  const accessibleLabel = node.sizeAccuracy === "estimated" ? `Estimated folder size, ${value}` : node.sizeAccuracy === "exact" ? `Folder size, ${value}` : `Known folder size, ${value}`
+  return <p className="orbis-feature-panel__folder-size" aria-label={accessibleLabel}><span>{label}</span><strong>{value}</strong></p>
+}
+
 function Breadcrumbs({ snapshot, onFocus }: { readonly snapshot: OrbisSnapshot; readonly onFocus: (id: string) => void }): React.JSX.Element {
   return <nav className="orbis-feature-panel__breadcrumbs" aria-label="Folder breadcrumbs">{snapshot.breadcrumbs.map((breadcrumb, index) => <span key={breadcrumb.id}><button type="button" onClick={() => onFocus(breadcrumb.id)} aria-current={index === snapshot.breadcrumbs.length - 1 ? "location" : undefined}>{breadcrumb.name}</button>{index < snapshot.breadcrumbs.length - 1 && <span aria-hidden="true">/</span>}</span>)}</nav>
 }
 
 function Inspector({ snapshot, selected, selectedPercent, onSelect, onReveal }: { readonly snapshot: OrbisSnapshot; readonly selected: SelectedNode | undefined; readonly selectedPercent: number; readonly onSelect: (item: NodeSummary) => void; readonly onReveal: () => void }): React.JSX.Element {
   return <aside className="orbis-feature-panel__inspector" aria-labelledby="largest-heading">
-    {selected ? <Card className="orbis-feature-panel__selection-card"><CardHeader><div className="orbis-feature-panel__panel-heading"><div><p className="orbis-feature-panel__eyebrow">SELECTED ITEM</p><CardTitle>{selected.name}</CardTitle></div><Badge variant="outline">{selected.kind}</Badge></div><CardDescription>{formatBytes(selected.sizeBytes)} · {selectedPercent.toFixed(1)}% of this folder</CardDescription></CardHeader><CardContent><Button size="sm" variant="outline" disabled={!selected.id} onClick={onReveal}>Reveal in Finder</Button></CardContent></Card> : <Card className="orbis-feature-panel__selection-card orbis-feature-panel__selection-card--empty"><CardHeader><CardTitle>Select an item</CardTitle><CardDescription>Choose a file in the chart or list to see its size and reveal it in Finder.</CardDescription></CardHeader></Card>}
-    <Card className="orbis-feature-panel__largest-card"><CardHeader><CardTitle id="largest-heading">Largest items</CardTitle><CardDescription>Direct children of {snapshot.focus?.name ?? snapshot.target.name}, sorted by allocated space.</CardDescription></CardHeader><CardContent>{snapshot.largestItems.length === 0 ? <p className="orbis-feature-panel__muted">No readable items in this folder.</p> : <ul className="orbis-feature-panel__largest-list">{snapshot.largestItems.map((item) => <li key={item.id}><button type="button" onClick={() => onSelect(item)} aria-label={`${item.name}, ${item.kind}, ${formatBytes(item.sizeBytes)}`}><span className="orbis-feature-panel__largest-list-name"><span className={`orbis-feature-panel__node-dot orbis-feature-panel__node-dot--${item.kind}`} aria-hidden="true" />{item.name}</span><span className="orbis-feature-panel__largest-list-size">{formatBytes(item.sizeBytes)}</span></button></li>)}</ul>}</CardContent></Card>
+    {selected ? <Card className="orbis-feature-panel__selection-card"><CardHeader><div className="orbis-feature-panel__panel-heading"><div><p className="orbis-feature-panel__eyebrow">SELECTED ITEM</p><CardTitle>{selected.name}</CardTitle></div><Badge variant="outline">{selected.kind}</Badge></div><CardDescription>{formatBytes(selected.sizeBytes)} · {selectedPercent.toFixed(1)}% of this folder · {accuracyLabel(selected.sizeAccuracy, selected.scanState)}</CardDescription></CardHeader><CardContent><Button size="sm" variant="outline" disabled={!selected.id} onClick={onReveal}>Reveal in Finder</Button></CardContent></Card> : <Card className="orbis-feature-panel__selection-card orbis-feature-panel__selection-card--empty"><CardHeader><CardTitle>Select an item</CardTitle><CardDescription>Choose a file in the chart or list to see its size and reveal it in Finder.</CardDescription></CardHeader></Card>}
+    <Card className="orbis-feature-panel__largest-card"><CardHeader><CardTitle id="largest-heading">Largest items</CardTitle><CardDescription>Direct children of {snapshot.focus?.name ?? snapshot.target.name}, sorted by allocated space.</CardDescription></CardHeader><CardContent>{snapshot.largestItems.length === 0 ? <p className="orbis-feature-panel__muted">No readable items in this folder.</p> : <ul className="orbis-feature-panel__largest-list">{snapshot.largestItems.map((item) => { const size = nodeSizePresentation(item); return <li key={item.id}><button type="button" onClick={() => onSelect(item)} aria-label={`${item.name}, ${item.kind}, ${size.accessible}`}><span className="orbis-feature-panel__largest-list-name"><span className={`orbis-feature-panel__node-dot orbis-feature-panel__node-dot--${item.kind}`} aria-hidden="true" />{item.name}</span><span className="orbis-feature-panel__largest-list-size">{size.visible}</span></button></li> })}</ul>}</CardContent></Card>
   </aside>
 }
 
@@ -148,4 +173,19 @@ function EmptyScanState({ snapshot, onStart }: { readonly snapshot: OrbisSnapsho
   return <div className="orbis-feature-panel__empty orbis-feature-panel__empty--large"><h2>No completed scan</h2><p>{snapshot.scan.error ?? "Orbis has not indexed a folder yet."}</p><Button onClick={onStart}>Scan {snapshot.target.name}</Button></div>
 }
 
+function nodeSizePresentation(node: NodeSummary): { readonly visible: string; readonly accessible: string } {
+  if (node.kind === "directory" && isPending(node) && node.estimatedSizeBytes === undefined) return { visible: "Estimating…", accessible: "Estimating" }
+  const value = formatBytes(isPending(node) ? node.estimatedSizeBytes ?? node.sizeBytes : node.sizeBytes)
+  return { visible: value, accessible: `${value}, ${accuracyLabel(node.sizeAccuracy, node.scanState)}` }
+}
+
+function isPending(node: Pick<NodeSummary, "scanState">): boolean { return node.scanState === "queued" || node.scanState === "scanning" }
+
+function accuracyLabel(accuracy: NodeSummary["sizeAccuracy"] | undefined, state: NodeSummary["scanState"]): string {
+  if (accuracy === undefined) return state === "queued" ? "Queued" : state === "scanning" ? "Scanning" : state === "unreadable" ? "Unreadable" : "Complete"
+  if (accuracy === "estimated") return "Estimated"
+  if (accuracy === "exact") return "Exact"
+  if (state === "queued" || state === "scanning") return "Scanning"
+  return "Partial"
+}
 function message(reason: unknown): string { return reason instanceof Error ? reason.message : String(reason) }

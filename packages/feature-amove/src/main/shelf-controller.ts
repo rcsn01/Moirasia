@@ -4,6 +4,7 @@ import { app, BrowserWindow, nativeImage, screen } from "electron";
 import { IPC, type ShelfMode, type ShelfThumbnailView } from "../shared/contracts";
 import { ShelfStore } from "./shelf-store";
 import { windowBackgrounds } from "@moirasia/ui-react/tokens";
+import { sendToRenderer } from "@moirasia/desktop-shell/main";
 
 const COMPACT = { width: 216, height: 208 };
 const ITEMS_EXPANDED = { width: 394, height: 394 };
@@ -27,7 +28,7 @@ export class ShelfController {
     private readonly createWindow?: (options: Electron.BrowserWindowConstructorOptions) => Promise<BrowserWindow>,
     private readonly rendererRoot?: string) {
     this.unsubscribeStore = this.store.subscribe((state) => {
-      this.window?.webContents.send(IPC.shelfStateChanged, state);
+      if (this.window) sendToRenderer(this.window.webContents, IPC.shelfStateChanged, state);
       if (state.visible && state.items.length > 0) this.startPathMonitor();
       else this.stopPathMonitor();
     });
@@ -94,7 +95,7 @@ export class ShelfController {
       await this.animate(window, EXPANDED, "expanding", "editor");
       window.setResizable(true);
       window.focus();
-      window.webContents.send(IPC.shelfStateChanged, this.store.getState());
+      sendToRenderer(window.webContents, IPC.shelfStateChanged, this.store.getState());
     } else if (mode === "files" && this.store.getState().transition !== "compact") {
       this.store.setMode("files");
       window.setResizable(false);

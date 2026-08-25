@@ -51,7 +51,8 @@ vi.mock('node:worker_threads', () => ({ Worker: mocks.FakeWorker }))
 vi.mock('@moirasia/desktop-shell/main', () => ({
   desktopWindowChromeOptions: () => ({}),
   neutralWindowBackground: () => '#fff',
-  registerProductAppearance: vi.fn(async () => mocks.appearanceDispose)
+  registerProductAppearance: vi.fn(async () => mocks.appearanceDispose),
+  sendToRenderer: () => false
 }))
 
 import { feature } from '../packages/feature-orbis/src/main/feature'

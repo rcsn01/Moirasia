@@ -179,6 +179,9 @@ export function suiteFeatureContext(id: FeatureId, surface: EmbeddedFeatureSurfa
           workers: { scan: app.isPackaged
             ? join(process.resourcesPath, 'features', 'orbis', 'worker', 'scan-worker.mjs')
             : join(app.getAppPath(), 'native', 'staged', 'features', 'orbis', 'worker', 'scan-worker.mjs') },
+          native: { metadata: app.isPackaged
+            ? join(process.resourcesPath, 'features', 'orbis', 'native', nativeAddonName('orbis'))
+            : join(app.getAppPath(), 'native', 'staged', 'features', 'orbis', 'native', nativeAddonName('orbis')) },
           dataDirectory
         }
       }
@@ -189,7 +192,13 @@ export function suiteFeatureContext(id: FeatureId, surface: EmbeddedFeatureSurfa
 
 function assertNever(value: never): never { throw new Error(`Unknown feature '${String(value)}'`) }
 
-function nativeAddonName(): string {
+function nativeAddonName(feature: 'amove' | 'orbis' = 'amove'): string {
+  if (feature === 'orbis') {
+    const arch = process.arch === 'arm64' ? 'arm64' : 'x64'
+    if (process.platform === 'darwin') return `orbis-metadata.darwin-${arch}.node`
+    if (process.platform === 'win32') return 'orbis-metadata.win32-x64-msvc.node'
+    return 'orbis-metadata.linux-x64-gnu.node'
+  }
   const arch = process.arch === 'arm64' ? 'arm64' : 'x64'
   if (process.platform === 'darwin') return `amove-native.darwin-${arch}.node`
   if (process.platform === 'win32') return 'amove-native.win32-x64-msvc.node'

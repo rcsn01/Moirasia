@@ -3,7 +3,7 @@ import type { EmbeddedFeatureSurface, FeatureContext } from '@moirasia/desktop-s
 import type { ExithibitionEvent, ExithibitionSnapshot, HardwareSample, HistoryRange, RuntimeState } from '../shared/contracts'
 import { isHistoryRange } from '../shared/contracts'
 import { NativeClient } from './native-client'
-import { desktopWindowChromeOptions, neutralWindowBackground, registerProductAppearance } from '@moirasia/desktop-shell/main'
+import { desktopWindowChromeOptions, neutralWindowBackground, registerProductAppearance, sendToRenderer } from '@moirasia/desktop-shell/main'
 
 const MAX_HISTORY = 43_200
 
@@ -104,7 +104,7 @@ export class ExithibitionController {
 
   private broadcast(event: ExithibitionEvent): void {
     const target = this.surface?.webContents ?? this.view?.webContents
-    if (target && !target.isDestroyed()) target.send('exithibition:event', event)
+    if (target) sendToRenderer(target, 'exithibition:event', event)
   }
 
   private async getSnapshot(): Promise<ExithibitionSnapshot> {

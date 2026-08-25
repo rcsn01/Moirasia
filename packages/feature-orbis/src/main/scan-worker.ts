@@ -1,70 +1,103 @@
-import { parentPort } from "node:worker_threads"
-import { scanFilesystem, ScanCanceledError, type ScanProgress, type ScanResult } from "./scanner"
+import { parentPort, workerData } from "node:worker_threads"
+import { ProgressiveScanControl, ScanCanceledError, type ScanProgress, type ScanResult } from "./scanner"
+import { refreshPersistentIndex, type ActivePersistentIndex } from './refresh-engine'
+import type { JournalCursor } from './index-manifest'
 import { subscribeScanDiagnostics, type OrbisTimingEvent } from "./diagnostics"
+import type { FolderSizeEstimate } from "./scan-metadata"
 
 interface WorkerStartMessage {
   readonly type: "start"
   readonly generation: number
+  readonly requestId: number
   readonly target: string
   readonly partialPath: string
   readonly publishedPath: string
   readonly indexDirectory: string
   readonly startupRoot: boolean
+  readonly initialEstimate?: FolderSizeEstimate
+  readonly active?: ActivePersistentIndex
 }
-
-interface WorkerCancelMessage { readonly type: "cancel" }
-type WorkerMessage = WorkerStartMessage | WorkerCancelMessage
+interface WorkerCancelMessage { readonly type: "cancel"; readonly generation: number; readonly requestId: number }
+interface WorkerFocusMessage { readonly type: "focus"; readonly generation: number; readonly requestId: number; readonly id: string }
+interface WorkerResolveMessage { readonly type: "resolve-node"; readonly generation: number; readonly requestId: number; readonly id: string }
+type WorkerMessage = WorkerStartMessage | WorkerCancelMessage | WorkerFocusMessage | WorkerResolveMessage
 
 if (!parentPort) throw new Error("Orbis scan worker requires a parent port")
 const port = parentPort
 
-let activeAbort: AbortController | undefined
+let active: { readonly generation: number; readonly abort: AbortController; readonly control: ProgressiveScanControl; lastRequestId: number } | undefined
 port.on("message", (message: WorkerMessage) => {
-  if (message.type === "cancel") {
-    activeAbort?.abort()
+  if (message.type === "start") {
+    if (active && (message.generation < active.generation || message.generation === active.generation && message.requestId <= active.lastRequestId)) return
+    active?.abort.abort()
+    const run = { generation: message.generation, abort: new AbortController(), control: new ProgressiveScanControl(), lastRequestId: message.requestId }
+    active = run
+    void execute(message, run)
     return
   }
-  activeAbort?.abort()
-  activeAbort = new AbortController()
-  void run(message, activeAbort)
+  if (message.type === "cancel") {
+    if (acceptRequest(message)) active!.abort.abort()
+    return
+  }
+  if (message.type === "focus") {
+    const accepted = acceptRequest(message) && active!.control.focus(message.id)
+    port.postMessage({ type: "focus-accepted", generation: message.generation, requestId: message.requestId, accepted: Boolean(accepted) })
+    return
+  }
+  if (message.type === "resolve-node") {
+    const path = acceptRequest(message) ? active!.control.resolveNode(message.id) : undefined
+    port.postMessage({ type: "resolved-node", generation: message.generation, requestId: message.requestId, path: path ?? null })
+    return
+  }
 })
 
-async function run(message: WorkerStartMessage, abort: AbortController): Promise<void> {
+function acceptRequest(message: { readonly generation: number; readonly requestId: number }): boolean {
+  if (!active || active.generation !== message.generation || message.requestId <= active.lastRequestId) return false
+  active.lastRequestId = message.requestId
+  return true
+}
+
+async function execute(message: WorkerStartMessage, run: NonNullable<typeof active>): Promise<void> {
   const timings: OrbisTimingEvent[] | undefined = process.env.ORBIS_SCAN_DIAGNOSTICS === "1" ? [] : undefined
-  const unsubscribe = timings ? subscribeScanDiagnostics((event) => {
-    if (event.generation === message.generation) timings.push(event)
-  }) : undefined
+  const unsubscribe = timings ? subscribeScanDiagnostics((event) => { if (event.generation === message.generation) timings.push(event) }) : undefined
   try {
-    const result = await scanFilesystem({
-      generation: message.generation,
-      target: message.target,
-      partialPath: message.partialPath,
-      publishedPath: message.publishedPath,
-      indexDirectory: message.indexDirectory,
-      startupRoot: message.startupRoot,
-      signal: abort.signal,
-      onProgress: (progress) => port.postMessage({ type: "progress", generation: message.generation, progress })
+    const outcome = await refreshPersistentIndex({
+      generation: message.generation, target: message.target, partialPath: message.partialPath, publishedPath: message.publishedPath,
+      indexDirectory: message.indexDirectory, startupRoot: message.startupRoot,
+      ...(message.initialEstimate ? { initialEstimate: message.initialEstimate } : {}),
+      ...(message.active ? { active: message.active } : {}),
+      signal: run.abort.signal, control: run.control,
+      ...nativeAddonPath(),
+      onProgress: (progress) => { if (active === run) port.postMessage({ type: "progress", generation: message.generation, requestId: run.lastRequestId, progress }) },
+      onPreview: (preview) => { if (active === run) port.postMessage({ type: "preview", generation: message.generation, requestId: run.lastRequestId, preview }) }
     })
-    postDiagnostics(message.generation, timings)
-    port.postMessage({ type: "complete", generation: message.generation, result })
-  } catch (error) {
-    postDiagnostics(message.generation, timings)
-    if (error instanceof ScanCanceledError || abort.signal.aborted) {
-      port.postMessage({ type: "canceled", generation: message.generation })
+    if (active !== run) return
+    postDiagnostics(message.generation, run.lastRequestId, timings)
+    if (outcome.kind === 'unchanged') {
+      port.postMessage({ type: 'unchanged', generation: message.generation, requestId: run.lastRequestId, journal: outcome.journal, totals: outcome.totals, basePublicationId: outcome.basePublicationId })
     } else {
-      port.postMessage({ type: "error", generation: message.generation, error: serializeError(error) })
+      port.postMessage({
+        type: 'complete', generation: message.generation, requestId: run.lastRequestId, result: outcome.result,
+        refresh: { strategy: outcome.strategy, journal: outcome.journal, ...(outcome.basePublicationId ? { basePublicationId: outcome.basePublicationId } : {}), ...(outcome.fallbackReason ? { fallbackReason: outcome.fallbackReason } : {}) }
+      })
     }
+  } catch (error) {
+    if (active !== run) return
+    postDiagnostics(message.generation, run.lastRequestId, timings)
+    if (error instanceof ScanCanceledError || run.abort.signal.aborted) port.postMessage({ type: "canceled", generation: message.generation, requestId: run.lastRequestId })
+    else port.postMessage({ type: "error", generation: message.generation, requestId: run.lastRequestId, error: serializeError(error) })
   } finally {
     unsubscribe?.()
-    if (activeAbort === abort) {
-      activeAbort = undefined
-      port.close()
-    }
+    if (active === run) { active = undefined; port.close() }
   }
 }
 
-function postDiagnostics(generation: number, timings: readonly OrbisTimingEvent[] | undefined): void {
-  if (timings) port.postMessage({ type: "diagnostics", generation, timings })
+function postDiagnostics(generation: number, requestId: number, timings: readonly OrbisTimingEvent[] | undefined): void {
+  if (timings) port.postMessage({ type: "diagnostics", generation, requestId, timings })
+}
+function nativeAddonPath(): { readonly nativeAddonPath?: string } {
+  const value = workerData && typeof workerData === "object" && "nativeAddonPath" in workerData ? (workerData as { nativeAddonPath?: unknown }).nativeAddonPath : undefined
+  return typeof value === "string" && value.length > 0 ? { nativeAddonPath: value } : {}
 }
 
 function serializeError(error: unknown): { readonly message: string; readonly code?: string } {
@@ -73,4 +106,4 @@ function serializeError(error: unknown): { readonly message: string; readonly co
   return { message }
 }
 
-export type { WorkerMessage, WorkerStartMessage, ScanProgress, ScanResult }
+export type { WorkerMessage, WorkerStartMessage, ScanProgress, ScanResult, JournalCursor }

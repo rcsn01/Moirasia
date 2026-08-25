@@ -1,7 +1,7 @@
 import { DatabaseSync, type StatementSync } from "node:sqlite"
 import { mkdir, rm } from "node:fs/promises"
 import { dirname } from "node:path"
-import type { NodeKind } from "../shared/contracts"
+import type { DirectoryScanState, NodeKind, SizeAccuracy } from "../shared/contracts"
 import { measureScan } from "./diagnostics"
 
 export interface DatabaseNode {
@@ -11,9 +11,13 @@ export interface DatabaseNode {
   readonly path: string
   readonly kind: NodeKind
   readonly sizeBytes: number
+  readonly confirmedBytes: number
+  readonly estimatedBytes: number
+  readonly sizeAccuracy: SizeAccuracy
   readonly directChildren: number
   readonly descendantCount: number
   readonly unreadableCount: number
+  readonly scanState: DirectoryScanState
 }
 
 export interface DirectoryAggregate {
@@ -41,6 +45,12 @@ export interface ScanDatabaseMeta {
   readonly capacityBytes: number
   readonly freeBytes: number
   readonly scannedBytes: number
+  readonly targetDevice?: string
+  readonly targetInode?: string
+  readonly indexDirectoryIdentity?: string
+  readonly indexRevision?: number
+  readonly capturedAt?: string
+  readonly refreshedAt?: string
   readonly totals: {
     readonly scannedItems: number
     readonly discoveredBytes: number
@@ -83,7 +93,9 @@ export class ScanDatabase {
           descendant_count INTEGER NOT NULL DEFAULT 0,
           unreadable_count INTEGER NOT NULL DEFAULT 0,
           device TEXT NOT NULL,
-          inode TEXT NOT NULL
+          inode TEXT NOT NULL,
+          scan_state TEXT NOT NULL DEFAULT 'complete' CHECK (scan_state IN ('queued', 'scanning', 'complete', 'unreadable')),
+          enumeration_complete INTEGER NOT NULL DEFAULT 1
         );
         CREATE TABLE metadata (key TEXT PRIMARY KEY, value TEXT NOT NULL);
       `)
@@ -120,7 +132,7 @@ export class ScanDatabase {
 
   finalize(): void {
     this.#assertBuilding()
-    measureScan("index-create", () => this.#database.exec("CREATE INDEX nodes_parent_size ON nodes (parent_id, size_bytes DESC, name COLLATE NOCASE ASC);"))
+    measureScan("index-create", () => this.#database.exec("CREATE INDEX nodes_parent_size ON nodes (parent_id, size_bytes DESC, name COLLATE NOCASE ASC, id ASC);"))
   }
 
   writeMetadata(meta: ScanDatabaseMeta): void {

@@ -1,4 +1,4 @@
-import type { OrbisApi, OrbisSnapshot } from '../shared/contracts'
+import { isOrbisSnapshot, type OrbisApi, type OrbisSnapshot } from '../shared/contracts'
 
 export interface IpcRendererLike {
   invoke(channel: string, ...args: unknown[]): Promise<unknown>
@@ -31,16 +31,12 @@ export function createOrbisBridge(renderer: IpcRendererLike): OrbisApi {
     subscribe(listener: (snapshot: OrbisSnapshot) => void) {
       const handler = (_event: unknown, ...args: unknown[]) => {
         const snapshot = args[0]
-        if (isSnapshot(snapshot)) listener(snapshot)
+        if (isOrbisSnapshot(snapshot)) listener(snapshot)
       }
       renderer.on(IPC.snapshot, handler)
       return () => { renderer.removeListener(IPC.snapshot, handler) }
     }
   }
-}
-
-function isSnapshot(value: unknown): value is OrbisSnapshot {
-  return typeof value === 'object' && value !== null && (value as { version?: unknown }).version === 1 && 'scan' in value
 }
 
 export type { OrbisApi }

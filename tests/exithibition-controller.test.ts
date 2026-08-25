@@ -38,7 +38,8 @@ vi.mock('electron', () => ({ BrowserWindow: mocks.FakeWindow, ipcMain: mocks.ipc
 vi.mock('@moirasia/desktop-shell/main', () => ({
   desktopWindowChromeOptions: () => ({}),
   neutralWindowBackground: () => '#1c1917',
-  registerProductAppearance: async () => () => undefined
+  registerProductAppearance: async () => () => undefined,
+  sendToRenderer: () => false
 }))
 
 import { feature } from '../packages/feature-exithibition/src/main/feature'

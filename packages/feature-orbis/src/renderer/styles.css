@@ -28,6 +28,8 @@
 .orbis-feature-panel__chart-panel { min-height: 510px; padding: 18px; }
 .orbis-feature-panel__panel-heading { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; }
 .orbis-feature-panel__panel-heading h2 { margin: 0; font-size: 18px; letter-spacing: -.025em; }
+.orbis-feature-panel__folder-size { display: flex; align-items: baseline; gap: 6px; margin: 4px 0 0; color: var(--muted-foreground); font: 11px ui-monospace, SFMono-Regular, Menlo, monospace; }
+.orbis-feature-panel__folder-size strong { color: var(--foreground); font-weight: 600; }
 .orbis-feature-panel__eyebrow { margin: 0 0 5px; color: var(--muted-foreground); font-size: 10px; font-weight: 700; letter-spacing: .12em; }
 .orbis-feature-panel__breadcrumbs { display: flex; min-width: 0; align-items: center; gap: 5px; margin: 14px 0 2px; overflow: auto; color: var(--muted-foreground); font-size: 11px; white-space: nowrap; }
 .orbis-feature-panel__breadcrumbs span { display: inline-flex; align-items: center; gap: 5px; }
@@ -38,6 +40,9 @@
 .orbis-feature-panel__sunburst-segment { stroke: var(--card); stroke-width: 1.5; cursor: pointer; outline: none; transition: opacity 120ms ease, filter 120ms ease; }
 .orbis-feature-panel__sunburst-segment:hover, .orbis-feature-panel__sunburst-segment:focus-visible { filter: brightness(1.18); opacity: .92; stroke: var(--foreground); stroke-width: 2.5; }
 .orbis-feature-panel__sunburst-segment:focus-visible { outline: 2px solid var(--ring); outline-offset: 2px; }
+.orbis-feature-panel__sunburst-hatch, .orbis-feature-panel__sunburst-estimate { pointer-events: none; }
+.orbis-feature-panel__sunburst-hatch-line { fill: none; stroke: rgb(255 255 255 / 58%); stroke-width: 1.35; }
+.orbis-feature-panel__sunburst-estimate-dot { fill: rgb(255 255 255 / 72%); }
 .orbis-feature-panel__sunburst-center { fill: var(--card); stroke: var(--border); stroke-width: 1; }
 .orbis-feature-panel__sunburst-center-label { fill: var(--foreground); font-size: 19px; font-weight: 650; }
 .orbis-feature-panel__sunburst-center-caption { fill: var(--muted-foreground); font-size: 9px; }

@@ -9,11 +9,15 @@
 /node_modules/
 /packages/*/node_modules/
 /packages/design-system/node_modules/
+/packages/feature-orbis/dist/
 /out/
 /release/
 /coverage/
 /test-results/
 /playwright-report/
+
+# Native build output
+/packages/feature-orbis/native/target/
 
 # Root native staged binaries
 /native/staged/

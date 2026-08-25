@@ -1,4 +1,5 @@
 import { ipcMain, type BrowserWindow, type IpcMainInvokeEvent, type WebContents } from 'electron'
+import { sendToRenderer } from '@moirasia/desktop-shell/main'
 import { IPC, isNodeId } from '../shared/contracts'
 import type { OrbisController } from './controller'
 
@@ -40,16 +41,18 @@ export function registerIpc(options: OrbisIpcRegistrationOptions): () => void {
     for (const channel of registered) ipcMain.removeHandler(channel)
     throw error
   }
+  let disposed = false
+  const sendSnapshot = (snapshot: unknown): void => {
+    if (disposed) return
+    sendToRenderer(target, IPC.snapshot, snapshot)
+  }
   let unsubscribe: (() => void) | undefined
   try {
-    unsubscribe = options.controller.subscribe((snapshot) => {
-      if (!target.isDestroyed()) target.send(IPC.snapshot, snapshot)
-    })
+    unsubscribe = options.controller.subscribe((snapshot) => { sendSnapshot(snapshot) })
   } catch (error) {
     for (const channel of registered) ipcMain.removeHandler(channel)
     throw error
   }
-  let disposed = false
   return () => {
     if (disposed) return
     disposed = true
