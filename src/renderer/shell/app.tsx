@@ -8,9 +8,9 @@ import { AppsScreen } from './screens/home'
 import { SettingsScreen } from './screens/settings'
 import { useController } from './controller'
 
-const AmovePanel = lazy(async () => ({ default: (await import('@moirasia/feature-amove/renderer/panel')).AmovePanel }))
-const ExithibitionPanel = lazy(async () => ({ default: (await import('@moirasia/feature-exithibition/renderer/panel')).ExithibitionPanel }))
-const OrbisPanel = lazy(async () => ({ default: (await import('@moirasia/feature-orbis/renderer/panel')).OrbisPanel }))
+const AmovePanel = lazy(async () => ({ default: (await import('../../../apps/Amove/src/renderer/main/AmovePanel')).AmovePanel }))
+const ExithibitionPanel = lazy(async () => ({ default: (await import('../../../apps/Exithibition/src/renderer/App')).ExithibitionPanel }))
+const OrbisPanel = lazy(async () => ({ default: (await import('../../../apps/Orbis/src/renderer/App')).OrbisPanel }))
 
 const FEATURE_LABELS: Record<FeatureId, string> = { amove: 'Amove', exithibition: 'Exithibition', orbis: 'Orbis' }
 

@@ -15,7 +15,7 @@ run('pnpm', ['native:mac'], amoveRoot)
 mkdirSync('native/staged/features/amove/native', { recursive: true })
 mkdirSync('native/staged/features/amove/assets', { recursive: true })
 copyFileSync(`${amoveRoot}/native/amove-native.darwin-arm64.node`, 'native/staged/features/amove/native/amove-native.darwin-arm64.node')
-cpSync('packages/feature-amove/assets', 'native/staged/features/amove/assets', { recursive: true })
+cpSync('apps/Amove/assets', 'native/staged/features/amove/assets', { recursive: true })
 
 const orbisRoot = 'apps/Orbis'
 if (!existsSync(`${orbisRoot}/node_modules/.bin/napi`)) run('pnpm', ['install', '--frozen-lockfile', '--ignore-workspace', '--ignore-scripts'], orbisRoot)

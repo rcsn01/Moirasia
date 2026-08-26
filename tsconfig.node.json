@@ -12,15 +12,16 @@
     "src/preload/**/*.ts",
     "src/shared/**/*.ts",
     "packages/desktop-shell/src/**/*.ts",
-    "packages/feature-amove/src/main/**/*.ts",
-    "packages/feature-amove/src/preload/**/*.ts",
-    "packages/feature-amove/src/shared/**/*.ts",
-    "packages/feature-exithibition/src/main/**/*.ts",
-    "packages/feature-exithibition/src/preload/**/*.ts",
-    "packages/feature-exithibition/src/shared/**/*.ts",
-    "packages/feature-orbis/src/main/**/*.ts",
-    "packages/feature-orbis/src/preload/**/*.ts",
-    "packages/feature-orbis/src/shared/**/*.ts",
+    "apps/Amove/src/main/**/*.ts",
+    "apps/Amove/src/preload/**/*.ts",
+    "apps/Amove/src/shared/**/*.ts",
+    "apps/Exithibition/src/main/**/*.ts",
+    "apps/Exithibition/src/preload/**/*.ts",
+    "apps/Exithibition/src/shared/**/*.ts",
+    "apps/Orbis/src/main/**/*.ts",
+    "apps/Orbis/src/preload/**/*.ts",
+    "apps/Orbis/src/shared/**/*.ts",
     "tests/**/*.ts"
-  ]
+  ],
+  "exclude": ["apps/**/*.test.ts", "apps/**/*.test.tsx"]
 }

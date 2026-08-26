@@ -1,17 +1,14 @@
-import { createRequire } from 'node:module'
 import { resolve } from 'node:path'
 import react from '@vitejs/plugin-react'
 import tailwindcss from '@tailwindcss/vite'
 import { defineConfig, externalizeDepsPlugin } from 'electron-vite'
-
-const require_ = createRequire(import.meta.url)
 
 export default defineConfig({
   main: {
     // Embedded feature backends must be bundled (not externalized): the runtime
     // reaches them through code-split dynamic imports.
     plugins: [externalizeDepsPlugin({ exclude: [
-      '@moirasia/desktop-shell', '@moirasia/ui-react', '@moirasia/feature-exithibition', '@moirasia/feature-amove', '@moirasia/feature-orbis',
+      '@moirasia/desktop-shell', '@moirasia/ui-react',
       '@codemirror/commands', '@codemirror/state', '@codemirror/view', 'zod'
     ] })],
     build: {
@@ -21,12 +18,12 @@ export default defineConfig({
     }
   },
   preload: {
-    plugins: [externalizeDepsPlugin({ exclude: ['@moirasia/feature-exithibition', '@moirasia/feature-amove', '@moirasia/feature-orbis'] })],
+    plugins: [externalizeDepsPlugin()],
     build: {
       rollupOptions: {
         input: {
           shell: resolve(import.meta.dirname, 'src/preload/shell.ts'),
-          'feature-amove-shelf': require_.resolve('@moirasia/feature-amove/preload/shelf')
+          'feature-amove-shelf': resolve(import.meta.dirname, 'apps/Amove/src/preload/shelf.ts')
         },
         output: {
           format: 'cjs',
@@ -36,7 +33,9 @@ export default defineConfig({
     }
   },
   renderer: {
-    root: resolve(import.meta.dirname, 'src/renderer'),
+    // Renderer entries live inside the owning app repos (apps/<App>/src/renderer),
+    // so the renderer root is the repository root.
+    root: resolve(import.meta.dirname),
     resolve: { dedupe: ['react', 'react-dom'] },
     plugins: [react(), tailwindcss()],
     // ui-react is a linked workspace package, so Vite does not crawl its CommonJS
@@ -52,7 +51,7 @@ export default defineConfig({
       rollupOptions: {
         input: {
           shell: resolve(import.meta.dirname, 'src/renderer/shell.html'),
-          'feature-amove-shelf': resolve(import.meta.dirname, 'src/renderer/feature-amove-shelf.html')
+          'feature-amove-shelf': resolve(import.meta.dirname, 'apps/Amove/src/renderer/shelf.html')
         }
       }
     }

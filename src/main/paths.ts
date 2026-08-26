@@ -1,7 +1,6 @@
 import { existsSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import { dirname, join } from 'node:path'
-import type { FeatureId } from '@moirasia/desktop-shell/feature'
 
 const mainDirectory = dirname(fileURLToPath(import.meta.url))
 
@@ -10,11 +9,23 @@ export function applicationAgentPath(resourcesPath = process.resourcesPath): str
   return existsSync(packaged) ? packaged : join(mainDirectory, '../../native/staged/application-agent')
 }
 
+const preloadPages = {
+  shell: '../preload/shell.cjs',
+  'feature-amove-shelf': '../preload/feature-amove-shelf.cjs'
+} as const
+
+// Renderer pages mirror the renderer root of the suite build (the repository
+// root), so app-owned entries keep their repository-relative paths.
+const rendererPages = {
+  shell: '../renderer/src/renderer/shell.html',
+  'feature-amove-shelf': '../renderer/apps/Amove/src/renderer/shelf.html'
+} as const
+
 export const paths = {
-  preload(name: 'shell' | 'module' | `feature-${FeatureId}` | `feature-${FeatureId}-${string}`): string {
-    return join(mainDirectory, `../preload/${name}.cjs`)
+  preload(page: keyof typeof preloadPages): string {
+    return join(mainDirectory, preloadPages[page])
   },
-  renderer(page: 'shell' | 'module' | `feature-${FeatureId}` | `feature-${FeatureId}-${string}`): string {
-    return join(mainDirectory, `../renderer/${page}.html`)
+  renderer(page: keyof typeof rendererPages): string {
+    return join(mainDirectory, rendererPages[page])
   }
 }

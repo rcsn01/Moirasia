@@ -53,7 +53,7 @@ async function createApplication(): Promise<void> {
   window.on('focus', () => void controller.refresh())
 
   const developmentUrl = process.env.ELECTRON_RENDERER_URL
-  if (developmentUrl) await window.loadURL(`${developmentUrl}/shell.html`)
+  if (developmentUrl) await window.loadURL(`${developmentUrl}/src/renderer/shell.html`)
   else await window.loadURL(pathToFileURL(paths.renderer('shell')).toString())
   await controller.refresh()
   window.show()

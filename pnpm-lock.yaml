@@ -8,18 +8,18 @@ importers:
 
   .:
     dependencies:
+      '@codemirror/commands':
+        specifier: 6.8.1
+        version: 6.8.1
+      '@codemirror/state':
+        specifier: 6.5.2
+        version: 6.5.2
+      '@codemirror/view':
+        specifier: 6.38.1
+        version: 6.38.1
       '@moirasia/desktop-shell':
         specifier: workspace:*
         version: link:packages/desktop-shell
-      '@moirasia/feature-amove':
-        specifier: workspace:*
-        version: link:packages/feature-amove
-      '@moirasia/feature-exithibition':
-        specifier: workspace:*
-        version: link:packages/feature-exithibition
-      '@moirasia/feature-orbis':
-        specifier: workspace:*
-        version: link:packages/feature-orbis
       '@moirasia/ui-css':
         specifier: file:packages/ui-css
         version: link:packages/ui-css
@@ -107,73 +107,6 @@ importers:
       react:
         specifier: '>=19 <20'
         version: 19.2.8
-
-  packages/feature-amove:
-    dependencies:
-      '@codemirror/commands':
-        specifier: 6.8.1
-        version: 6.8.1
-      '@codemirror/state':
-        specifier: 6.5.2
-        version: 6.5.2
-      '@codemirror/view':
-        specifier: 6.38.1
-        version: 6.38.1
-      '@moirasia/desktop-shell':
-        specifier: file:../desktop-shell
-        version: link:../desktop-shell
-      '@moirasia/ui-react':
-        specifier: file:../ui-react
-        version: link:../ui-react
-      electron:
-        specifier: '>=41 <44'
-        version: 43.1.0
-      react:
-        specifier: '>=19 <20'
-        version: 19.2.8
-      react-dom:
-        specifier: '>=19 <20'
-        version: 19.2.8(react@19.2.8)
-      zod:
-        specifier: 3.25.76
-        version: 3.25.76
-
-  packages/feature-exithibition:
-    dependencies:
-      '@moirasia/desktop-shell':
-        specifier: file:../desktop-shell
-        version: link:../desktop-shell
-      '@moirasia/ui-react':
-        specifier: file:../ui-react
-        version: link:../ui-react
-      electron:
-        specifier: '>=41 <44'
-        version: 43.1.0
-      react:
-        specifier: '>=19 <20'
-        version: 19.2.8
-
-  packages/feature-orbis:
-    dependencies:
-      '@moirasia/desktop-shell':
-        specifier: file:../desktop-shell
-        version: link:../desktop-shell
-      '@moirasia/ui-react':
-        specifier: file:../ui-react
-        version: link:../ui-react
-      electron:
-        specifier: '>=41 <44'
-        version: 43.1.0
-      react:
-        specifier: '>=19 <20'
-        version: 19.2.8
-      react-dom:
-        specifier: '>=19 <20'
-        version: 19.2.8(react@19.2.8)
-    devDependencies:
-      vite:
-        specifier: ^7.3.1
-        version: 7.3.6(@types/node@25.9.5)(jiti@2.7.0)(lightningcss@1.32.0)
 
   packages/ui-css: {}
 

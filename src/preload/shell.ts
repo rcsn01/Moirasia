@@ -1,7 +1,7 @@
 import { contextBridge, ipcRenderer } from 'electron'
-import { createAmoveBridge } from '@moirasia/feature-amove/preload/bridge'
-import { createExithibitionBridge } from '@moirasia/feature-exithibition/preload/bridge'
-import { createOrbisBridge } from '@moirasia/feature-orbis/preload/bridge'
+import { createAmoveBridge } from '../../apps/Amove/src/preload/bridge'
+import { createExithibitionBridge } from '../../apps/Exithibition/src/preload/bridge'
+import { createOrbisBridge } from '../../apps/Orbis/src/preload/bridge'
 import type { Appearance } from '@moirasia/desktop-shell'
 import { IPC, type ApplicationId, type ControllerApi, type ControllerPage, type ControllerSnapshot, type ShellSettings } from '../shared/contracts'
 const api: ControllerApi = {
