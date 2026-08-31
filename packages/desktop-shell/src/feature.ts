@@ -1,7 +1,7 @@
 import type { WebContents } from 'electron'
 import type { ProductId } from './index'
 
-export const FEATURE_IDS = ['amove', 'exithibition', 'orbis'] as const
+export const FEATURE_IDS = ['amove', 'vox', 'exithibition', 'bonded', 'orbis'] as const
 export type FeatureId = (typeof FEATURE_IDS)[number]
 
 export function isFeatureId(value: unknown): value is FeatureId {
@@ -105,10 +105,18 @@ function defaultRequirements(context: FeatureContext): FeatureResourceRequiremen
       return context.mode === 'standalone'
         ? { preloads: ['main', 'shelf'], renderers: ['main', 'shelf'], native: ['addon'], assetsDirectory: true, dataDirectory: true }
         : { preloads: ['shelf'], renderers: ['shelf'], native: ['addon'], assetsDirectory: true, dataDirectory: true }
+    case 'vox':
+      return context.mode === 'standalone'
+        ? { preloads: ['main', 'overlay'], renderers: ['main', 'overlay'], native: ['executable'], dataDirectory: true }
+        : { preloads: ['overlay'], renderers: ['overlay'], native: ['executable'], dataDirectory: true }
     case 'exithibition':
       return context.mode === 'standalone'
         ? { preloads: ['main'], renderers: ['main'], native: ['executable'], dataDirectory: true }
         : { native: ['executable'], dataDirectory: true }
+    case 'bonded':
+      return context.mode === 'standalone'
+        ? { preloads: ['main'], renderers: ['main'], native: ['helper'], dataDirectory: true }
+        : { native: ['helper'], dataDirectory: true }
     case 'orbis':
       return context.mode === 'standalone'
         ? { preloads: ['main'], renderers: ['main'], workers: ['scan'], dataDirectory: true }

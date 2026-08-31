@@ -22,6 +22,7 @@ export interface FeatureStatus {
   readonly installed: boolean
   readonly loaded: boolean         // register() has run in this session
   readonly restartPending: boolean // was loaded, now uninstalled; relaunch fully unloads
+  readonly loadError?: string
 }
 
 export interface ControllerSnapshot {
@@ -68,4 +69,4 @@ export const IPC = {
 } as const
 
 export function isApplicationId(value: unknown): value is ApplicationId { return typeof value === 'string' && APPLICATION_IDS.some((id) => id === value) }
-export function isControllerPage(value: unknown): value is ControllerPage { return value === 'general' || value === 'features' || (typeof value === 'string' && ['amove', 'exithibition', 'orbis'].includes(value)) }
+export function isControllerPage(value: unknown): value is ControllerPage { return value === 'general' || value === 'features' || (typeof value === 'string' && ['amove', 'vox', 'exithibition', 'bonded', 'orbis'].includes(value)) }

@@ -12,13 +12,16 @@ type FeatureLoader = () => Promise<{ feature: MoirasiaFeature }>
 // a separate chunk, and an uninstalled feature is never evaluated.
 const LOADERS: Record<FeatureId, FeatureLoader> = {
   amove: () => import('../../../apps/integrated/Amove/src/main/feature'),
+  vox: () => import('../../../apps/integrated/Vox/src/main/feature'),
   exithibition: () => import('../../../apps/integrated/Exithibition/src/main/feature'),
+  bonded: () => import('../../../apps/integrated/Bonded/src/main/feature'),
   orbis: () => import('../../../apps/integrated/Orbis/src/main/feature')
 }
 
 export class FeatureRuntime {
   #instances = new Map<FeatureId, MoirasiaFeature>()
   #loadedThisSession = new Set<FeatureId>()
+  #loadErrors = new Map<FeatureId, string>()
   #operations = new Map<FeatureId, Promise<void>>()
   #active: FeatureId | undefined
   readonly #loaders: Partial<Record<FeatureId, FeatureLoader>>
@@ -40,7 +43,8 @@ export class FeatureRuntime {
     return (Object.keys(this.#loaders) as FeatureId[]).map((id) => {
       const installed = this.isInstalled(id)
       const loaded = this.#loadedThisSession.has(id)
-      return { id, installed, loaded, restartPending: loaded && !installed }
+      const loadError = this.#loadErrors.get(id)
+      return { id, installed, loaded, restartPending: loaded && !installed, ...(loadError ? { loadError } : {}) }
     })
   }
 
@@ -50,7 +54,7 @@ export class FeatureRuntime {
 
   async syncAtLaunch(): Promise<void> {
     for (const id of Object.keys(this.#loaders) as FeatureId[]) {
-      if (this.isInstalled(id)) await this.#enqueue(id, () => this.#load(id))
+      if (this.isInstalled(id)) await this.#enqueue(id, async () => { await this.#load(id) })
     }
   }
 
@@ -58,6 +62,7 @@ export class FeatureRuntime {
     const featureId = narrow(id)
     await this.#enqueue(featureId, async () => {
       if (!installed) {
+        this.#loadErrors.delete(featureId)
         if (!this.isInstalled(featureId)) return
         // The renderer must leave the feature tab before the feature removes
         // its IPC handlers and native listeners.
@@ -69,9 +74,11 @@ export class FeatureRuntime {
         await instance.dispose()
         return
       }
-      if (!this.isInstalled(featureId)) await this.settings.update({ features: { [featureId]: true } })
-      await this.#load(featureId)
-      if (this.#active === featureId) this.#setInstanceActive(featureId, true)
+      const newlyInstalled = !this.isInstalled(featureId)
+      if (newlyInstalled) await this.settings.update({ features: { [featureId]: true } })
+      const loaded = await this.#load(featureId)
+      if (!loaded && newlyInstalled) await this.settings.update({ features: { [featureId]: false } })
+      if (loaded && this.#active === featureId) this.#setInstanceActive(featureId, true)
     })
   }
 
@@ -118,26 +125,30 @@ export class FeatureRuntime {
     return next.finally(() => { if (this.#operations.get(id) === next) this.#operations.delete(id) })
   }
 
-  async #load(id: FeatureId): Promise<void> {
-    if (this.#instances.has(id)) return
+  async #load(id: FeatureId): Promise<boolean> {
+    if (this.#instances.has(id)) return true
     const loader = this.#loaders[id]
-    if (!loader) return
+    if (!loader) return false
     let loaded: { feature: MoirasiaFeature }
     try {
       loaded = await loader()
     } catch (error) {
+      this.#loadErrors.set(id, errorMessage(error))
       console.error(`Feature '${id}' failed to load`, error)
-      return
+      return false
     }
     try {
       await loaded.feature.register(this.#context(id))
     } catch (error) {
+      this.#loadErrors.set(id, errorMessage(error))
       console.error(`Feature '${id}' failed to register`, error)
       try { await loaded.feature.dispose() } catch { /* Best-effort rollback. */ }
-      return
+      return false
     }
+    this.#loadErrors.delete(id)
     this.#loadedThisSession.add(id)
     this.#instances.set(id, loaded.feature)
+    return true
   }
 }
 
@@ -164,12 +175,38 @@ export function suiteFeatureContext(id: FeatureId, surface: EmbeddedFeatureSurfa
         }
       }
     }
+    case 'vox': {
+      const rendererUrl = process.env.ELECTRON_RENDERER_URL
+      return {
+        id, mode: 'suite', productId: id, surface,
+        paths: {
+          preloads: { overlay: paths.preload('feature-vox-overlay') },
+          renderers: { overlay: rendererUrl ? `${rendererUrl}/apps/integrated/Vox/overlay.html` : paths.renderer('feature-vox-overlay') },
+          native: { executable: process.env.VOX_NATIVE_PATH ?? (app.isPackaged
+            ? join(process.resourcesPath, 'features', 'vox', 'native', 'VoxNative')
+            : join(app.getAppPath(), 'apps', 'integrated', 'Vox', 'native', '.build', 'arm64-apple-macosx', 'debug', 'VoxNative')) },
+          dataDirectory,
+          legacyDataDirectories: [join(app.getPath('appData'), 'Vox')]
+        }
+      }
+    }
     case 'exithibition':
       return {
         id, mode: 'suite', productId: id, surface,
         paths: {
           native: { executable: app.isPackaged ? join(process.resourcesPath, 'native', 'ExithibitionNative') : join(app.getAppPath(), 'apps', 'integrated', 'Exithibition', '.build', 'arm64-apple-macosx', 'debug', 'ExithibitionNative') },
           dataDirectory
+        }
+      }
+    case 'bonded':
+      return {
+        id, mode: 'suite', productId: id, surface,
+        paths: {
+          native: { helper: app.isPackaged
+            ? join(process.resourcesPath, 'features', 'bonded', 'native', 'BondedFirewallHelper')
+            : join(app.getAppPath(), 'apps', 'integrated', 'Bonded', 'native', '.build', 'arm64-apple-macosx', 'debug', 'BondedFirewallHelper') },
+          dataDirectory,
+          legacyDataDirectories: [join(app.getPath('appData'), 'Bonded')]
         }
       }
     case 'orbis':
@@ -191,6 +228,7 @@ export function suiteFeatureContext(id: FeatureId, surface: EmbeddedFeatureSurfa
 }
 
 function assertNever(value: never): never { throw new Error(`Unknown feature '${String(value)}'`) }
+function errorMessage(error: unknown): string { return error instanceof Error ? error.message : String(error) }
 
 function nativeAddonName(feature: 'amove' | 'orbis' = 'amove'): string {
   if (feature === 'orbis') {

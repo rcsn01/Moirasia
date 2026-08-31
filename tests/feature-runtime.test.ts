@@ -160,8 +160,36 @@ describe('FeatureRuntime', () => {
     await runtime.syncAtLaunch()
 
     expect(fake.dispose).toHaveBeenCalledTimes(1)
-    expect(runtime.statuses()[0]).toMatchObject({ installed: true, loaded: false })
+    expect(runtime.statuses()[0]).toMatchObject({ installed: true, loaded: false, loadError: 'native helper missing' })
     expect(() => runtime.activate('exithibition')).toThrow(/not running/)
+  })
+
+  it('rolls back a newly enabled feature when registration fails', async () => {
+    const fake = fakeFeature()
+    fake.register.mockRejectedValueOnce(new Error('Vox is already using Vox.'))
+    const settings = await settingsWith({ exithibition: false })
+    const runtime = new FeatureRuntime(settings, { loaders: { exithibition: async () => ({ feature: fake.feature }) }, context: () => CONTEXT })
+
+    await runtime.setInstalled('exithibition', true)
+
+    expect(settings.get().features.exithibition).toBe(false)
+    expect(runtime.statuses()[0]).toMatchObject({ installed: false, loaded: false, loadError: 'Vox is already using Vox.' })
+  })
+
+  it('surfaces a Bonded registration error and clears it after a successful retry', async () => {
+    const register = vi.fn().mockRejectedValueOnce(new Error('Bonded is already running in Bonded.')).mockResolvedValue(undefined)
+    const dispose = vi.fn(async () => {})
+    const feature: MoirasiaFeature = { id: 'bonded', register, dispose }
+    const context = { ...CONTEXT, id: 'bonded', productId: 'bonded' } as FeatureContext
+    const runtime = new FeatureRuntime(await settingsWith(undefined), { loaders: { bonded: async () => ({ feature }) }, context: () => context })
+
+    await runtime.syncAtLaunch()
+    expect(runtime.statuses()[0]).toMatchObject({ id: 'bonded', loaded: false, loadError: 'Bonded is already running in Bonded.' })
+    expect(dispose).toHaveBeenCalledTimes(1)
+
+    await runtime.setInstalled('bonded', true)
+    expect(register).toHaveBeenCalledTimes(2)
+    expect(runtime.statuses()[0]).toEqual({ id: 'bonded', installed: true, loaded: true, restartPending: false })
   })
 
   it('activates a running feature and rejects foreign application ids', async () => {
@@ -172,7 +200,7 @@ describe('FeatureRuntime', () => {
     runtime.activate('exithibition')
 
     expect(fake.activate).toHaveBeenCalledTimes(1)
-    expect(() => runtime.activate('vox')).toThrow(TypeError)
+    expect(() => runtime.activate('not-a-feature' as never)).toThrow(TypeError)
   })
 
   it('disposes every feature after the shell window has been destroyed', async () => {

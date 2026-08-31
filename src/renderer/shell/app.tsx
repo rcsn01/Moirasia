@@ -1,5 +1,5 @@
 import { lazy, Suspense, useEffect, useState } from 'react'
-import { AlertCircle, Activity, AppWindow, BarChart3, Grid2X2, Settings } from '@moirasia/ui-react/lib/icons'
+import { AlertCircle, Activity, AppWindow, BarChart3, Grid2X2, Mic, Settings, ShieldCheck } from '@moirasia/ui-react/lib/icons'
 import { Alert, AlertDescription, AlertTitle } from '@moirasia/ui-react/components/alert'
 import { DesktopAppShell, DesktopNavigation, DesktopPage } from '@moirasia/desktop-shell/react'
 import { isFeatureId, type FeatureId } from '@moirasia/desktop-shell/feature'
@@ -9,10 +9,12 @@ import { GeneralScreen } from './screens/general'
 import { useController } from './controller'
 
 const AmovePanel = lazy(async () => ({ default: (await import('../../../apps/integrated/Amove/src/renderer/main/AmovePanel')).AmovePanel }))
+const VoxPanel = lazy(async () => ({ default: (await import('../../../apps/integrated/Vox/src/renderer/App')).VoxPanel }))
 const ExithibitionPanel = lazy(async () => ({ default: (await import('../../../apps/integrated/Exithibition/src/renderer/App')).ExithibitionPanel }))
+const BondedPanel = lazy(async () => ({ default: (await import('../../../apps/integrated/Bonded/src/renderer/App')).BondedPanel }))
 const OrbisPanel = lazy(async () => ({ default: (await import('../../../apps/integrated/Orbis/src/renderer/App')).OrbisPanel }))
 
-const FEATURE_LABELS: Record<FeatureId, string> = { amove: 'Amove', exithibition: 'Exithibition', orbis: 'Orbis' }
+const FEATURE_LABELS: Record<FeatureId, string> = { amove: 'Amove', vox: 'Vox', exithibition: 'Exithibition', bonded: 'Bonded', orbis: 'Orbis' }
 
 export function App(): React.JSX.Element {
   const controller = useController()
@@ -35,7 +37,7 @@ export function App(): React.JSX.Element {
       { id: 'general', label: 'General', icon: <Settings aria-hidden="true" /> },
       { id: 'features', label: 'Features', icon: <Grid2X2 aria-hidden="true" /> }
     ] },
-    { id: 'apps', label: 'Apps', items: availableFeatures.map((feature) => ({ id: feature.id, label: FEATURE_LABELS[feature.id], icon: feature.id === 'amove' ? <AppWindow aria-hidden="true" /> : feature.id === 'exithibition' ? <Activity aria-hidden="true" /> : <BarChart3 aria-hidden="true" /> })) }
+    { id: 'apps', label: 'Apps', items: availableFeatures.map((feature) => ({ id: feature.id, label: FEATURE_LABELS[feature.id], icon: feature.id === 'amove' ? <AppWindow aria-hidden="true" /> : feature.id === 'vox' ? <Mic aria-hidden="true" /> : feature.id === 'exithibition' ? <Activity aria-hidden="true" /> : feature.id === 'bonded' ? <ShieldCheck aria-hidden="true" /> : <BarChart3 aria-hidden="true" /> })) }
   ]} />
 
   return <DesktopAppShell product="Moirasia" appearance={appearance} onAppearanceChange={(value) => controller.setAppearance('moirasia', value)} navigation={navigation}>
@@ -44,7 +46,7 @@ export function App(): React.JSX.Element {
       : <>
         {activePage === 'general' && <div className="shell-route"><DesktopPage width="standard" className="controller-main"><GeneralScreen /></DesktopPage></div>}
         {activePage === 'features' && <div className="shell-route"><DesktopPage width="standard" className="controller-main"><FeaturesScreen controller={controller} /></DesktopPage></div>}
-        {(['amove', 'exithibition', 'orbis'] as const).map((id) => {
+        {(['amove', 'vox', 'exithibition', 'bonded', 'orbis'] as const).map((id) => {
           const available = availableFeatures.some((feature) => feature.id === id)
           if (!available || !visited.has(id)) return null
           const selected = activePage === id
@@ -52,9 +54,13 @@ export function App(): React.JSX.Element {
             <Suspense fallback={<p className="shell-feature-loading" role="status">Loading {FEATURE_LABELS[id]}…</p>}>
               {id === 'amove'
                 ? <AmovePanel bridge={window.amove} appearance={controller.snapshot.appearances.values.amove} />
-                : id === 'exithibition'
+                : id === 'vox'
+                  ? <VoxPanel bridge={window.vox} appearance={controller.snapshot.appearances.values.vox} />
+                  : id === 'exithibition'
                   ? <ExithibitionPanel bridge={window.exithibition} appearance={controller.snapshot.appearances.values.exithibition} />
-                  : <OrbisPanel bridge={window.orbis} appearance={controller.snapshot.appearances.values.orbis} />}
+                  : id === 'bonded'
+                    ? <BondedPanel bridge={window.bonded} appearance={controller.snapshot.appearances.values.bonded} />
+                    : <OrbisPanel bridge={window.orbis} appearance={controller.snapshot.appearances.values.orbis} />}
             </Suspense>
           </div>
         })}

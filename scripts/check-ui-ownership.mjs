@@ -5,9 +5,9 @@ const workspace = resolve(import.meta.dirname, "..")
 const rendererRoots = [
   "src/renderer",
   "apps/integrated/Amove/src/renderer",
-  "apps/standalone/Vox/src/renderer",
+  "apps/integrated/Vox/src/renderer",
   "apps/integrated/Exithibition/src/renderer",
-  "apps/standalone/Bonded/src/renderer",
+  "apps/integrated/Bonded/src/renderer",
   "apps/integrated/Orbis/src/renderer"
 ]
 const coreVariables = ["background", "foreground", "card", "card-foreground", "popover", "popover-foreground", "primary", "primary-foreground", "secondary", "secondary-foreground", "muted", "muted-foreground", "accent", "accent-foreground", "destructive", "border", "input", "ring", "radius", "chart-1", "chart-2", "chart-3", "chart-4", "chart-5"]
@@ -27,12 +27,23 @@ async function filesBelow(directory) {
   return result
 }
 
+function checkDocumentViewportOwnership(relativePath, content) {
+  for (const match of content.matchAll(/(?:^|})([^{}]+)\{([^{}]*)\}/gm)) {
+    let selectors = match[1].trim()
+    if (selectors.includes(";")) selectors = selectors.split(";").at(-1)?.trim() ?? ""
+    if (!selectors.split(",").some((selector) => /^(?:html|body|#root)(?:$|[\s.#:[>+~])/.test(selector.trim()))) continue
+    if (/(?:^|;)\s*(?:height|min-height|max-height|overflow(?:-[xy])?)\s*:/m.test(match[2])) {
+      failures.push(`${relativePath}: primary-window document styles must not own height or overflow`)
+    }
+  }
+}
+
 for (const root of rendererRoots) {
   for (const path of await filesBelow(resolve(workspace, root))) {
     const content = await readFile(path, "utf8")
     if (coreDefinition.test(content)) failures.push(`${path}: redefines a core shadcn variable`)
     for (const literal of presetLiterals) if (content.includes(literal)) failures.push(`${path}: duplicates preset literal ${literal}`)
-    if (path.endsWith(".css") && !path.includes("/renderer/shelf/")) {
+    if (path.endsWith(".css") && !path.includes("/renderer/shelf/") && !path.endsWith("/standalone.css") && !path.endsWith("/overlay.css")) {
       for (const match of content.matchAll(/(?:^|})([^{}]+)\{/gm)) {
         const selectors = match[1].trim()
         if (selectors.startsWith("@")) continue
@@ -47,10 +58,10 @@ for (const root of rendererRoots) {
 const requiredImports = new Map([
   ["apps/integrated/Amove/src/renderer/main/main.css", "@moirasia/ui-react/products/amove.css"],
   ["apps/integrated/Amove/src/renderer/shelf/shelf.css", "@moirasia/ui-react/products/amove.css"],
-  ["apps/standalone/Vox/src/renderer/styles.css", "@moirasia/ui-react/products/vox.css"],
+  ["apps/integrated/Vox/src/renderer/styles.css", "@moirasia/ui-react/products/vox.css"],
   ["apps/integrated/Exithibition/src/renderer/styles.css", "@moirasia/ui-react/products/exithibition.css"],
   ["apps/integrated/Orbis/src/renderer/styles.css", "@moirasia/desktop-shell/styles.css"],
-  ["apps/standalone/Bonded/src/renderer/styles.css", "@moirasia/ui-react/products/bonded.css"]
+  ["apps/integrated/Bonded/src/renderer/styles.css", "@moirasia/ui-react/products/bonded.css"]
 ])
 for (const [relativePath, expected] of requiredImports) {
   const content = await readFile(resolve(workspace, relativePath), "utf8")
@@ -58,9 +69,28 @@ for (const [relativePath, expected] of requiredImports) {
   if (!content.includes("@source")) failures.push(`${relativePath}: missing renderer-owned Tailwind @source declaration`)
 }
 
+const primaryWindows = [
+  { product: "Amove", styles: "apps/integrated/Amove/src/renderer/main/main.css", entry: "apps/integrated/Amove/src/renderer/main/MainApp.tsx" },
+  { product: "Vox", styles: "apps/integrated/Vox/src/renderer/standalone.css", entry: "apps/integrated/Vox/src/renderer/App.tsx" },
+  { product: "Exithibition", styles: "apps/integrated/Exithibition/src/renderer/styles.css", entry: "apps/integrated/Exithibition/src/renderer/App.tsx" },
+  { product: "Bonded", styles: "apps/integrated/Bonded/src/renderer/standalone.css", entry: "apps/integrated/Bonded/src/renderer/App.tsx" },
+  { product: "Orbis", styles: "apps/integrated/Orbis/src/renderer/styles.css", entry: "apps/integrated/Orbis/src/renderer/App.tsx" }
+]
+for (const primary of primaryWindows) {
+  const styles = await readFile(resolve(workspace, primary.styles), "utf8")
+  const entry = await readFile(resolve(workspace, primary.entry), "utf8")
+  if (!styles.includes("@moirasia/desktop-shell/styles.css")) failures.push(`${primary.styles}: ${primary.product} primary window is missing shared desktop shell styles`)
+  if (!entry.includes("DesktopAppShell") || !/<DesktopAppShell\b/.test(entry)) failures.push(`${primary.entry}: ${primary.product} primary window does not render DesktopAppShell`)
+  checkDocumentViewportOwnership(primary.styles, styles)
+}
+const shellRendererStylesPath = "src/renderer/shell/styles.css"
+checkDocumentViewportOwnership(shellRendererStylesPath, await readFile(resolve(workspace, shellRendererStylesPath), "utf8"))
+
 const embeddedStyleEntrypoints = [
   ["apps/integrated/Amove/src/renderer/main/main.css", ".amove-feature-panel"],
+  ["apps/integrated/Vox/src/renderer/styles.css", ".vox-feature-panel"],
   ["apps/integrated/Exithibition/src/renderer/styles.css", ".exithibition-feature-panel"],
+  ["apps/integrated/Bonded/src/renderer/styles.css", ".bonded-feature-panel"],
   ["apps/integrated/Orbis/src/renderer/styles.css", ".orbis-feature-panel"]
 ]
 for (const [relativePath, prefix] of embeddedStyleEntrypoints) {
@@ -68,7 +98,7 @@ for (const [relativePath, prefix] of embeddedStyleEntrypoints) {
   for (const match of content.matchAll(/(?:^|})([^{}]+)\{/gm)) {
     let selectors = match[1].trim()
     if (selectors.includes(";")) selectors = selectors.split(";").at(-1)?.trim() ?? ""
-    if (!selectors || selectors.startsWith("@")) continue
+    if (!selectors || selectors.startsWith("@") || /^(?:from|to|\d+(?:\.\d+)?%)$/.test(selectors)) continue
     for (const selector of selectors.split(",").map((value) => value.trim())) {
       if (/^(?:html|body|#root)(?:$|[\s.#:[>+~])/.test(selector) || /\.(?:loading|setting-row|workspace)(?:$|[\s.#:[>+~])/.test(selector)) {
         failures.push(`${relativePath}: document or generic embedded selector is not allowed: ${selector}`)
@@ -79,14 +109,14 @@ for (const [relativePath, prefix] of embeddedStyleEntrypoints) {
   }
 }
 const shellStyles = await readFile(resolve(workspace, "src/renderer/shell/styles.css"), "utf8")
-for (const entry of ["../../../apps/integrated/Amove/src/renderer/main/main.css", "../../../apps/integrated/Exithibition/src/renderer/styles.css", "../../../apps/integrated/Orbis/src/renderer/styles.css"]) {
+for (const entry of ["../../../apps/integrated/Amove/src/renderer/main/main.css", "../../../apps/integrated/Vox/src/renderer/styles.css", "../../../apps/integrated/Exithibition/src/renderer/styles.css", "../../../apps/integrated/Bonded/src/renderer/styles.css", "../../../apps/integrated/Orbis/src/renderer/styles.css"]) {
   if (!shellStyles.includes(entry)) failures.push(`src/renderer/shell/styles.css: missing scoped feature import ${entry}`)
 }
 
-const voxStyles = await readFile(resolve(workspace, "apps/standalone/Vox/src/renderer/styles.css"), "utf8")
+const voxStyles = await readFile(resolve(workspace, "apps/integrated/Vox/src/renderer/styles.css"), "utf8")
 for (const [index, line] of voxStyles.split("\n").entries()) {
   if (line.includes("--vox-color-") && !/privacy-dot|notice|hero-orb|status-light|model-state|simple-list|overlay-shell|overlay-orb|wave/.test(line)) {
-    failures.push(`apps/standalone/Vox/src/renderer/styles.css:${index + 1}: product color is outside an allowed voice/status visualization or overlay`)
+    failures.push(`apps/integrated/Vox/src/renderer/styles.css:${index + 1}: product color is outside an allowed voice/status visualization or overlay`)
   }
 }
 
@@ -99,7 +129,7 @@ for (const relativePath of ["apps/integrated/Exithibition/src/renderer/styles.cs
   }
 }
 
-const bondedStylesPath = "apps/standalone/Bonded/src/renderer/styles.css"
+const bondedStylesPath = "apps/integrated/Bonded/src/renderer/styles.css"
 const bondedStyles = await readFile(resolve(workspace, bondedStylesPath), "utf8")
 for (const match of bondedStyles.matchAll(/(?:^|})([^{}]+)\{([^{}]*)\}/gm)) {
   const selectors = match[1].trim()

@@ -23,6 +23,10 @@ type DesktopNavigationProps<Id extends string> = {
   | { readonly groups: readonly DesktopNavigationGroup<Id>[]; readonly items?: never }
 )
 
+/**
+ * Owns the full viewport of a primary BrowserWindow, including product chrome.
+ * Do not nest this shell inside an embedded feature panel.
+ */
 export function DesktopAppShell({ product, appearance, onAppearanceChange, navigation, footer, children }: {
   readonly product: string
   readonly appearance: Appearance

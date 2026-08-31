@@ -1,12 +1,21 @@
 import { describe, expect, it } from 'vitest'
 import { validateFeatureResources, type FeatureContext } from '../packages/desktop-shell/src/feature'
 
-const context = (paths: FeatureContext['paths'], id: 'amove' | 'orbis' = 'amove'): FeatureContext => ({
-  id, mode: 'suite', productId: id, paths,
+const context = (paths: FeatureContext['paths'], id: 'amove' | 'vox' | 'orbis' = 'amove', mode: 'suite' | 'standalone' = 'suite'): FeatureContext => (mode === 'suite' ? {
+  id, mode, productId: id, paths,
   surface: { webContents: {} as never, state: { active: false, focused: false }, activate: () => undefined, focus: () => undefined, subscribe: () => () => undefined }
+} : {
+  id, mode, productId: id, paths
 })
 
+
 describe('feature resource contract', () => {
+  it('validates Vox resources for standalone and suite hosts', () => {
+    const shared = { preloads: { main: '/tmp/main.cjs', overlay: '/tmp/overlay.cjs' }, renderers: { main: '/tmp/main.html', overlay: '/tmp/overlay.html' }, native: { executable: '/tmp/VoxNative' }, dataDirectory: '/tmp/vox' }
+    expect(() => validateFeatureResources(context(shared, 'vox', 'standalone'))).not.toThrow()
+    expect(() => validateFeatureResources(context({ ...shared, preloads: { overlay: '/tmp/overlay.cjs' }, renderers: { overlay: '/tmp/overlay.html' } }, 'vox'))).not.toThrow()
+    expect(() => validateFeatureResources(context({ native: shared.native, dataDirectory: shared.dataDirectory }, 'vox'))).toThrow(/preloads\.overlay/)
+  })
   it('validates named suite resources and development renderer URLs', () => {
     expect(() => validateFeatureResources(context({
       preloads: { main: '/tmp/main.cjs', shelf: '/tmp/shelf.cjs' },
