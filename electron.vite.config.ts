@@ -23,7 +23,7 @@ export default defineConfig({
       rollupOptions: {
         input: {
           shell: resolve(import.meta.dirname, 'src/preload/shell.ts'),
-          'feature-amove-shelf': resolve(import.meta.dirname, 'apps/Amove/src/preload/shelf.ts')
+          'feature-amove-shelf': resolve(import.meta.dirname, 'apps/integrated/Amove/src/preload/shelf.ts')
         },
         output: {
           format: 'cjs',
@@ -33,7 +33,7 @@ export default defineConfig({
     }
   },
   renderer: {
-    // Renderer entries live inside the owning app repos (apps/<App>/src/renderer),
+    // Renderer entries live inside the integrated app repos (apps/integrated/<App>/src/renderer),
     // so the renderer root is the repository root.
     root: resolve(import.meta.dirname),
     resolve: { dedupe: ['react', 'react-dom'] },
@@ -51,7 +51,7 @@ export default defineConfig({
       rollupOptions: {
         input: {
           shell: resolve(import.meta.dirname, 'src/renderer/shell.html'),
-          'feature-amove-shelf': resolve(import.meta.dirname, 'apps/Amove/src/renderer/shelf.html')
+          'feature-amove-shelf': resolve(import.meta.dirname, 'apps/integrated/Amove/src/renderer/shelf.html')
         }
       }
     }

@@ -98,7 +98,7 @@ Verify the adapter and application with:
 cd packages/ui-swift
 swift test
 
-cd ../../apps/Exithibition
+cd ../../apps/integrated/Exithibition
 npm test
 ```
 
@@ -130,7 +130,7 @@ and rail colors remain simulation data rather than UI tokens.
 Verify the application with:
 
 ```sh
-cd apps/Mini-NSW/app
+cd apps/standalone/Mini-NSW/app
 npm test
 npm run typecheck
 npm run build

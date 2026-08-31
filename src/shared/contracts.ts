@@ -3,7 +3,7 @@ import type { FeatureId } from '@moirasia/desktop-shell/feature'
 
 export const APPLICATION_IDS = ['amove', 'vox', 'exithibition', 'bonded', 'orbis'] as const
 export type ApplicationId = (typeof APPLICATION_IDS)[number]
-export type ControllerPage = 'apps' | FeatureId | 'settings'
+export type ControllerPage = 'general' | 'features' | FeatureId
 
 export interface ApplicationStatus {
   readonly id: ApplicationId
@@ -68,4 +68,4 @@ export const IPC = {
 } as const
 
 export function isApplicationId(value: unknown): value is ApplicationId { return typeof value === 'string' && APPLICATION_IDS.some((id) => id === value) }
-export function isControllerPage(value: unknown): value is ControllerPage { return value === 'apps' || value === 'settings' || (typeof value === 'string' && ['amove', 'exithibition', 'orbis'].includes(value)) }
+export function isControllerPage(value: unknown): value is ControllerPage { return value === 'general' || value === 'features' || (typeof value === 'string' && ['amove', 'exithibition', 'orbis'].includes(value)) }

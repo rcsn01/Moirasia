@@ -12,19 +12,19 @@
     "build:app": "electron-vite build",
     "agent:build": "node scripts/build-application-agent.mjs",
     "features:stage": "node scripts/stage-feature-binaries.mjs",
-    "features:native": "pnpm -C apps/Orbis native:mac",
-    "features:native:test": "cargo test --manifest-path apps/Orbis/native/Cargo.toml",
-    "features:worker": "node apps/Orbis/scripts/build-worker.mjs --outDir native/staged/features/orbis/worker",
+    "features:native": "pnpm -C apps/integrated/Orbis native:mac",
+    "features:native:test": "cargo test --manifest-path apps/integrated/Orbis/native/Cargo.toml",
+    "features:worker": "node apps/integrated/Orbis/scripts/build-worker.mjs --outDir native/staged/features/orbis/worker",
     "preview": "electron-vite preview",
     "typecheck": "tsc -p tsconfig.node.json --noEmit && tsc -p tsconfig.react.json --noEmit && tsc -p packages/ui-react/tsconfig.json --noEmit",
     "test": "vitest run",
     "test:dev-ready": "node scripts/check-electron-install.mjs .",
-    "test:dev-ready:all": "node scripts/check-electron-install.mjs . && node scripts/check-electron-install.mjs apps/Amove && node scripts/check-electron-install.mjs apps/Vox && node scripts/check-electron-install.mjs apps/Exithibition && node scripts/check-electron-install.mjs apps/Bonded && node scripts/check-electron-install.mjs apps/Orbis",
+    "test:dev-ready:all": "node scripts/check-electron-install.mjs . && node scripts/check-electron-install.mjs apps/integrated/Amove && node scripts/check-electron-install.mjs apps/standalone/Vox && node scripts/check-electron-install.mjs apps/integrated/Exithibition && node scripts/check-electron-install.mjs apps/standalone/Bonded && node scripts/check-electron-install.mjs apps/integrated/Orbis",
     "test:ownership": "node scripts/check-root-ownership.mjs",
     "ui:preset:set": "node packages/design-system/scripts/preset.mjs set",
     "ui:preset:sync": "node packages/design-system/scripts/preset.mjs sync",
     "ui:preset:check": "node packages/design-system/scripts/preset.mjs check && node scripts/check-ui-ownership.mjs",
-    "ui:verify": "pnpm ui:preset:check && pnpm --filter @moirasia/design-system test && pnpm test:dev-ready:all && pnpm typecheck && pnpm test && pnpm -C apps/Amove typecheck && pnpm -C apps/Amove test && pnpm -C apps/Orbis typecheck && pnpm -C apps/Orbis test && pnpm -C apps/Orbis native:test && pnpm -C apps/Exithibition typecheck && pnpm -C apps/Exithibition test",
+    "ui:verify": "pnpm ui:preset:check && pnpm --filter @moirasia/design-system test && pnpm test:dev-ready:all && pnpm typecheck && pnpm test && pnpm -C apps/integrated/Amove typecheck && pnpm -C apps/integrated/Amove test && pnpm -C apps/integrated/Orbis typecheck && pnpm -C apps/integrated/Orbis test && pnpm -C apps/integrated/Orbis native:test && pnpm -C apps/integrated/Exithibition typecheck && pnpm -C apps/integrated/Exithibition test",
     "test:watch": "vitest",
     "test:e2e": "playwright test",
     "dist:mac": "pnpm build && electron-builder --mac --arm64"
@@ -70,5 +70,10 @@
       "electron-winstaller",
       "esbuild"
     ]
-  }
+  },
+  "workspaces": [
+    ".",
+    "packages/*",
+    "!apps/**"
+  ]
 }

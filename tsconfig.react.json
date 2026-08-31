@@ -14,9 +14,9 @@
   },
   "include": [
     "src/renderer/shell/**/*",
-    "apps/Amove/src/renderer/**/*",
-    "apps/Exithibition/src/renderer/**/*",
-    "apps/Orbis/src/renderer/**/*"
+    "apps/integrated/Amove/src/renderer/**/*",
+    "apps/integrated/Exithibition/src/renderer/**/*",
+    "apps/integrated/Orbis/src/renderer/**/*"
   ],
   "exclude": ["apps/**/*.test.ts", "apps/**/*.test.tsx"]
 }

@@ -34,7 +34,7 @@ async function createApplication(): Promise<void> {
   })
   const host = new EmbeddedFeatureHost(window)
   const stopNavigation = host.subscribeNavigation((feature) => {
-    sendToRenderer(window.webContents, IPC.navigate, feature ?? 'apps')
+    if (feature) sendToRenderer(window.webContents, IPC.navigate, feature)
   })
   const features = new FeatureRuntime(settings, {
     host,

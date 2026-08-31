@@ -1,9 +1,14 @@
 // @vitest-environment jsdom
-import { cleanup, render, screen, waitFor, within } from '@testing-library/react'
+import { act, cleanup, render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import type { ControllerApi, ControllerPage, ControllerSnapshot, ShellSettings } from '../src/shared/contracts'
+
+vi.mock('../apps/integrated/Amove/src/renderer/main/AmovePanel', () => ({ AmovePanel: () => <div>Amove panel</div> }))
+vi.mock('../apps/integrated/Exithibition/src/renderer/App', () => ({ ExithibitionPanel: () => <div>Exithibition panel</div> }))
+vi.mock('../apps/integrated/Orbis/src/renderer/App', () => ({ OrbisPanel: () => <div>Orbis panel</div> }))
+
 import { App } from '../src/renderer/shell/app'
-import type { ControllerApi, ControllerSnapshot, ShellSettings } from '../src/shared/contracts'
 
 const snapshot: ControllerSnapshot = { applications: [
   { id: 'amove', label: 'Amove', bundleId: 'com.opense.Amove', installed: true, running: false },
@@ -12,64 +17,102 @@ const snapshot: ControllerSnapshot = { applications: [
   { id: 'bonded', label: 'Bonded', bundleId: 'com.opense.Bonded', installed: true, running: false },
   { id: 'orbis', label: 'Orbis', bundleId: 'com.opense.Orbis', installed: true, running: false }
 ], appearances: { version: 1, revision: 1, values: { moirasia: 'system', amove: 'system', vox: 'dark', exithibition: 'dark', bonded: 'system', orbis: 'system' } }, features: [
-  { id: 'exithibition', installed: true, loaded: true, restartPending: false }
+  { id: 'amove', installed: false, loaded: false, restartPending: false },
+  { id: 'exithibition', installed: true, loaded: true, restartPending: false },
+  { id: 'orbis', installed: true, loaded: false, restartPending: false }
 ] }
-const settings: ShellSettings = { version: 3, launchAtLogin: false, pendingLoginItems: {}, features: { exithibition: true } }
-let navigate: ((page: 'apps' | 'settings') => void) | undefined
-function api(next: ControllerSnapshot = snapshot): ControllerApi { return { getSnapshot: vi.fn(async () => next), refresh: vi.fn(async () => next), getSettings: vi.fn(async () => settings), openApplication: vi.fn(async () => next), quitApplication: vi.fn(async () => next), setAppearance: vi.fn(async () => next), setAllAppearances: vi.fn(async () => next), setLaunchAtLogin: vi.fn(async (enabled) => ({ ...settings, launchAtLogin: enabled })), setApplicationLoginItem: vi.fn(async () => next), installFeature: vi.fn(async () => next), uninstallFeature: vi.fn(async () => next), openFeature: vi.fn(async () => {}), relaunchApp: vi.fn(async () => {}), openLoginItemsSettings: vi.fn(async () => {}), onSnapshot: vi.fn(() => vi.fn()), onNavigate: vi.fn((listener) => { navigate = listener; return vi.fn() }) } }
+const settings: ShellSettings = { version: 3, launchAtLogin: false, pendingLoginItems: {}, features: { amove: false, exithibition: true, orbis: true } }
+let navigate: ((page: ControllerPage) => void) | undefined
+let publishSnapshot: ((snapshot: ControllerSnapshot) => void) | undefined
+function api(next: ControllerSnapshot = snapshot): ControllerApi { return { getSnapshot: vi.fn(async () => next), refresh: vi.fn(async () => next), getSettings: vi.fn(async () => settings), openApplication: vi.fn(async () => next), quitApplication: vi.fn(async () => next), setAppearance: vi.fn(async () => next), setAllAppearances: vi.fn(async () => next), setLaunchAtLogin: vi.fn(async (enabled) => ({ ...settings, launchAtLogin: enabled })), setApplicationLoginItem: vi.fn(async () => next), installFeature: vi.fn(async () => next), uninstallFeature: vi.fn(async () => next), openFeature: vi.fn(async () => {}), reportPage: vi.fn(async () => {}), relaunchApp: vi.fn(async () => {}), openLoginItemsSettings: vi.fn(async () => {}), onSnapshot: vi.fn((listener) => { publishSnapshot = listener; return vi.fn() }), onNavigate: vi.fn((listener) => { navigate = listener; return vi.fn() }) } }
 
-beforeEach(() => { vi.stubGlobal('matchMedia', vi.fn(() => ({ matches: false, addEventListener: vi.fn(), removeEventListener: vi.fn() }))); document.documentElement.className = '' })
+beforeEach(() => { navigate = undefined; publishSnapshot = undefined; vi.stubGlobal('matchMedia', vi.fn(() => ({ matches: false, addEventListener: vi.fn(), removeEventListener: vi.fn() }))); document.documentElement.className = '' })
 afterEach(() => { cleanup(); vi.unstubAllGlobals(); vi.restoreAllMocks() })
 
-describe('launcher renderer', () => {
-  it('shows install and running states and controls standalone apps', async () => {
+describe('Moirasia renderer', () => {
+  it('starts on General and groups available embedded apps in the sidebar', async () => {
     const bridge = api(); window.moirasia = bridge; const user = userEvent.setup(); render(<App />)
-    expect(await screen.findByRole('heading', { name: 'Your apps' })).toBeVisible()
-    const amove = screen.getByText('Amove').closest('[data-slot="card"]')!
-    await user.click(within(amove).getByRole('button', { name: 'Open' })); await waitFor(() => expect(bridge.openApplication).toHaveBeenCalledWith('amove'))
-    const vox = screen.getByText('Vox').closest('[data-slot="card"]')!
-    await user.click(within(vox).getByRole('button', { name: 'Quit' })); expect(bridge.quitApplication).toHaveBeenCalledWith('vox')
-    const bonded = screen.getByText('Bonded').closest('[data-slot="card"]')!
-    await user.click(within(bonded).getByRole('button', { name: 'Open' })); expect(bridge.openApplication).toHaveBeenCalledWith('bonded')
-    const orbis = screen.getByText('Orbis').closest('[data-slot="card"]')!
-    await user.click(within(orbis).getByRole('button', { name: 'Open' })); expect(bridge.openApplication).toHaveBeenCalledWith('orbis')
-    const externalExithibition = screen.getByText('Not installed').closest('[data-slot="card"]')!
-    expect(within(externalExithibition).getByRole('button', { name: 'Open' })).toBeDisabled()
-    expect(externalExithibition).toHaveTextContent('Running inside Moirasia')
+
+    expect(await screen.findByRole('heading', { name: 'General' })).toBeVisible()
+    expect(screen.getByText('General settings will appear here.')).toBeVisible()
+    expect(bridge.reportPage).toHaveBeenCalledWith('general')
+    expect(screen.getAllByRole('navigation')).toHaveLength(1)
+    expect(screen.getByRole('group', { name: 'Essentials' })).toBeVisible()
+    const apps = screen.getByRole('group', { name: 'Apps' })
+    expect(within(apps).getByRole('button', { name: 'Exithibition' })).toBeVisible()
+    expect(within(apps).queryByRole('button', { name: 'Amove' })).not.toBeInTheDocument()
+    expect(within(apps).queryByRole('button', { name: 'Orbis' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Vox' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Bonded' })).not.toBeInTheDocument()
+
+    await user.click(screen.getByRole('button', { name: 'Features' }))
+    expect(await screen.findByRole('heading', { name: 'Features' })).toBeVisible()
+    expect(bridge.reportPage).toHaveBeenLastCalledWith('features')
   })
 
-  it('installs, opens, and uninstalls features from the Inside Moirasia section', async () => {
+  it('installs, opens, and uninstalls features from the Features page', async () => {
     const bridge = api(); window.moirasia = bridge; const user = userEvent.setup(); render(<App />)
-    await screen.findByRole('heading', { name: 'Your apps' })
-    const section = screen.getByRole('region', { name: 'Inside Moirasia' })
-    const tile = within(section).getByText('Exithibition').closest('[data-slot="card"]')!
-    expect(within(tile).getByText('Loaded')).toBeVisible()
-    expect(screen.queryByText('Restart required')).not.toBeInTheDocument()
-    await user.click(within(tile).getByRole('button', { name: 'Open' })); expect(bridge.openFeature).toHaveBeenCalledWith('exithibition')
-    await user.click(within(tile).getByRole('button', { name: 'Uninstall' })); expect(bridge.uninstallFeature).toHaveBeenCalledWith('exithibition')
+    await screen.findByRole('heading', { name: 'General' })
+    await user.click(screen.getByRole('button', { name: 'Features' }))
+
+    const amove = screen.getByRole('heading', { name: 'Amove', level: 3 }).closest('[data-slot="card"]')!
+    expect(within(amove).getByText('Not loaded')).toBeVisible()
+    expect(within(amove).getByRole('button', { name: 'Unavailable' })).toBeDisabled()
+    await user.click(within(amove).getByRole('button', { name: 'Install' }))
+    expect(bridge.installFeature).toHaveBeenCalledWith('amove')
+
+    const exithibition = screen.getByRole('heading', { name: 'Exithibition', level: 3 }).closest('[data-slot="card"]')!
+    expect(within(exithibition).getByText('Loaded')).toBeVisible()
+    await user.click(within(exithibition).getByRole('button', { name: 'Open' }))
+    expect(bridge.openFeature).toHaveBeenCalledWith('exithibition')
+    await user.click(within(exithibition).getByRole('button', { name: 'Uninstall' }))
+    expect(bridge.uninstallFeature).toHaveBeenCalledWith('exithibition')
+
+    const orbis = screen.getByRole('heading', { name: 'Orbis', level: 3 }).closest('[data-slot="card"]')!
+    expect(within(orbis).getByRole('button', { name: 'Unavailable' })).toBeDisabled()
+    expect(within(orbis).getByRole('button', { name: 'Uninstall' })).toBeEnabled()
   })
 
   it('offers an in-place relaunch while a feature waits to unload', async () => {
-    const restart: ControllerSnapshot = { ...snapshot, features: [{ id: 'exithibition', installed: false, loaded: true, restartPending: true }] }
+    const restart: ControllerSnapshot = { ...snapshot, features: snapshot.features.map((feature) => feature.id === 'exithibition' ? { ...feature, installed: false, restartPending: true } : feature) }
     const bridge = api(restart); window.moirasia = bridge; const user = userEvent.setup(); render(<App />)
-    await screen.findByRole('heading', { name: 'Your apps' })
-    const section = screen.getByRole('region', { name: 'Inside Moirasia' })
-    expect(within(section).getByText('Restart pending')).toBeVisible()
-    const tile = within(section).getByText('Exithibition').closest('[data-slot="card"]')!
+    await screen.findByRole('heading', { name: 'General' })
+    await user.click(screen.getByRole('button', { name: 'Features' }))
+
+    expect(screen.getByText('Restart pending')).toBeVisible()
+    const tile = screen.getByRole('heading', { name: 'Exithibition', level: 3 }).closest('[data-slot="card"]')!
     expect(within(tile).getByRole('button', { name: 'Open' })).toBeDisabled()
-    await user.click(within(tile).getByRole('button', { name: 'Install' })); expect(bridge.installFeature).toHaveBeenCalledWith('exithibition')
-    await user.click(screen.getByRole('button', { name: 'Restart Moirasia' })); expect(bridge.relaunchApp).toHaveBeenCalled()
+    await user.click(within(tile).getByRole('button', { name: 'Install' }))
+    expect(bridge.installFeature).toHaveBeenCalledWith('exithibition')
+    await user.click(screen.getByRole('button', { name: 'Restart Moirasia' }))
+    expect(bridge.relaunchApp).toHaveBeenCalled()
   })
 
-  it('shows mixed appearance and independent login items', async () => {
-    const bridge = api(); window.moirasia = bridge; const user = userEvent.setup(); render(<App />); await screen.findByRole('heading', { name: 'Your apps' })
-    await user.click(screen.getByRole('button', { name: 'Settings' })); expect(await screen.findByRole('heading', { name: 'Settings' })).toBeVisible()
-    expect(screen.getByRole('combobox', { name: 'All apps appearance' })).toHaveValue('mixed')
-    expect(screen.getByRole('combobox', { name: 'bonded appearance' })).toHaveValue('system')
-    expect(screen.getByRole('combobox', { name: 'orbis appearance' })).toHaveValue('system')
-    await user.click(screen.getByRole('switch', { name: 'Launch Moirasia at login' })); expect(bridge.setLaunchAtLogin).toHaveBeenCalledWith(true)
-    expect(screen.getByRole('switch', { name: 'Launch Exithibition at login' })).toHaveAttribute('aria-disabled', 'true')
-    expect(screen.getByRole('switch', { name: 'Launch Bonded at login' })).toBeEnabled()
-    expect(screen.getByRole('switch', { name: 'Launch Orbis at login' })).toBeEnabled()
+  it('returns to General and reports the transition when the selected feature becomes unavailable', async () => {
+    const bridge = api(); window.moirasia = bridge; const user = userEvent.setup(); render(<App />)
+    await screen.findByRole('heading', { name: 'General' })
+    await user.click(screen.getByRole('button', { name: 'Exithibition' }))
+    expect(await screen.findByText('Exithibition panel')).toBeVisible()
+    expect(bridge.reportPage).toHaveBeenLastCalledWith('exithibition')
+
+    act(() => publishSnapshot?.({ ...snapshot, features: snapshot.features.map((feature) => feature.id === 'exithibition' ? { ...feature, installed: false, restartPending: true } : feature) }))
+
+    expect(await screen.findByRole('heading', { name: 'General' })).toBeVisible()
+    await waitFor(() => expect(bridge.reportPage).toHaveBeenLastCalledWith('general'))
+    expect(within(screen.getByRole('group', { name: 'Apps' })).queryByRole('button', { name: 'Exithibition' })).not.toBeInTheDocument()
+    expect(screen.queryByText('Exithibition panel')).not.toBeInTheDocument()
+  })
+
+  it('accepts feature-initiated navigation and lets Essentials clear the selection', async () => {
+    const bridge = api(); window.moirasia = bridge; const user = userEvent.setup(); render(<App />)
+    await screen.findByRole('heading', { name: 'General' })
+
+    act(() => navigate?.('exithibition'))
+    expect(await screen.findByText('Exithibition panel')).toBeVisible()
+    expect(screen.getByRole('button', { name: 'Exithibition' })).toHaveAttribute('aria-current', 'page')
+
+    await user.click(screen.getByRole('button', { name: 'General' }))
+    expect(await screen.findByRole('heading', { name: 'General' })).toBeVisible()
+    expect(bridge.reportPage).toHaveBeenLastCalledWith('general')
   })
 })

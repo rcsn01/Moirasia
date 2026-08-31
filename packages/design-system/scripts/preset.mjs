@@ -181,7 +181,7 @@ async function check() {
   if (stale.length) throw new Error(`Generated UI artifacts are stale:\n${stale.map((path) => `- ${path}`).join("\n")}`)
   const uiPackage = JSON.parse(await readFile(resolve(workspaceDir, "packages/ui-react/package.json"), "utf8"))
   if (uiPackage.dependencies?.["@fontsource-variable/jetbrains-mono"] !== "^5.3.0" || uiPackage.dependencies?.shadcn !== "4.16.1") throw new Error("ui-react preset dependencies are stale")
-  const voxPackage = JSON.parse(await readFile(resolve(workspaceDir, "apps/Vox/package.json"), "utf8"))
+  const voxPackage = JSON.parse(await readFile(resolve(workspaceDir, "apps/standalone/Vox/package.json"), "utf8"))
   if (voxPackage.dependencies?.["@fontsource-variable/jetbrains-mono"] !== "^5.3.0") throw new Error("Vox local font dependency is stale")
 }
 

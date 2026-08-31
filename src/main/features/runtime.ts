@@ -11,9 +11,9 @@ type FeatureLoader = () => Promise<{ feature: MoirasiaFeature }>
 // Keep these imports as string literals. Electron-vite turns each feature into
 // a separate chunk, and an uninstalled feature is never evaluated.
 const LOADERS: Record<FeatureId, FeatureLoader> = {
-  amove: () => import('../../../apps/Amove/src/main/feature'),
-  exithibition: () => import('../../../apps/Exithibition/src/main/feature'),
-  orbis: () => import('../../../apps/Orbis/src/main/feature')
+  amove: () => import('../../../apps/integrated/Amove/src/main/feature'),
+  exithibition: () => import('../../../apps/integrated/Exithibition/src/main/feature'),
+  orbis: () => import('../../../apps/integrated/Orbis/src/main/feature')
 }
 
 export class FeatureRuntime {
@@ -150,15 +150,15 @@ export function suiteFeatureContext(id: FeatureId, surface: EmbeddedFeatureSurfa
   const dataDirectory = join(app.getPath('userData'), 'features', id)
   switch (id) {
     case 'amove': {
-      const root = app.isPackaged ? join(process.resourcesPath, 'features', 'amove') : join(app.getAppPath(), 'apps', 'Amove')
+      const root = app.isPackaged ? join(process.resourcesPath, 'features', 'amove') : join(app.getAppPath(), 'apps', 'integrated', 'Amove')
       const rendererUrl = process.env.ELECTRON_RENDERER_URL
       return {
         id, mode: 'suite', productId: id, surface,
         paths: {
           preloads: { shelf: paths.preload('feature-amove-shelf') },
-          renderers: { shelf: rendererUrl ? `${rendererUrl}/apps/Amove/src/renderer/shelf.html` : paths.renderer('feature-amove-shelf') },
-          native: { addon: app.isPackaged ? join(root, 'native', nativeAddonName()) : join(app.getAppPath(), 'apps', 'Amove', 'native', nativeAddonName()) },
-          assetsDirectory: app.isPackaged ? join(root, 'assets') : join(app.getAppPath(), 'apps', 'Amove', 'assets'),
+          renderers: { shelf: rendererUrl ? `${rendererUrl}/apps/integrated/Amove/src/renderer/shelf.html` : paths.renderer('feature-amove-shelf') },
+          native: { addon: app.isPackaged ? join(root, 'native', nativeAddonName()) : join(app.getAppPath(), 'apps', 'integrated', 'Amove', 'native', nativeAddonName()) },
+          assetsDirectory: app.isPackaged ? join(root, 'assets') : join(app.getAppPath(), 'apps', 'integrated', 'Amove', 'assets'),
           dataDirectory,
           legacyDataDirectories: [join(app.getPath('appData'), 'Amove')]
         }
@@ -168,7 +168,7 @@ export function suiteFeatureContext(id: FeatureId, surface: EmbeddedFeatureSurfa
       return {
         id, mode: 'suite', productId: id, surface,
         paths: {
-          native: { executable: app.isPackaged ? join(process.resourcesPath, 'native', 'ExithibitionNative') : join(app.getAppPath(), 'apps', 'Exithibition', '.build', 'arm64-apple-macosx', 'debug', 'ExithibitionNative') },
+          native: { executable: app.isPackaged ? join(process.resourcesPath, 'native', 'ExithibitionNative') : join(app.getAppPath(), 'apps', 'integrated', 'Exithibition', '.build', 'arm64-apple-macosx', 'debug', 'ExithibitionNative') },
           dataDirectory
         }
       }

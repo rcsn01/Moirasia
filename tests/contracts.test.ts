@@ -4,6 +4,7 @@ describe('controller contracts', () => {
   it('exposes standalone applications and embedded controller pages', () => {
     expect(APPLICATION_IDS).toEqual(['amove', 'vox', 'exithibition', 'bonded', 'orbis'])
     expect(isApplicationId('vox')).toBe(true); expect(isApplicationId('bonded')).toBe(true); expect(isApplicationId('orbis')).toBe(true); expect(isApplicationId('module')).toBe(false)
-    expect(isControllerPage('apps')).toBe(true); expect(isControllerPage('settings')).toBe(true); expect(isControllerPage('orbis')).toBe(true); expect(isControllerPage('home')).toBe(false)
+    expect(isControllerPage('general')).toBe(true); expect(isControllerPage('features')).toBe(true); expect(isControllerPage('orbis')).toBe(true)
+    expect(isControllerPage('apps')).toBe(false); expect(isControllerPage('settings')).toBe(false); expect(isControllerPage('home')).toBe(false)
   })
 })

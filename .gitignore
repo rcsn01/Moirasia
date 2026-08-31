@@ -1,7 +1,7 @@
 # Finder metadata
 .DS_Store
 
-# Applications under apps/ remain independent, ignored repositories.
+# Applications under apps/integrated and apps/standalone remain independent, ignored repositories.
 /apps/
 
 # Root JavaScript dependencies and build output

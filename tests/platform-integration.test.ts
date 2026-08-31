@@ -31,6 +31,21 @@ describe('Bonded platform integration', () => {
     expect(open).toHaveBeenCalledWith('orbis')
   })
 
+  it('routes Settings and File > Features to the new controller pages', async () => {
+    const { installApplicationMenu } = await import('../src/main/menu')
+    const reportPage = vi.fn()
+    installApplicationMenu({ webContents: { send: vi.fn() } } as never, vi.fn(), reportPage)
+    const template = electron.buildFromTemplate.mock.calls.at(-1)![0] as Array<{ label?: string; submenu?: Array<{ label?: string; accelerator?: string; click?: () => void }> }>
+    const settings = template.find((item) => item.label === 'Moirasia')!.submenu!.find((item) => item.label === 'Settings…')!
+    const features = template.find((item) => item.label === 'File')!.submenu!.find((item) => item.label === 'Features')!
+
+    expect(settings.accelerator).toBe('CommandOrControl+,')
+    settings.click?.()
+    expect(reportPage).toHaveBeenLastCalledWith('general')
+    features.click?.()
+    expect(reportPage).toHaveBeenLastCalledWith('features')
+  })
+
   it('uses the staged native agent while running from Electron dev', () => {
     expect(applicationAgentPath('/tmp/electron-resources-without-moirasia-agent')).toMatch(/native\/staged\/application-agent$/)
   })

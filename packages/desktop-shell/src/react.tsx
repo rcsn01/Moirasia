@@ -8,6 +8,21 @@ export interface DesktopNavigationItem<Id extends string = string> {
   readonly badge?: React.ReactNode
 }
 
+export interface DesktopNavigationGroup<Id extends string = string> {
+  readonly id: string
+  readonly label: string
+  readonly items: readonly DesktopNavigationItem<Id>[]
+}
+
+type DesktopNavigationProps<Id extends string> = {
+  readonly label: string
+  readonly active: Id
+  readonly onSelect: (id: Id) => void
+} & (
+  | { readonly items: readonly DesktopNavigationItem<Id>[]; readonly groups?: never }
+  | { readonly groups: readonly DesktopNavigationGroup<Id>[]; readonly items?: never }
+)
+
 export function DesktopAppShell({ product, appearance, onAppearanceChange, navigation, footer, children }: {
   readonly product: string
   readonly appearance: Appearance
@@ -29,25 +44,33 @@ export function DesktopAppShell({ product, appearance, onAppearanceChange, navig
   </div>
 }
 
-export function DesktopNavigation<Id extends string>({ label, items, active, onSelect }: {
-  readonly label: string
-  readonly items: readonly DesktopNavigationItem<Id>[]
-  readonly active: Id
-  readonly onSelect: (id: Id) => void
-}): React.JSX.Element {
-  return <nav className="desktop-navigation" aria-label={label}>{items.map((item, index) => {
-    return <button key={item.id} type="button" className="desktop-navigation__item" data-active={active === item.id || undefined} aria-current={active === item.id ? 'page' : undefined} onClick={() => onSelect(item.id)} onKeyDown={(event) => {
-      if (!['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown', 'Home', 'End'].includes(event.key)) return
-      event.preventDefault()
-      const nextIndex = event.key === 'Home' ? 0 : event.key === 'End' ? items.length - 1 : event.key === 'ArrowRight' || event.key === 'ArrowDown' ? (index + 1) % items.length : (index - 1 + items.length) % items.length
-      const next = items[nextIndex]
-      if (!next) return
-      onSelect(next.id)
-      const buttons = event.currentTarget.parentElement?.querySelectorAll<HTMLButtonElement>('.desktop-navigation__item')
-      buttons?.[nextIndex]?.focus()
-    }}>
-      {item.icon}<span>{item.label}</span>{item.badge != null && <span className="desktop-navigation__badge">{item.badge}</span>}
-    </button>
+export function DesktopNavigation<Id extends string>(props: DesktopNavigationProps<Id>): React.JSX.Element {
+  const { label, active, onSelect } = props
+  const navigationId = React.useId()
+  const groups = props.groups
+  const orderedItems = groups?.flatMap((group) => group.items) ?? props.items ?? []
+  const renderItem = (item: DesktopNavigationItem<Id>, index: number): React.JSX.Element => <button key={item.id} type="button" className="desktop-navigation__item" data-active={active === item.id || undefined} aria-current={active === item.id ? 'page' : undefined} onClick={() => onSelect(item.id)} onKeyDown={(event) => {
+    if (!['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown', 'Home', 'End'].includes(event.key)) return
+    event.preventDefault()
+    const nextIndex = event.key === 'Home' ? 0 : event.key === 'End' ? orderedItems.length - 1 : event.key === 'ArrowRight' || event.key === 'ArrowDown' ? (index + 1) % orderedItems.length : (index - 1 + orderedItems.length) % orderedItems.length
+    const next = orderedItems[nextIndex]
+    if (!next) return
+    onSelect(next.id)
+    const buttons = event.currentTarget.closest('.desktop-navigation')?.querySelectorAll<HTMLButtonElement>('.desktop-navigation__item')
+    buttons?.[nextIndex]?.focus()
+  }}>
+    {item.icon}<span>{item.label}</span>{item.badge != null && <span className="desktop-navigation__badge">{item.badge}</span>}
+  </button>
+
+  if (!groups) return <nav className="desktop-navigation" aria-label={label}>{orderedItems.map(renderItem)}</nav>
+
+  let itemIndex = 0
+  return <nav className="desktop-navigation" aria-label={label}>{groups.map((group) => {
+    const groupLabelId = `${navigationId}-${group.id}`
+    return <div key={group.id} className="desktop-navigation__group" role="group" aria-labelledby={groupLabelId}>
+      <span id={groupLabelId} className="desktop-navigation__group-label">{group.label}</span>
+      {group.items.map((item) => renderItem(item, itemIndex++))}
+    </div>
   })}</nav>
 }
 

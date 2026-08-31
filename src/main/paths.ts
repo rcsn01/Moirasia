@@ -18,7 +18,7 @@ const preloadPages = {
 // root), so app-owned entries keep their repository-relative paths.
 const rendererPages = {
   shell: '../renderer/src/renderer/shell.html',
-  'feature-amove-shelf': '../renderer/apps/Amove/src/renderer/shelf.html'
+  'feature-amove-shelf': '../renderer/apps/integrated/Amove/src/renderer/shelf.html'
 } as const
 
 export const paths = {

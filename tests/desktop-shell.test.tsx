@@ -44,6 +44,30 @@ describe('DesktopAppShell', () => {
     expect(screen.getByText('Private')).toBeVisible()
   })
 
+  it('renders grouped navigation and moves focus across group boundaries', () => {
+    const select = vi.fn()
+    render(<DesktopNavigation label="Moirasia sections" active="features" onSelect={select} groups={[
+      { id: 'essentials', label: 'Essentials', items: [{ id: 'general', label: 'General' }, { id: 'features', label: 'Features' }] },
+      { id: 'apps', label: 'Apps', items: [{ id: 'amove', label: 'Amove' }] },
+      { id: 'empty', label: 'Empty', items: [] }
+    ]}/>)
+
+    expect(screen.getAllByRole('navigation')).toHaveLength(1)
+    expect(screen.getByRole('group', { name: 'Essentials' })).toBeVisible()
+    expect(screen.getByRole('group', { name: 'Apps' })).toBeVisible()
+    expect(screen.getByRole('group', { name: 'Empty' })).toBeVisible()
+    expect(screen.getByRole('button', { name: 'Features' })).toHaveAttribute('aria-current', 'page')
+
+    const features = screen.getByRole('button', { name: 'Features' })
+    features.focus()
+    fireEvent.keyDown(features, { key: 'ArrowDown' })
+    expect(select).toHaveBeenCalledWith('amove')
+    expect(screen.getByRole('button', { name: 'Amove' })).toHaveFocus()
+    fireEvent.keyDown(screen.getByRole('button', { name: 'Amove' }), { key: 'Home' })
+    expect(select).toHaveBeenLastCalledWith('general')
+    expect(screen.getByRole('button', { name: 'General' })).toHaveFocus()
+  })
+
   it('exposes page width/scroll variants and content actions below chrome', () => {
     const { container } = render(<DesktopAppShell product="Vox" appearance="dark" onAppearanceChange={vi.fn()}><DesktopPage width="wide" scroll="contained"><DesktopContentHeader title="Stats" actions={<button>Hands-free</button>}/></DesktopPage></DesktopAppShell>)
     expect(container.querySelector('.desktop-page--wide.desktop-page--scroll-contained')).toBeTruthy()
@@ -79,6 +103,8 @@ describe('DesktopAppShell', () => {
     expect(styles).toMatch(/\.desktop-shell__body[^}]*calc\(100% - var\(--desktop-chrome-height\)\)/)
     expect(styles).toContain('--desktop-chrome-background: var(--background)')
     expect(styles).toContain('--desktop-chrome-control-background: var(--card)')
+    expect(styles).toMatch(/@media\(max-width:720px\)[\s\S]*\.desktop-navigation__group\{display:contents\}/)
+    expect(styles).toMatch(/@media\(max-width:720px\)[\s\S]*\.desktop-navigation__group-label\{position:absolute;width:1px/)
     expect(styles).not.toMatch(/(?:height|min-height):52px|calc\(100% - 52px\)/)
 
     const tokens = JSON.parse(await readFile(resolve(process.cwd(), 'packages/design-system/product-tokens.json'), 'utf8')).product

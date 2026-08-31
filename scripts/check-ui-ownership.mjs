@@ -4,11 +4,11 @@ import { extname, resolve } from "node:path"
 const workspace = resolve(import.meta.dirname, "..")
 const rendererRoots = [
   "src/renderer",
-  "apps/Amove/src/renderer",
-  "apps/Vox/src/renderer",
-  "apps/Exithibition/src/renderer",
-  "apps/Bonded/src/renderer",
-  "apps/Orbis/src/renderer"
+  "apps/integrated/Amove/src/renderer",
+  "apps/standalone/Vox/src/renderer",
+  "apps/integrated/Exithibition/src/renderer",
+  "apps/standalone/Bonded/src/renderer",
+  "apps/integrated/Orbis/src/renderer"
 ]
 const coreVariables = ["background", "foreground", "card", "card-foreground", "popover", "popover-foreground", "primary", "primary-foreground", "secondary", "secondary-foreground", "muted", "muted-foreground", "accent", "accent-foreground", "destructive", "border", "input", "ring", "radius", "chart-1", "chart-2", "chart-3", "chart-4", "chart-5"]
 const coreDefinition = new RegExp(`--(?:${coreVariables.join("|")}):\\s*`)
@@ -45,12 +45,12 @@ for (const root of rendererRoots) {
 }
 
 const requiredImports = new Map([
-  ["apps/Amove/src/renderer/main/main.css", "@moirasia/ui-react/products/amove.css"],
-  ["apps/Amove/src/renderer/shelf/shelf.css", "@moirasia/ui-react/products/amove.css"],
-  ["apps/Vox/src/renderer/styles.css", "@moirasia/ui-react/products/vox.css"],
-  ["apps/Exithibition/src/renderer/styles.css", "@moirasia/ui-react/products/exithibition.css"],
-  ["apps/Orbis/src/renderer/styles.css", "@moirasia/desktop-shell/styles.css"],
-  ["apps/Bonded/src/renderer/styles.css", "@moirasia/ui-react/products/bonded.css"]
+  ["apps/integrated/Amove/src/renderer/main/main.css", "@moirasia/ui-react/products/amove.css"],
+  ["apps/integrated/Amove/src/renderer/shelf/shelf.css", "@moirasia/ui-react/products/amove.css"],
+  ["apps/standalone/Vox/src/renderer/styles.css", "@moirasia/ui-react/products/vox.css"],
+  ["apps/integrated/Exithibition/src/renderer/styles.css", "@moirasia/ui-react/products/exithibition.css"],
+  ["apps/integrated/Orbis/src/renderer/styles.css", "@moirasia/desktop-shell/styles.css"],
+  ["apps/standalone/Bonded/src/renderer/styles.css", "@moirasia/ui-react/products/bonded.css"]
 ])
 for (const [relativePath, expected] of requiredImports) {
   const content = await readFile(resolve(workspace, relativePath), "utf8")
@@ -59,9 +59,9 @@ for (const [relativePath, expected] of requiredImports) {
 }
 
 const embeddedStyleEntrypoints = [
-  ["apps/Amove/src/renderer/main/main.css", ".amove-feature-panel"],
-  ["apps/Exithibition/src/renderer/styles.css", ".exithibition-feature-panel"],
-  ["apps/Orbis/src/renderer/styles.css", ".orbis-feature-panel"]
+  ["apps/integrated/Amove/src/renderer/main/main.css", ".amove-feature-panel"],
+  ["apps/integrated/Exithibition/src/renderer/styles.css", ".exithibition-feature-panel"],
+  ["apps/integrated/Orbis/src/renderer/styles.css", ".orbis-feature-panel"]
 ]
 for (const [relativePath, prefix] of embeddedStyleEntrypoints) {
   const content = await readFile(resolve(workspace, relativePath), "utf8")
@@ -79,18 +79,18 @@ for (const [relativePath, prefix] of embeddedStyleEntrypoints) {
   }
 }
 const shellStyles = await readFile(resolve(workspace, "src/renderer/shell/styles.css"), "utf8")
-for (const entry of ["../../../apps/Amove/src/renderer/main/main.css", "../../../apps/Exithibition/src/renderer/styles.css", "../../../apps/Orbis/src/renderer/styles.css"]) {
+for (const entry of ["../../../apps/integrated/Amove/src/renderer/main/main.css", "../../../apps/integrated/Exithibition/src/renderer/styles.css", "../../../apps/integrated/Orbis/src/renderer/styles.css"]) {
   if (!shellStyles.includes(entry)) failures.push(`src/renderer/shell/styles.css: missing scoped feature import ${entry}`)
 }
 
-const voxStyles = await readFile(resolve(workspace, "apps/Vox/src/renderer/styles.css"), "utf8")
+const voxStyles = await readFile(resolve(workspace, "apps/standalone/Vox/src/renderer/styles.css"), "utf8")
 for (const [index, line] of voxStyles.split("\n").entries()) {
   if (line.includes("--vox-color-") && !/privacy-dot|notice|hero-orb|status-light|model-state|simple-list|overlay-shell|overlay-orb|wave/.test(line)) {
-    failures.push(`apps/Vox/src/renderer/styles.css:${index + 1}: product color is outside an allowed voice/status visualization or overlay`)
+    failures.push(`apps/standalone/Vox/src/renderer/styles.css:${index + 1}: product color is outside an allowed voice/status visualization or overlay`)
   }
 }
 
-for (const relativePath of ["apps/Exithibition/src/renderer/styles.css", "apps/Exithibition/src/renderer/App.tsx"]) {
+for (const relativePath of ["apps/integrated/Exithibition/src/renderer/styles.css", "apps/integrated/Exithibition/src/renderer/App.tsx"]) {
   const content = await readFile(resolve(workspace, relativePath), "utf8")
   for (const [index, line] of content.split("\n").entries()) {
     if (line.includes("--exithibition-color-") && !/legend|hardware-component|kind-|chartConfig/.test(line)) {
@@ -99,7 +99,7 @@ for (const relativePath of ["apps/Exithibition/src/renderer/styles.css", "apps/E
   }
 }
 
-const bondedStylesPath = "apps/Bonded/src/renderer/styles.css"
+const bondedStylesPath = "apps/standalone/Bonded/src/renderer/styles.css"
 const bondedStyles = await readFile(resolve(workspace, bondedStylesPath), "utf8")
 for (const match of bondedStyles.matchAll(/(?:^|})([^{}]+)\{([^{}]*)\}/gm)) {
   const selectors = match[1].trim()
