@@ -2,6 +2,17 @@ import { resolve } from 'node:path'
 import react from '@vitejs/plugin-react'
 import tailwindcss from '@tailwindcss/vite'
 import { defineConfig, externalizeDepsPlugin } from 'electron-vite'
+import type { Plugin } from 'vite'
+
+function requireSelfContainedPreloads(): Plugin {
+  return {
+    name: 'require-self-contained-preloads',
+    generateBundle(_options, bundle) {
+      const sharedChunks = Object.values(bundle).filter((output) => output.type === 'chunk' && !output.isEntry)
+      if (sharedChunks.length > 0) this.error(`Preload entries must be self-contained; shared chunks race Electron startup: ${sharedChunks.map((chunk) => chunk.fileName).join(', ')}`)
+    }
+  }
+}
 
 export default defineConfig({
   main: {
@@ -18,7 +29,7 @@ export default defineConfig({
     }
   },
   preload: {
-    plugins: [externalizeDepsPlugin()],
+    plugins: [externalizeDepsPlugin(), requireSelfContainedPreloads()],
     build: {
       rollupOptions: {
         input: {
