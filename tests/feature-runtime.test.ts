@@ -118,6 +118,22 @@ describe('FeatureRuntime', () => {
     expect(runtime.statuses()).toEqual([{ id: 'exithibition', installed: false, loaded: true, restartPending: true }])
   })
 
+  it('keeps a failed disposal installed so uninstall can be retried', async () => {
+    const fake = fakeFeature()
+    fake.dispose.mockRejectedValueOnce(new Error('native process did not stop'))
+    const settings = await settingsWith(undefined)
+    const runtime = new FeatureRuntime(settings, { loaders: { exithibition: async () => ({ feature: fake.feature }) }, context: () => CONTEXT })
+    await runtime.syncAtLaunch()
+
+    await expect(runtime.setInstalled('exithibition', false)).rejects.toThrow('native process did not stop')
+    expect(settings.get().features.exithibition).toBe(true)
+    expect(runtime.isLoaded('exithibition')).toBe(true)
+
+    await runtime.setInstalled('exithibition', false)
+    expect(fake.dispose).toHaveBeenCalledTimes(2)
+    expect(settings.get().features.exithibition).toBe(false)
+  })
+
   it('does not flag a restart when the feature was never loaded this session', async () => {
     const fake = fakeFeature()
     const runtime = new FeatureRuntime(await settingsWith({ exithibition: false }), { loaders: { exithibition: async () => ({ feature: fake.feature }) }, context: () => CONTEXT })

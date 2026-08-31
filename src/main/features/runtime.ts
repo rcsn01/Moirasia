@@ -70,8 +70,12 @@ export class FeatureRuntime {
         await this.settings.update({ features: { [featureId]: false } })
         const instance = this.#instances.get(featureId)
         if (!instance) return
+        try { await instance.dispose() }
+        catch (error) {
+          await this.settings.update({ features: { [featureId]: true } })
+          throw error
+        }
         this.#instances.delete(featureId)
-        await instance.dispose()
         return
       }
       const newlyInstalled = !this.isInstalled(featureId)

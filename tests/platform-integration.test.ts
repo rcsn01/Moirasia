@@ -20,6 +20,17 @@ describe('Bonded platform integration', () => {
     expect(open).toHaveBeenCalledWith('bonded')
   })
 
+  it('assigns Vox Command+2 in the application menu', async () => {
+    const { installApplicationMenu } = await import('../src/main/menu')
+    const open = vi.fn()
+    installApplicationMenu({ webContents: { send: vi.fn() } } as never, open)
+    const template = electron.buildFromTemplate.mock.calls.at(-1)![0] as Array<{ label?: string; submenu?: Array<{ label?: string; accelerator?: string; click?: () => void }> }>
+    const vox = template.find((item) => item.label === 'Applications')!.submenu!.find((item) => item.label === 'Vox')!
+    expect(vox.accelerator).toBe('CommandOrControl+2')
+    vox.click?.()
+    expect(open).toHaveBeenCalledWith('vox')
+  })
+
   it('assigns Orbis Command+5 in the application menu', async () => {
     const { installApplicationMenu } = await import('../src/main/menu')
     const open = vi.fn()
