@@ -11,10 +11,17 @@ import { installApplicationMenu } from './menu'
 import { paths } from './paths'
 import { ShellSettingsStore } from './settings'
 
+app.setName('Moirasia')
+app.setAppUserModelId('com.moirasia.desktop')
+
 if (!app.requestSingleInstanceLock()) app.quit()
 else app.whenReady().then(createApplication).catch((error) => { console.error(error); app.quit() })
 
 async function createApplication(): Promise<void> {
+  if (!app.isPackaged && app.dock) {
+    app.dock.setIcon(join(app.getAppPath(), 'build', 'icon.png'))
+    await app.dock.show()
+  }
   const settingsPath = join(app.getPath('appData'), 'Moirasia', 'settings.json')
   const legacyAppearance = await legacyShellAppearance(settingsPath)
   const settings = new ShellSettingsStore(settingsPath)

@@ -1,0 +1,38 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024">
+  <defs>
+    <linearGradient id="tile" x1="145" y1="96" x2="860" y2="920" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#24262B"/>
+      <stop offset="0.55" stop-color="#17191D"/>
+      <stop offset="1" stop-color="#0C0D10"/>
+    </linearGradient>
+    <linearGradient id="thread" x1="252" y1="254" x2="771" y2="770" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#B9D0FF"/>
+      <stop offset="0.38" stop-color="#5F8FFF"/>
+      <stop offset="0.7" stop-color="#7859E8"/>
+      <stop offset="1" stop-color="#C07AEF"/>
+    </linearGradient>
+    <radialGradient id="glow" cx="0" cy="0" r="1" gradientTransform="translate(512 450) rotate(90) scale(390)" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#426DFF" stop-opacity="0.22"/>
+      <stop offset="1" stop-color="#426DFF" stop-opacity="0"/>
+    </radialGradient>
+    <filter id="shadow" x="30" y="42" width="964" height="978" filterUnits="userSpaceOnUse">
+      <feDropShadow dx="0" dy="24" stdDeviation="28" flood-color="#000" flood-opacity="0.35"/>
+    </filter>
+    <filter id="threadGlow" x="160" y="170" width="704" height="690" filterUnits="userSpaceOnUse">
+      <feGaussianBlur stdDeviation="11"/>
+    </filter>
+  </defs>
+  <g filter="url(#shadow)">
+    <rect x="92" y="76" width="840" height="840" rx="190" fill="url(#tile)"/>
+    <rect x="94" y="78" width="836" height="836" rx="188" fill="none" stroke="#FFFFFF" stroke-opacity="0.1" stroke-width="4"/>
+  </g>
+  <rect x="112" y="96" width="800" height="800" rx="170" fill="url(#glow)"/>
+  <g opacity="0.26" filter="url(#threadGlow)" fill="none" stroke="url(#thread)" stroke-width="54" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M262 700V342c0-47 59-68 89-32l161 196 161-196c30-36 89-15 89 32v358"/>
+  </g>
+  <path d="M262 700V342c0-47 59-68 89-32l161 196 161-196c30-36 89-15 89 32v358" fill="none" stroke="url(#thread)" stroke-width="54" stroke-linecap="round" stroke-linejoin="round"/>
+  <path d="M262 342c0-47 59-68 89-32l161 196 161-196c30-36 89-15 89 32" fill="none" stroke="#FFFFFF" stroke-opacity="0.18" stroke-width="12" stroke-linecap="round"/>
+  <circle cx="262" cy="700" r="27" fill="#B9D0FF"/>
+  <circle cx="512" cy="506" r="27" fill="#7795FF"/>
+  <circle cx="762" cy="700" r="27" fill="#C07AEF"/>
+</svg>

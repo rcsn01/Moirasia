@@ -57,6 +57,18 @@ describe('Bonded platform integration', () => {
     expect(reportPage).toHaveBeenLastCalledWith('features')
   })
 
+  it('configures a branded Moirasia Dock icon for development and packaging', async () => {
+    const [main, builder, icon] = await Promise.all([
+      readFile(new URL('../src/main/index.ts', import.meta.url), 'utf8'),
+      readFile(new URL('../electron-builder.yml', import.meta.url), 'utf8'),
+      readFile(new URL('../build/icon.icns', import.meta.url))
+    ])
+    expect(main).toContain("app.setName('Moirasia')")
+    expect(main).toContain("app.dock.setIcon(join(app.getAppPath(), 'build', 'icon.png'))")
+    expect(builder).toContain('icon: build/icon.icns')
+    expect(icon.subarray(0, 4).toString('ascii')).toBe('icns')
+  })
+
   it('uses the staged native agent while running from Electron dev', () => {
     expect(applicationAgentPath('/tmp/electron-resources-without-moirasia-agent')).toMatch(/native\/staged\/application-agent$/)
   })
