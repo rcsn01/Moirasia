@@ -19,6 +19,11 @@
       "$extensions": { "moirasia.themePolicy": "light-dark-system" },
       "light": { "color": { "$type": "color", "status-active": { "$value": "#168451" }, "status-warning": { "$value": "#855d19" }, "status-inactive": { "$value": "#737d8e" }, "status-danger": { "$value": "#8f312e" }, "protocol-tcp": { "$value": "#1d64bf" }, "protocol-udp": { "$value": "#7f581c" }, "protocol-quic": { "$value": "#6550a6" } } },
       "dark": { "color": { "$type": "color", "status-active": { "$value": "#63cf78" }, "status-warning": { "$value": "#e3c37d" }, "status-inactive": { "$value": "#aab2bf" }, "status-danger": { "$value": "#f0a9a5" }, "protocol-tcp": { "$value": "#78b7ff" }, "protocol-udp": { "$value": "#e3c37d" }, "protocol-quic": { "$value": "#bba8ff" } } }
+    },
+    "yn360": {
+      "$extensions": { "moirasia.themePolicy": "light-dark-system" },
+      "light": { "color": { "$type": "color", "status-connected": { "$value": "#15803d" }, "status-scan": { "$value": "#1d64bf" }, "status-reconnect": { "$value": "#855d19" }, "channel-red": { "$value": "#dc2626" }, "channel-green": { "$value": "#16a34a" }, "channel-blue": { "$value": "#2563eb" }, "channel-warm": { "$value": "#d97706" }, "channel-cool": { "$value": "#0891b2" } } },
+      "dark": { "color": { "$type": "color", "status-connected": { "$value": "#65d6a3" }, "status-scan": { "$value": "#7ca8ff" }, "status-reconnect": { "$value": "#f3c873" }, "channel-red": { "$value": "#f27e87" }, "channel-green": { "$value": "#65d6a3" }, "channel-blue": { "$value": "#75d2e8" }, "channel-warm": { "$value": "#f2b158" }, "channel-cool": { "$value": "#83cbe8" } } }
     }
   }
 }

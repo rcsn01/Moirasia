@@ -1,0 +1,33 @@
+/* Generated yn360 product tokens. Do not edit. */
+:root {
+  --yn360-color-status-connected: #15803d;
+  --yn360-color-status-scan: #1d64bf;
+  --yn360-color-status-reconnect: #855d19;
+  --yn360-color-channel-red: #dc2626;
+  --yn360-color-channel-green: #16a34a;
+  --yn360-color-channel-blue: #2563eb;
+  --yn360-color-channel-warm: #d97706;
+  --yn360-color-channel-cool: #0891b2;
+}
+
+.dark {
+  --yn360-color-status-connected: #65d6a3;
+  --yn360-color-status-scan: #7ca8ff;
+  --yn360-color-status-reconnect: #f3c873;
+  --yn360-color-channel-red: #f27e87;
+  --yn360-color-channel-green: #65d6a3;
+  --yn360-color-channel-blue: #75d2e8;
+  --yn360-color-channel-warm: #f2b158;
+  --yn360-color-channel-cool: #83cbe8;
+}
+
+.light {
+  --yn360-color-status-connected: #15803d;
+  --yn360-color-status-scan: #1d64bf;
+  --yn360-color-status-reconnect: #855d19;
+  --yn360-color-channel-red: #dc2626;
+  --yn360-color-channel-green: #16a34a;
+  --yn360-color-channel-blue: #2563eb;
+  --yn360-color-channel-warm: #d97706;
+  --yn360-color-channel-cool: #0891b2;
+}

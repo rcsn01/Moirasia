@@ -16,13 +16,14 @@
   "shadcnVersion": "4.16.1",
   "tailwindVersion": 4,
   "cssVariables": true,
-  "outputHash": "6222f9a4c353a079c12306ccf8a13a91ff55f03480d11cbc059668ec72e53044",
+  "outputHash": "2314084159269f5f1d03d07ccb1e809ba8bc9f133c9c698b3d8c08bbc635c2a4",
   "outputs": {
     "packages/ui-react/src/generated/preset.css": "14880838f92d74e0bafb59f4f9929d61a4f3b55ebe9f35844640fc45232838ac",
     "packages/ui-react/src/products/amove.css": "6d4123bb2073c4c81110dc792d4ea4a405534d2d42a57ff08e049a04ee763321",
     "packages/ui-react/src/products/vox.css": "1ef20742d4c86f4de4c50cf897513cf894da198b66612cf0db90ff3d890fac50",
     "packages/ui-react/src/products/exithibition.css": "fd8818bef5be8e8224cb91fea49dcdb983a1bf84a091613c3f968fc512b51391",
     "packages/ui-react/src/products/bonded.css": "7b6e45628601dd9ce3870e7ee52e430457fdb0ae25192042e6449301f40861e0",
+    "packages/ui-react/src/products/yn360.css": "82fc9e44bc1b7bd569abb7e637536503cb4a5c307d680b78f16829703f9001df",
     "packages/ui-react/src/generated/tokens.ts": "f47d8e6c5d3c97589b72233cee680cfe064cdc7b64cf1733550a84b222d1bb55",
     "packages/ui-react/components.json": "3f24f2a0ca90cc73751e7ce9f6b1f2f71a68250872f9f80e436955d22e23c0bf"
   }

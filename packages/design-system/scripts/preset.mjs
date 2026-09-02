@@ -122,7 +122,7 @@ function productCss(name, product) {
     const dark = tokenVars(product.dark, "vox-")
     return `${header}:root {\n${cssVars(light)}\n}\n\n.dark {\n${cssVars(dark)}\n}\n\n.light {\n${cssVars(light)}\n}\n`
   }
-  if (name === "bonded" || name === "exithibition") {
+  if (name === "bonded" || name === "exithibition" || name === "yn360") {
     const light = tokenVars(product.light, `${name}-`)
     const dark = tokenVars(product.dark, `${name}-`)
     return `${header}:root {\n${cssVars(light)}\n}\n\n.dark {\n${cssVars(dark)}\n}\n\n.light {\n${cssVars(light)}\n}\n`
@@ -147,6 +147,7 @@ function buildOutputs(source, productTokens) {
     ["packages/ui-react/src/products/vox.css", productCss("vox", products.vox)],
     ["packages/ui-react/src/products/exithibition.css", productCss("exithibition", products.exithibition)],
     ["packages/ui-react/src/products/bonded.css", productCss("bonded", products.bonded)],
+    ["packages/ui-react/src/products/yn360.css", productCss("yn360", products.yn360)],
     ["packages/ui-react/src/generated/tokens.ts", mainTokens(products)],
     ["packages/ui-react/components.json", componentsJson()]
   ])

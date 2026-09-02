@@ -136,6 +136,24 @@ npm run typecheck
 npm run build
 ```
 
+## YN360 adopter
+
+YN360 Controller is the first standalone app under `apps/standalone/` built on the
+shared React stack. It consumes `@moirasia/ui-react/products/yn360.css` through
+npm, renders inside `DesktopAppShell` with the family product bar and sun/moon
+appearance toggle, and follows the light/dark Mira theme. Its connection status
+roles and RGB/white channel colors are product data tokens generated from the
+design system; the light output itself stays app-owned simulation data.
+
+Verify the application with:
+
+```sh
+cd apps/standalone/YN360
+pnpm typecheck
+pnpm test
+pnpm build
+```
+
 ## Adoption status
 
 | Application | Adapter | Product identity retained |
@@ -145,5 +163,6 @@ npm run build
 | Exithibition | SwiftUI package | Monochrome telemetry schematic |
 | OpenAgent | CSS / SolidJS | Extensible theme, syntax, diff, and agent palettes |
 | Mini NSW | CSS / vanilla TypeScript | Light rail-map workspace and scene rendering |
+| YN360 | React / ui-react product tokens | Light-control RGB/white workspace with channel data colors |
 
 Semiquaver is intentionally outside the current adoption scope.
