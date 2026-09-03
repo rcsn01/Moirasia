@@ -59,7 +59,7 @@ describe('Moirasia renderer', () => {
 
     const amove = screen.getByRole('heading', { name: 'Amove', level: 3 }).closest('[data-slot="card"]')!
     expect(within(amove).getByText('Not loaded')).toBeVisible()
-    expect(within(amove).getByRole('button', { name: 'Unavailable' })).toBeDisabled()
+    expect(within(amove).queryByRole('button', { name: 'Open' })).not.toBeInTheDocument()
     await user.click(within(amove).getByRole('button', { name: 'Install' }))
     expect(bridge.installFeature).toHaveBeenCalledWith('amove')
 
@@ -71,7 +71,7 @@ describe('Moirasia renderer', () => {
     expect(bridge.uninstallFeature).toHaveBeenCalledWith('exithibition')
 
     const orbis = screen.getByRole('heading', { name: 'Orbis', level: 3 }).closest('[data-slot="card"]')!
-    expect(within(orbis).getByRole('button', { name: 'Unavailable' })).toBeDisabled()
+    expect(within(orbis).getByRole('button', { name: 'Open' })).toBeDisabled()
     expect(within(orbis).getByRole('button', { name: 'Uninstall' })).toBeEnabled()
   })
 
@@ -118,7 +118,7 @@ describe('Moirasia renderer', () => {
 
     expect(screen.getByText('Restart pending')).toBeVisible()
     const tile = screen.getByRole('heading', { name: 'Exithibition', level: 3 }).closest('[data-slot="card"]')!
-    expect(within(tile).getByRole('button', { name: 'Open' })).toBeDisabled()
+    expect(within(tile).queryByRole('button', { name: 'Open' })).not.toBeInTheDocument()
     await user.click(within(tile).getByRole('button', { name: 'Install' }))
     expect(bridge.installFeature).toHaveBeenCalledWith('exithibition')
     await user.click(screen.getByRole('button', { name: 'Restart Moirasia' }))
