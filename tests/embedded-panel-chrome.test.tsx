@@ -29,5 +29,6 @@ describe('embedded product panels', () => {
 
     expect(container.querySelector('[class$="feature-panel__header"]')).not.toBeInTheDocument()
     expect(screen.queryByRole('button', { name: /Switch to (?:light|dark) appearance/ })).not.toBeInTheDocument()
+    expect(container.querySelector('.bonded-feature-panel > .content')).toHaveClass('desktop-page--wide')
   })
 })

@@ -105,6 +105,14 @@ describe('DesktopAppShell', () => {
     expect(styles).toMatch(/\.desktop-shell__body[^}]*min-height:0[^}]*overflow:hidden/)
     expect(styles).toMatch(/\.desktop-shell__content[^}]*overflow:hidden[^}]*overscroll-behavior:none/)
     expect(styles).toMatch(/\.desktop-page--scroll-page[^}]*overscroll-behavior:contain/)
+    expect(styles).toContain('--desktop-page-padding-y: 24px')
+    expect(styles).toContain('--desktop-page-padding-x: 30px')
+    expect(styles).toMatch(/\.desktop-page--scroll-page\s*\{[^}]*padding:\s*var\(--desktop-page-padding-y\)\s*var\(--desktop-page-padding-x\)/)
+    expect(styles).toMatch(/\.desktop-page--scroll-contained\s*\{[^}]*padding:\s*var\(--desktop-page-padding-y\)\s*var\(--desktop-page-padding-x\)/)
+    expect(styles).toMatch(/@media\(max-width:980px\)\s*\{\s*:root\s*\{\s*--desktop-page-padding-y:\s*20px\s*;\s*--desktop-page-padding-x:\s*20px/)
+    expect(styles).toMatch(/@media\(max-width:650px\)\s*\{\s*:root\s*\{\s*--desktop-page-padding-y:\s*16px\s*;\s*--desktop-page-padding-x:\s*16px/)
+    expect(styles).not.toMatch(/\.desktop-page--scroll-page\s*\{[^}]*padding:\s*\d/)
+    expect(styles).not.toMatch(/\.desktop-page--scroll-contained\s*\{[^}]*padding:\s*\d/)
     expect(styles).not.toMatch(/\.desktop-shell__body[^}]*calc\(100% - var\(--desktop-chrome-height\)\)/)
     expect(styles).toContain('--desktop-chrome-background: var(--background)')
     expect(styles).toContain('--desktop-chrome-control-background: var(--card)')
@@ -117,5 +125,32 @@ describe('DesktopAppShell', () => {
     expect(tokens.vox.light.color).not.toHaveProperty('canvas')
     expect(tokens.exithibition.light.color).not.toHaveProperty('surface')
     expect(tokens.bonded.light.color).not.toHaveProperty('background')
+  })
+
+  it('owns the unified Orbis page margin across every app stylesheet', async () => {
+    const read = (path: string) => readFile(resolve(process.cwd(), path), 'utf8')
+    const hub = await read('src/renderer/shell/styles.css')
+    const amove = await read('apps/integrated/Amove/src/renderer/main/main.css')
+    const vox = await read('apps/integrated/Vox/src/renderer/styles.css')
+    const exithibition = await read('apps/integrated/Exithibition/src/renderer/styles.css')
+    const bonded = await read('apps/integrated/Bonded/src/renderer/styles.css')
+    const orbis = await read('apps/integrated/Orbis/src/renderer/styles.css')
+
+    // Each app's exact page selector must leave the frame margin to the shell's
+    // DesktopPage rules; anchored \s*\{ keeps sibling rules (e.g.
+    // .amove-feature-panel__page button{…}, .vox-feature-panel .main-content
+    // textarea{…}, .exithibition-feature-panel__page > [data-slot="alert"]{…})
+    // from false-positive matches.
+    expect(hub).not.toMatch(/\.controller-main\s*\{[^}]*padding/)
+    expect(orbis).not.toMatch(/\.orbis-feature-panel__page\s*\{[^}]*padding/)
+    expect(amove).not.toMatch(/\.amove-feature-panel__page\s*\{[^}]*padding/)
+    expect(amove).not.toMatch(/\.amove-feature-panel__settings-page\s*\{[^}]*padding/)
+    expect(vox).not.toMatch(/\.vox-feature-panel \.main-content\s*\{[^}]*padding/)
+    expect(exithibition).not.toMatch(/\.exithibition-feature-panel__page\s*\{[^}]*padding/)
+    expect(bonded).not.toMatch(/\.bonded-feature-panel \.content\s*\{[^}]*padding/)
+
+    // Bonded's absolutely positioned banner must track the shared responsive margin.
+    expect(bonded).toMatch(/\.bonded-feature-panel \.error-banner\s*\{[^}]*left:\s*var\(--desktop-page-padding-x\)/)
+    expect(bonded).toMatch(/\.bonded-feature-panel \.error-banner\s*\{[^}]*right:\s*var\(--desktop-page-padding-x\)/)
   })
 })

@@ -6,6 +6,7 @@ import { isFeatureId, type FeatureId } from '@moirasia/desktop-shell/feature'
 import type { ControllerPage } from '../../shared/contracts'
 import { FeaturesScreen } from './screens/features'
 import { GeneralScreen } from './screens/general'
+import { FeatureErrorBoundary } from './components/feature-error-boundary'
 import { useController } from './controller'
 
 const AmovePanel = lazy(async () => ({ default: (await import('../../../apps/integrated/Amove/src/renderer/main/AmovePanel')).AmovePanel }))
@@ -51,17 +52,19 @@ export function App(): React.JSX.Element {
           if (!available || !visited.has(id)) return null
           const selected = activePage === id
           return <div key={id} className="shell-feature-route" hidden={!selected} aria-hidden={!selected}>
-            <Suspense fallback={<p className="shell-feature-loading" role="status">Loading {FEATURE_LABELS[id]}…</p>}>
-              {id === 'amove'
-                ? <AmovePanel bridge={window.amove} appearance={controller.snapshot.appearances.values.amove} />
-                : id === 'vox'
-                  ? <VoxPanel bridge={window.vox} appearance={controller.snapshot.appearances.values.vox} />
-                  : id === 'exithibition'
-                  ? <ExithibitionPanel bridge={window.exithibition} appearance={controller.snapshot.appearances.values.exithibition} />
-                  : id === 'bonded'
-                    ? <BondedPanel bridge={window.bonded} appearance={controller.snapshot.appearances.values.bonded} />
-                    : <OrbisPanel bridge={window.orbis} appearance={controller.snapshot.appearances.values.orbis} />}
-            </Suspense>
+            <FeatureErrorBoundary name={FEATURE_LABELS[id]}>
+              <Suspense fallback={<p className="shell-feature-loading" role="status">Loading {FEATURE_LABELS[id]}…</p>}>
+                {id === 'amove'
+                  ? <AmovePanel bridge={window.amove} appearance={controller.snapshot.appearances.values.amove} />
+                  : id === 'vox'
+                    ? <VoxPanel bridge={window.vox} appearance={controller.snapshot.appearances.values.vox} />
+                    : id === 'exithibition'
+                      ? <ExithibitionPanel bridge={window.exithibition} appearance={controller.snapshot.appearances.values.exithibition} />
+                      : id === 'bonded'
+                        ? <BondedPanel bridge={window.bonded} appearance={controller.snapshot.appearances.values.bonded} />
+                        : <OrbisPanel bridge={window.orbis} appearance={controller.snapshot.appearances.values.orbis} />}
+              </Suspense>
+            </FeatureErrorBoundary>
           </div>
         })}
       </>}
