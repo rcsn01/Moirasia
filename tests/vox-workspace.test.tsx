@@ -35,6 +35,30 @@ describe('Vox workspace', () => {
     expect(screen.getByRole('progressbar', { name: 'Parakeet v3 Fast download' })).toHaveAttribute('aria-valuenow', '42')
   })
 
+  it('shows Parakeet v3 and Parakeet Streaming as separate choices', async () => {
+    const bridge = {
+      getSnapshot: async () => ({
+        ...snapshot,
+        models: [{ id: 'parakeet-v3', status: 'ready', progress: 1, sizeBytes: 1_500_000_000 }],
+      }),
+      onEvent: () => () => undefined,
+    }
+    render(<VoxPanel bridge={bridge as never} appearance="light" />)
+
+    fireEvent.click(await screen.findByRole('tab', { name: 'Models' }))
+    expect(screen.getByText('Parakeet v3 Fast')).toBeVisible()
+    expect(screen.getByText('Downloaded · 1.50 GB')).toBeVisible()
+    expect(screen.getByText('Parakeet Streaming')).toBeVisible()
+    expect(screen.getByText('Live push-to-talk · 320 ms')).toBeVisible()
+
+    fireEvent.click(screen.getByRole('tab', { name: 'Settings' }))
+    expect(screen.getByRole('option', { name: 'Parakeet v3' })).toBeVisible()
+    expect(screen.getByRole('option', { name: 'Parakeet Streaming (push-to-talk only)' })).toBeVisible()
+
+    fireEvent.click(screen.getByRole('tab', { name: 'Profiles' }))
+    expect(screen.getByRole('option', { name: 'Parakeet Streaming (push-to-talk only)' })).toBeVisible()
+  })
+
   it('does not render the repeated page heading and actions on any tab', async () => {
     const bridge = {
       getSnapshot: async () => snapshot,
