@@ -109,8 +109,7 @@ describe('DesktopAppShell', () => {
     expect(styles).toContain('--desktop-page-padding-x: 30px')
     expect(styles).toMatch(/\.desktop-page--scroll-page\s*\{[^}]*padding:\s*var\(--desktop-page-padding-y\)\s*var\(--desktop-page-padding-x\)/)
     expect(styles).toMatch(/\.desktop-page--scroll-contained\s*\{[^}]*padding:\s*var\(--desktop-page-padding-y\)\s*var\(--desktop-page-padding-x\)/)
-    expect(styles).toMatch(/@media\(max-width:980px\)\s*\{\s*:root\s*\{\s*--desktop-page-padding-y:\s*20px\s*;\s*--desktop-page-padding-x:\s*20px/)
-    expect(styles).toMatch(/@media\(max-width:650px\)\s*\{\s*:root\s*\{\s*--desktop-page-padding-y:\s*16px\s*;\s*--desktop-page-padding-x:\s*16px/)
+    expect(styles).not.toMatch(/@media[^}]*--desktop-page-padding-[xy]/)
     expect(styles).not.toMatch(/\.desktop-page--scroll-page\s*\{[^}]*padding:\s*\d/)
     expect(styles).not.toMatch(/\.desktop-page--scroll-contained\s*\{[^}]*padding:\s*\d/)
     expect(styles).not.toMatch(/\.desktop-shell__body[^}]*calc\(100% - var\(--desktop-chrome-height\)\)/)
@@ -146,6 +145,7 @@ describe('DesktopAppShell', () => {
     expect(amove).not.toMatch(/\.amove-feature-panel__page\s*\{[^}]*padding/)
     expect(amove).not.toMatch(/\.amove-feature-panel__settings-page\s*\{[^}]*padding/)
     expect(vox).not.toMatch(/\.vox-feature-panel \.main-content\s*\{[^}]*padding/)
+    expect(vox).not.toMatch(/\.vox-feature-panel \.main-content button[^}]*color:\s*inherit/)
     expect(exithibition).not.toMatch(/\.exithibition-feature-panel__page\s*\{[^}]*padding/)
     expect(bonded).not.toMatch(/\.bonded-feature-panel \.content\s*\{[^}]*padding/)
 

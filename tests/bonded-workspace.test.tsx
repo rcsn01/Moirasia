@@ -45,6 +45,9 @@ describe('Bonded application workspace', () => {
     expect(screen.queryByRole('navigation', { name: 'Bonded views' })).not.toBeInTheDocument()
     expect(screen.queryByRole('button', { name: 'Network Monitor' })).not.toBeInTheDocument()
     expect(screen.queryByText('Global observed-IP firewall.')).not.toBeInTheDocument()
+    expect(screen.queryByRole('heading', { name: 'Application Firewall' })).not.toBeInTheDocument()
+    expect(screen.queryByText('Drag applications between panels or use the arrow buttons.')).not.toBeInTheDocument()
+    expect(screen.getByRole('switch', { name: 'Enable network monitoring' })).toBeVisible()
   })
 
   it('moves applications in either direction with arrow controls', async () => {

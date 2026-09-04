@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { cleanup, render, screen } from '@testing-library/react'
+import { cleanup, fireEvent, render, screen } from '@testing-library/react'
 import { afterEach, describe, expect, it } from 'vitest'
 import { AmovePanel } from '../apps/integrated/Amove/src/renderer/main/AmovePanel'
 import { VoxPanel } from '../apps/integrated/Vox/src/renderer/App'
@@ -30,5 +30,13 @@ describe('embedded product panels', () => {
     expect(container.querySelector('[class$="feature-panel__header"]')).not.toBeInTheDocument()
     expect(screen.queryByRole('button', { name: /Switch to (?:light|dark) appearance/ })).not.toBeInTheDocument()
     expect(container.querySelector('.bonded-feature-panel > .content')).toHaveClass('desktop-page--wide')
+
+    const voxTabs = screen.getByRole('tablist', { name: 'Vox sections' })
+    expect(voxTabs).toBeVisible()
+    expect(screen.getAllByRole('tab')).toHaveLength(6)
+    expect(screen.getByRole('tab', { name: 'Stats' })).toHaveAttribute('aria-selected', 'true')
+    fireEvent.click(screen.getByRole('tab', { name: 'Models' }))
+    expect(screen.getByRole('tab', { name: 'Models' })).toHaveAttribute('aria-selected', 'true')
+    expect(screen.queryByText('Audio stays local')).not.toBeInTheDocument()
   })
 })
