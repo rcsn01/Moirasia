@@ -1,8 +1,8 @@
 import type { Appearance, AppearanceSnapshot, LoginItemControlResult } from '@moirasia/desktop-shell'
-import { FEATURE_IDS, isFeatureId, type FeatureId } from '@moirasia/desktop-shell/feature'
+import { APPLICATION_IDS, isApplicationId, type ApplicationId } from '@moirasia/desktop-shell'
+import { isFeatureId, type FeatureId } from '@moirasia/desktop-shell/feature'
 
-export const APPLICATION_IDS = FEATURE_IDS
-export type ApplicationId = FeatureId
+export { APPLICATION_IDS, isApplicationId, type ApplicationId }
 export type ControllerPage = 'general' | 'features' | FeatureId
 
 export interface ApplicationStatus {
@@ -68,5 +68,4 @@ export const IPC = {
   openLoginItemsSettings: 'controller:open-login-items-settings', reportPage: 'controller:report-page', snapshot: 'controller:snapshot', navigate: 'controller:navigate'
 } as const
 
-export function isApplicationId(value: unknown): value is ApplicationId { return isFeatureId(value) }
 export function isControllerPage(value: unknown): value is ControllerPage { return value === 'general' || value === 'features' || isFeatureId(value) }

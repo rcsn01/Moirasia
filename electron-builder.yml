@@ -17,8 +17,6 @@ extraResources:
     to: features/amove/assets
   - from: native/staged/features/bonded/native
     to: features/bonded/native
-  - from: native/staged/features/vox/native
-    to: features/vox/native
   - from: native/staged/features/orbis/worker
     to: features/orbis/worker
   - from: native/staged/features/orbis/native
@@ -38,7 +36,4 @@ mac:
   gatekeeperAssess: false
   extendInfo:
     LSMinimumSystemVersion: "14.0"
-    NSMicrophoneUsageDescription: Moirasia needs microphone access when its Vox feature transcribes speech locally.
-    NSSpeechRecognitionUsageDescription: Moirasia uses on-device Apple Speech only when you select it in Vox.
-    NSAppleEventsUsageDescription: Moirasia uses Accessibility to let Vox insert dictated text into the field you selected.
 asar: true

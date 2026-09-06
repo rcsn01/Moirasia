@@ -12,7 +12,6 @@ type FeatureLoader = () => Promise<{ feature: MoirasiaFeature }>
 // a separate chunk, and an uninstalled feature is never evaluated.
 const LOADERS: Record<FeatureId, FeatureLoader> = {
   amove: () => import('../../../apps/integrated/Amove/src/main/feature'),
-  vox: () => import('../../../apps/integrated/Vox/src/main/feature'),
   exithibition: () => import('../../../apps/integrated/Exithibition/src/main/feature'),
   bonded: () => import('../../../apps/integrated/Bonded/src/main/feature'),
   orbis: () => import('../../../apps/integrated/Orbis/src/main/feature')
@@ -176,21 +175,6 @@ export function suiteFeatureContext(id: FeatureId, surface: EmbeddedFeatureSurfa
           assetsDirectory: app.isPackaged ? join(root, 'assets') : join(app.getAppPath(), 'apps', 'integrated', 'Amove', 'assets'),
           dataDirectory,
           legacyDataDirectories: [join(app.getPath('appData'), 'Amove')]
-        }
-      }
-    }
-    case 'vox': {
-      const rendererUrl = process.env.ELECTRON_RENDERER_URL
-      return {
-        id, mode: 'suite', productId: id, surface,
-        paths: {
-          preloads: { overlay: paths.preload('feature-vox-overlay') },
-          renderers: { overlay: rendererUrl ? `${rendererUrl}/apps/integrated/Vox/overlay.html` : paths.renderer('feature-vox-overlay') },
-          native: { executable: process.env.VOX_NATIVE_PATH ?? (app.isPackaged
-            ? join(process.resourcesPath, 'features', 'vox', 'native', 'VoxNative')
-            : join(app.getAppPath(), 'apps', 'integrated', 'Vox', 'native', '.build', 'arm64-apple-macosx', 'debug', 'VoxNative')) },
-          dataDirectory,
-          legacyDataDirectories: [join(app.getPath('appData'), 'Vox')]
         }
       }
     }

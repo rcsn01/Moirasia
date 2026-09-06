@@ -1,5 +1,5 @@
 /**
- * The feature catalog: the single owner of every shared fact about the five
+ * The feature catalog: the single owner of every shared fact about the four
  * embedded features — identity, labels, bundle and executable names,
  * descriptions, display groups, icon keys, order, and per-host-mode resource
  * requirements. Pure data: no Electron, React, filesystem, or product-package
@@ -11,7 +11,6 @@ export type FeatureHostMode = 'suite' | 'standalone'
 
 export type FeatureIconKey =
   | 'app-window'   // Amove
-  | 'mic'          // Vox
   | 'activity'     // Exithibition
   | 'shield-check' // Bonded
   | 'bar-chart-3'  // Orbis
@@ -27,9 +26,9 @@ export interface FeatureResourceRequirements {
 
 export interface FeatureGroupId { id: string; label: string }
 
-/** The five embedded features. The catalog seeds below and this union must stay in sync;
+/** The four embedded features. The catalog seeds below and this union must stay in sync;
  * tests pin the exact list and every Record<FeatureId, …> consumer enforces exhaustiveness. */
-export type FeatureId = 'amove' | 'vox' | 'exithibition' | 'bonded' | 'orbis'
+export type FeatureId = 'amove' | 'exithibition' | 'bonded' | 'orbis'
 
 export interface FeatureCatalogEntry {
   readonly id: FeatureId
@@ -44,7 +43,6 @@ export interface FeatureCatalogEntry {
 
 const GROUPS = [
   { id: 'window-management', label: 'Window management' },
-  { id: 'voice', label: 'Voice' },
   { id: 'monitoring', label: 'Monitoring' }
 ] as const
 
@@ -60,19 +58,6 @@ const FEATURE_SEEDS = [
     requirements: {
       standalone: { preloads: ['main', 'shelf'], renderers: ['main', 'shelf'], native: ['addon'], assetsDirectory: true, dataDirectory: true },
       suite: { preloads: ['shelf'], renderers: ['shelf'], native: ['addon'], assetsDirectory: true, dataDirectory: true }
-    }
-  },
-  {
-    id: 'vox',
-    label: 'Vox',
-    executableName: 'Vox',
-    bundleId: 'com.moirasia.vox',
-    description: 'Dictate into any app with local speech recognition and a floating status overlay.',
-    iconKey: 'mic',
-    groupId: 'voice',
-    requirements: {
-      standalone: { preloads: ['main', 'overlay'], renderers: ['main', 'overlay'], native: ['executable'], dataDirectory: true },
-      suite: { preloads: ['overlay'], renderers: ['overlay'], native: ['executable'], dataDirectory: true }
     }
   },
   {

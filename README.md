@@ -1,6 +1,6 @@
 # Moirasia
 
-Moirasia is a macOS controller and feature host for Amove, Vox, Exithibition, Bonded, and Orbis. Its Applications menu discovers standalone bundles and opens or focuses them. The sidebar places General and Features under Essentials, then shows each installed and loaded Amove, Vox, Exithibition, Bonded, or Orbis feature under Apps. Their primary panels share the shell window. Amove's Shelf and Vox's dictation overlay remain floating utility windows.
+Moirasia is a macOS controller and feature host for Amove, Exithibition, Bonded, and Orbis, and the controller for standalone Vox. Its Applications menu discovers standalone bundles and opens or focuses them. The sidebar places General and Features under Essentials, then shows each installed and loaded Amove, Exithibition, Bonded, or Orbis feature under Apps. Amove's Shelf remains a floating utility window.
 
 ## Development
 
@@ -18,7 +18,7 @@ pnpm build
 pnpm -C apps/integrated/Amove install --ignore-workspace
 pnpm -C apps/integrated/Orbis install --ignore-workspace
 pnpm -C apps/integrated/Bonded install --ignore-workspace
-bun --cwd apps/integrated/Vox install --frozen-lockfile
+bun --cwd apps/standalone/Vox install --frozen-lockfile
 ```
 
 Then package the suite:
@@ -35,13 +35,12 @@ pnpm -C apps/integrated/Amove dev
 pnpm -C apps/integrated/Amove package:mac
 ```
 
-Vox keeps its Bun workflow:
+Vox keeps its Bun workflow from its own repository under `apps/standalone/Vox`:
 
 ```sh
-cd apps/integrated/Vox
-bun install --frozen-lockfile
-bun run verify
-bun run package:dir
+bun --cwd apps/standalone/Vox install --frozen-lockfile
+bun --cwd apps/standalone/Vox verify
+bun --cwd apps/standalone/Vox package:dir
 ```
 
 Exithibition's commands are:
@@ -83,11 +82,11 @@ On macOS, the Rust/N-API addon uses `getattrlistbulk` to accelerate exact traver
 
 A private cache of the previous completed scan may provide provisional folder sizes until a full traversal finishes. It never changes exact totals or suppresses traversal. The Pause action saves full-scan progress. "Discard saved scan" removes only the private construction and leaves the last published index intact. Set `ORBIS_DISABLE_INCREMENTAL_SCAN=1` to retain its non-resumable persistent-full behavior, `ORBIS_LEGACY_SCAN=1` to bypass persistence and FSEvents with the Stage 5 scanner, `ORBIS_SCAN_DIAGNOSTICS=1` to collect phase timings, or `ORBIS_DISABLE_BULK_METADATA=1` to exercise Node metadata fallback without disabling resume or FSEvents. The v3 snapshot contract, publication and recovery rules, and performance gates are documented in `apps/integrated/Orbis/docs/architecture/orbis-progressive-scanning.md`.
 
-Independent product repositories are split by suite support: Amove, Vox, Exithibition, Bonded, and Orbis live under `apps/integrated/`, while LiteMaptica, Mini-NSW, and Semiquaver live under `apps/standalone/`. Each keeps its own package manager lock and verification commands. `@moirasia/desktop-shell` provides the shared 36px macOS chrome, adaptive navigation, local embedded appearance scopes, page/content-header layouts, atomic cross-process appearance registry, chrome-only window options, and bundle-owned headless login-item protocol.
+Independent product repositories are split by suite support: Amove, Exithibition, Bonded, and Orbis live under `apps/integrated/`, while Vox, LiteMaptica, Mini-NSW, and Semiquaver live under `apps/standalone/`. Each keeps its own package manager lock and verification commands. `@moirasia/desktop-shell` provides the shared 36px macOS chrome, adaptive navigation, local embedded appearance scopes, page/content-header layouts, atomic cross-process appearance registry, chrome-only window options, and bundle-owned headless login-item protocol.
 
 ## Application control
 
-The packaged AppKit helper uses Launch Services and `NSWorkspace` to resolve fixed bundle identifiers, inspect running applications, launch or activate them, request normal termination, and open Login Items settings. Command+1 through Command+5 open or focus Amove, Vox, Exithibition, Bonded, and Orbis respectively. Command+2 still targets the standalone Vox bundle; the Apps sidebar opens embedded Vox. Command+4 still opens the standalone Bonded bundle; the Apps sidebar opens Bonded inside Moirasia. Only one host can own Bonded's monitor and PF helper at a time.
+The packaged AppKit helper uses Launch Services and `NSWorkspace` to resolve fixed bundle identifiers, inspect running applications, launch or activate them, request normal termination, and open Login Items settings. Command+1 through Command+5 open or focus Amove, Vox, Exithibition, Bonded, and Orbis respectively. Command+2 opens the standalone Vox bundle; the Apps sidebar no longer hosts Vox. Command+4 still opens the standalone Bonded bundle; the Apps sidebar opens Bonded inside Moirasia. Only one host can own Bonded's monitor and PF helper at a time.
 
 Each standalone bundle accepts one headless command without creating product windows or starting its runtime:
 
@@ -99,6 +98,8 @@ Each standalone bundle accepts one headless command without creating product win
 
 Appearance is stored in `Application Support/Moirasia/appearance.json`. Values for Moirasia and each app remain independent, update live across running processes, and can be changed together from Moirasia Settings.
 
-In-suite features use the Moirasia bundle's macOS permissions. Microphone, accessibility, and screen-recording grants apply to the suite app, not to an individual product feature. Full Disk Access applies to Moirasia when Orbis runs inside the suite. Standalone builds keep their own bundle identity and permissions, so standalone Orbis needs its own Full Disk Access grant. Only one Vox host can own the microphone, global shortcuts, and shared model store at a time. If the other host is running, Vox remains unloaded and the Features page offers Retry. Embedded data lives at `Application Support/Moirasia/features/vox`; its first pristine launch imports `Application Support/Vox/vox.sqlite`, then the databases diverge. Downloaded models under `Application Support/Vox/Models` and provider credentials in the `com.moirasia.vox.providers` Keychain service stay shared. Deleting suite data does not delete standalone data, models, or Keychain entries. Vox permissions belong to Moirasia in suite mode and to the Vox bundle in standalone mode. The suite package stores VoxNative and its Swift bundles at `Resources/features/vox/native`; standalone uses `Resources/native`.
+In-suite features use the Moirasia bundle's macOS permissions. Microphone, accessibility, and screen-recording grants apply to the suite app, not to an individual product feature. Full Disk Access applies to Moirasia when Orbis runs inside the suite. Standalone builds keep their own bundle identity and permissions, so standalone Orbis needs its own Full Disk Access grant and Vox has always owned its own microphone, accessibility, and shortcut grants.
+
+Vox no longer runs inside Moirasia. On first standalone launch after leaving the suite, Vox reverse-migrates the suite's data: it snapshots `Application Support/Moirasia/features/vox/vox.sqlite`, merges it into `Application Support/Vox/vox.sqlite` (entity rows union by id with the suite row winning the rare collision, daily aggregate counters taking the per-day maximum, settings resolving per key in the suite's favor except launch-at-login), backs up the standalone store first, records the outcome in a marker, and removes the suite copy. A failed merge retries on the next launch and leaves both stores untouched. Downloaded models under `Application Support/Vox/Models` and provider credentials in the `com.moirasia.vox.providers` Keychain service stay shared. A transitional lease keeps the microphone, global shortcuts, and shared model store owned by one Vox host at a time while stale pre-move Moirasia builds that still embed Vox may exist.
 
 Moirasia stores Bonded settings under its own `features/bonded` directory. On first use it can copy valid standalone settings from `Application Support/Bonded`, but the two stores never share later writes.

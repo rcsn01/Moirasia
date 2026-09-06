@@ -11,16 +11,14 @@ export function applicationAgentPath(resourcesPath = process.resourcesPath): str
 
 const preloadPages = {
   shell: '../preload/shell.cjs',
-  'feature-amove-shelf': '../preload/feature-amove-shelf.cjs',
-  'feature-vox-overlay': '../preload/feature-vox-overlay.cjs'
+  'feature-amove-shelf': '../preload/feature-amove-shelf.cjs'
 } as const
 
 // Renderer pages mirror the renderer root of the suite build (the repository
 // root), so app-owned entries keep their repository-relative paths.
 const rendererPages = {
   shell: '../renderer/src/renderer/shell.html',
-  'feature-amove-shelf': '../renderer/apps/integrated/Amove/src/renderer/shelf.html',
-  'feature-vox-overlay': '../renderer/apps/integrated/Vox/overlay.html'
+  'feature-amove-shelf': '../renderer/apps/integrated/Amove/src/renderer/shelf.html'
 } as const
 
 export const paths = {

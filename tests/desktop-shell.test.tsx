@@ -130,22 +130,18 @@ describe('DesktopAppShell', () => {
     const read = (path: string) => readFile(resolve(process.cwd(), path), 'utf8')
     const hub = await read('src/renderer/shell/styles.css')
     const amove = await read('apps/integrated/Amove/src/renderer/main/main.css')
-    const vox = await read('apps/integrated/Vox/src/renderer/styles.css')
     const exithibition = await read('apps/integrated/Exithibition/src/renderer/styles.css')
     const bonded = await read('apps/integrated/Bonded/src/renderer/styles.css')
     const orbis = await read('apps/integrated/Orbis/src/renderer/styles.css')
 
     // Each app's exact page selector must leave the frame margin to the shell's
     // DesktopPage rules; anchored \s*\{ keeps sibling rules (e.g.
-    // .amove-feature-panel__page button{…}, .vox-feature-panel .main-content
-    // textarea{…}, .exithibition-feature-panel__page > [data-slot="alert"]{…})
+    // .amove-feature-panel__page button{…}, .exithibition-feature-panel__page > [data-slot="alert"]{…})
     // from false-positive matches.
     expect(hub).not.toMatch(/\.controller-main\s*\{[^}]*padding/)
     expect(orbis).not.toMatch(/\.orbis-feature-panel__page\s*\{[^}]*padding/)
     expect(amove).not.toMatch(/\.amove-feature-panel__page\s*\{[^}]*padding/)
     expect(amove).not.toMatch(/\.amove-feature-panel__settings-page\s*\{[^}]*padding/)
-    expect(vox).not.toMatch(/\.vox-feature-panel \.main-content\s*\{[^}]*padding/)
-    expect(vox).not.toMatch(/\.vox-feature-panel \.main-content button[^}]*color:\s*inherit/)
     expect(exithibition).not.toMatch(/\.exithibition-feature-panel__page\s*\{[^}]*padding/)
     expect(bonded).not.toMatch(/\.bonded-feature-panel \.content\s*\{[^}]*padding/)
 

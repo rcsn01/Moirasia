@@ -5,7 +5,6 @@ const workspace = resolve(import.meta.dirname, "..")
 const rendererRoots = [
   "src/renderer",
   "apps/integrated/Amove/src/renderer",
-  "apps/integrated/Vox/src/renderer",
   "apps/integrated/Exithibition/src/renderer",
   "apps/integrated/Bonded/src/renderer",
   "apps/integrated/Orbis/src/renderer"
@@ -58,7 +57,6 @@ for (const root of rendererRoots) {
 const requiredImports = new Map([
   ["apps/integrated/Amove/src/renderer/main/main.css", "@moirasia/ui-react/products/amove.css"],
   ["apps/integrated/Amove/src/renderer/shelf/shelf.css", "@moirasia/ui-react/products/amove.css"],
-  ["apps/integrated/Vox/src/renderer/styles.css", "@moirasia/ui-react/products/vox.css"],
   ["apps/integrated/Exithibition/src/renderer/styles.css", "@moirasia/ui-react/products/exithibition.css"],
   ["apps/integrated/Orbis/src/renderer/styles.css", "@moirasia/desktop-shell/styles.css"],
   ["apps/integrated/Bonded/src/renderer/styles.css", "@moirasia/ui-react/products/bonded.css"]
@@ -71,7 +69,6 @@ for (const [relativePath, expected] of requiredImports) {
 
 const primaryWindows = [
   { product: "Amove", styles: "apps/integrated/Amove/src/renderer/main/main.css", entry: "apps/integrated/Amove/src/renderer/main/MainApp.tsx" },
-  { product: "Vox", styles: "apps/integrated/Vox/src/renderer/standalone.css", entry: "apps/integrated/Vox/src/renderer/App.tsx" },
   { product: "Exithibition", styles: "apps/integrated/Exithibition/src/renderer/styles.css", entry: "apps/integrated/Exithibition/src/renderer/App.tsx" },
   { product: "Bonded", styles: "apps/integrated/Bonded/src/renderer/standalone.css", entry: "apps/integrated/Bonded/src/renderer/App.tsx" },
   { product: "Orbis", styles: "apps/integrated/Orbis/src/renderer/styles.css", entry: "apps/integrated/Orbis/src/renderer/App.tsx" }
@@ -88,7 +85,6 @@ checkDocumentViewportOwnership(shellRendererStylesPath, await readFile(resolve(w
 
 const embeddedStyleEntrypoints = [
   ["apps/integrated/Amove/src/renderer/main/main.css", ".amove-feature-panel"],
-  ["apps/integrated/Vox/src/renderer/styles.css", ".vox-feature-panel"],
   ["apps/integrated/Exithibition/src/renderer/styles.css", ".exithibition-feature-panel"],
   ["apps/integrated/Bonded/src/renderer/styles.css", ".bonded-feature-panel"],
   ["apps/integrated/Orbis/src/renderer/styles.css", ".orbis-feature-panel"]
@@ -109,15 +105,8 @@ for (const [relativePath, prefix] of embeddedStyleEntrypoints) {
   }
 }
 const shellStyles = await readFile(resolve(workspace, "src/renderer/shell/styles.css"), "utf8")
-for (const entry of ["../../../apps/integrated/Amove/src/renderer/main/main.css", "../../../apps/integrated/Vox/src/renderer/styles.css", "../../../apps/integrated/Exithibition/src/renderer/styles.css", "../../../apps/integrated/Bonded/src/renderer/styles.css", "../../../apps/integrated/Orbis/src/renderer/styles.css"]) {
+for (const entry of ["../../../apps/integrated/Amove/src/renderer/main/main.css", "../../../apps/integrated/Exithibition/src/renderer/styles.css", "../../../apps/integrated/Bonded/src/renderer/styles.css", "../../../apps/integrated/Orbis/src/renderer/styles.css"]) {
   if (!shellStyles.includes(entry)) failures.push(`src/renderer/shell/styles.css: missing scoped feature import ${entry}`)
-}
-
-const voxStyles = await readFile(resolve(workspace, "apps/integrated/Vox/src/renderer/styles.css"), "utf8")
-for (const [index, line] of voxStyles.split("\n").entries()) {
-  if (line.includes("--vox-color-") && !/privacy-dot|notice|hero-orb|status-light|model-state|simple-list|overlay-shell|overlay-orb|wave/.test(line)) {
-    failures.push(`apps/integrated/Vox/src/renderer/styles.css:${index + 1}: product color is outside an allowed voice/status visualization or overlay`)
-  }
 }
 
 for (const relativePath of ["apps/integrated/Exithibition/src/renderer/styles.css", "apps/integrated/Exithibition/src/renderer/App.tsx"]) {

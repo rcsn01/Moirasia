@@ -1,6 +1,5 @@
 import { contextBridge, ipcRenderer } from 'electron'
 import { createAmoveBridge } from '../../apps/integrated/Amove/src/preload/bridge'
-import { createVoxBridge } from '../../apps/integrated/Vox/src/preload/bridge'
 import { createExithibitionBridge } from '../../apps/integrated/Exithibition/src/preload/bridge'
 import { createBondedBridge } from '../../apps/integrated/Bonded/src/preload/bridge'
 import { createOrbisBridge } from '../../apps/integrated/Orbis/src/preload/bridge'
@@ -24,7 +23,6 @@ const api: ControllerApi = {
 // not driven by the feature catalog.
 contextBridge.exposeInMainWorld('moirasia', Object.freeze(api))
 contextBridge.exposeInMainWorld('amove', Object.freeze(createAmoveBridge(ipcRenderer)))
-contextBridge.exposeInMainWorld('vox', Object.freeze(createVoxBridge(ipcRenderer)))
 contextBridge.exposeInMainWorld('exithibition', Object.freeze(createExithibitionBridge(ipcRenderer)))
 contextBridge.exposeInMainWorld('bonded', Object.freeze(createBondedBridge(ipcRenderer)))
 contextBridge.exposeInMainWorld('orbis', Object.freeze(createOrbisBridge(ipcRenderer)))

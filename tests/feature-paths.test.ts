@@ -7,30 +7,7 @@ import { suiteFeatureContext } from '../src/main/features/runtime'
 
 const surface = { webContents: {}, state: { active: false, focused: false }, activate: vi.fn(), focus: vi.fn(), subscribe: vi.fn(() => () => undefined) }
 const originalResourcesPath = process.resourcesPath
-const originalVoxNativePath = process.env.VOX_NATIVE_PATH
-afterEach(() => { electron.app.isPackaged = false; Object.defineProperty(process, 'resourcesPath', { value: originalResourcesPath, configurable: true }); if (originalVoxNativePath === undefined) delete process.env.VOX_NATIVE_PATH; else process.env.VOX_NATIVE_PATH = originalVoxNativePath })
-
-describe('Vox suite paths', () => {
-  it('uses isolated data, legacy import, overlay entries, and the debug native executable in development', () => {
-    const context = suiteFeatureContext('vox', surface as never)
-    expect(context.paths.dataDirectory).toBe('/Users/test/Library/Application Support/Moirasia/features/vox')
-    expect(context.paths.legacyDataDirectories).toEqual(['/Users/test/Library/Application Support/Vox'])
-    expect(context.paths.native?.executable).toBe('/workspace/apps/integrated/Vox/native/.build/arm64-apple-macosx/debug/VoxNative')
-    expect(context.paths.preloads?.overlay).toMatch(/feature-vox-overlay\.cjs$/)
-    expect(context.paths.renderers?.overlay).toMatch(/apps\/integrated\/Vox\/overlay\.html$/)
-  })
-
-  it('prefers the native executable test override', () => {
-    process.env.VOX_NATIVE_PATH = '/tmp/VoxNative-fixture'
-    expect(suiteFeatureContext('vox', surface as never).paths.native?.executable).toBe('/tmp/VoxNative-fixture')
-  })
-
-  it('uses the namespaced packaged executable', () => {
-    electron.app.isPackaged = true
-    Object.defineProperty(process, 'resourcesPath', { value: '/Applications/Moirasia.app/Contents/Resources', configurable: true })
-    expect(suiteFeatureContext('vox', surface as never).paths.native?.executable).toBe('/Applications/Moirasia.app/Contents/Resources/features/vox/native/VoxNative')
-  })
-})
+afterEach(() => { electron.app.isPackaged = false; Object.defineProperty(process, 'resourcesPath', { value: originalResourcesPath, configurable: true }) })
 
 describe('Bonded suite paths', () => {
   it('uses the debug helper and isolated settings in development', () => {

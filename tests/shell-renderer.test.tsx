@@ -5,7 +5,6 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { ControllerApi, ControllerPage, ControllerSnapshot, ShellSettings } from '../src/shared/contracts'
 
 vi.mock('../apps/integrated/Amove/src/renderer/main/AmovePanel', () => ({ AmovePanel: () => <div>Amove panel</div> }))
-vi.mock('../apps/integrated/Vox/src/renderer/App', () => ({ VoxPanel: () => <div>Vox panel</div> }))
 vi.mock('../apps/integrated/Exithibition/src/renderer/App', () => ({ ExithibitionPanel: () => <div>Exithibition panel</div> }))
 vi.mock('../apps/integrated/Bonded/src/renderer/App', () => ({ BondedPanel: () => <div>Bonded panel</div> }))
 vi.mock('../apps/integrated/Orbis/src/renderer/App', () => ({ OrbisPanel: () => <div>Orbis panel</div> }))
@@ -75,18 +74,6 @@ describe('Moirasia renderer', () => {
     expect(within(orbis).getByRole('button', { name: 'Uninstall' })).toBeEnabled()
   })
 
-  it('opens loaded Vox and keeps its panel mounted after leaving the tab', async () => {
-    const voxSnapshot: ControllerSnapshot = { ...snapshot, features: [...snapshot.features, { id: 'vox', installed: true, loaded: true, restartPending: false }] }
-    const bridge = api(voxSnapshot); window.moirasia = bridge; const user = userEvent.setup(); render(<App />)
-    await screen.findByRole('heading', { name: 'General' })
-
-    await user.click(screen.getByRole('button', { name: 'Vox' }))
-    expect(await screen.findByText('Vox panel')).toBeVisible()
-    expect(bridge.reportPage).toHaveBeenLastCalledWith('vox')
-    await user.click(screen.getByRole('button', { name: 'General' }))
-    expect(screen.getByText('Vox panel')).not.toBeVisible()
-  })
-
   it('opens loaded Bonded and keeps its panel mounted after leaving the tab', async () => {
     const bondedSnapshot: ControllerSnapshot = { ...snapshot, features: [...snapshot.features, { id: 'bonded', installed: true, loaded: true, restartPending: false }] }
     const bridge = api(bondedSnapshot); window.moirasia = bridge; const user = userEvent.setup(); render(<App />)
@@ -100,14 +87,14 @@ describe('Moirasia renderer', () => {
   })
 
   it('offers Retry for an installed feature whose backend failed to load', async () => {
-    const failed: ControllerSnapshot = { ...snapshot, features: [...snapshot.features, { id: 'vox', installed: true, loaded: false, restartPending: false, loadError: 'Vox is already using Vox.' }] }
+    const failed: ControllerSnapshot = { ...snapshot, features: [...snapshot.features, { id: 'bonded', installed: true, loaded: false, restartPending: false, loadError: 'Bonded is already running in Bonded.' }] }
     const bridge = api(failed); window.moirasia = bridge; const user = userEvent.setup(); render(<App />)
     await screen.findByRole('heading', { name: 'General' })
     await user.click(screen.getByRole('button', { name: 'Features' }))
-    const tile = screen.getByRole('heading', { name: 'Vox', level: 3 }).closest('[data-slot="card"]')!
-    expect(within(tile).getByText(/already using Vox/)).toBeVisible()
+    const tile = screen.getByRole('heading', { name: 'Bonded', level: 3 }).closest('[data-slot="card"]')!
+    expect(within(tile).getByText(/already running in Bonded/)).toBeVisible()
     await user.click(within(tile).getByRole('button', { name: 'Retry' }))
-    expect(bridge.installFeature).toHaveBeenCalledWith('vox')
+    expect(bridge.installFeature).toHaveBeenCalledWith('bonded')
   })
 
   it('offers an in-place relaunch while a feature waits to unload', async () => {

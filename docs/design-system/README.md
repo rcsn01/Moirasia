@@ -154,6 +154,10 @@ pnpm test
 pnpm build
 ```
 
+Vox has since adopted the same standalone setup under `apps/standalone/Vox`: it
+renders in its own `DesktopAppShell` window with product tokens, keeps its Bun
+workflow, and reverse-migrates the former Moirasia suite data on first launch.
+
 ## Adoption status
 
 | Application | Adapter | Product identity retained |

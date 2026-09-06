@@ -34,8 +34,7 @@ export default defineConfig({
       rollupOptions: {
         input: {
           shell: resolve(import.meta.dirname, 'src/preload/shell.ts'),
-          'feature-amove-shelf': resolve(import.meta.dirname, 'apps/integrated/Amove/src/preload/shelf.ts'),
-          'feature-vox-overlay': resolve(import.meta.dirname, 'apps/integrated/Vox/src/preload/overlay.ts')
+          'feature-amove-shelf': resolve(import.meta.dirname, 'apps/integrated/Amove/src/preload/shelf.ts')
         },
         output: {
           format: 'cjs',
@@ -63,8 +62,7 @@ export default defineConfig({
       rollupOptions: {
         input: {
           shell: resolve(import.meta.dirname, 'src/renderer/shell.html'),
-          'feature-amove-shelf': resolve(import.meta.dirname, 'apps/integrated/Amove/src/renderer/shelf.html'),
-          'feature-vox-overlay': resolve(import.meta.dirname, 'apps/integrated/Vox/overlay.html')
+          'feature-amove-shelf': resolve(import.meta.dirname, 'apps/integrated/Amove/src/renderer/shelf.html')
         }
       }
     }
