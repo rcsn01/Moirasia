@@ -1,4 +1,6 @@
-export const PRODUCT_IDS = ['moirasia', 'amove', 'vox', 'exithibition', 'bonded', 'orbis', 'yn360'] as const
+import { FEATURE_IDS } from './feature-catalog'
+
+export const PRODUCT_IDS = ['moirasia', ...FEATURE_IDS, 'yn360'] as const
 export type ProductId = (typeof PRODUCT_IDS)[number]
 export const APPEARANCES = ['system', 'light', 'dark'] as const
 export type Appearance = (typeof APPEARANCES)[number]

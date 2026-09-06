@@ -3,22 +3,19 @@ import { existsSync } from 'node:fs'
 import { join } from 'node:path'
 import { promisify } from 'node:util'
 import { AppearanceRegistry, type Appearance, type LoginItemControlResult, type ProductId } from '@moirasia/desktop-shell/main'
-import { isFeatureId } from '@moirasia/desktop-shell/feature'
+import { featureCatalog, isFeatureId } from '@moirasia/desktop-shell/feature'
 import { APPLICATION_IDS, type ApplicationId, type ApplicationStatus, type ControllerPage, type ControllerSnapshot } from '../shared/contracts'
 import { applicationAgentPath } from './paths'
 import type { FeatureRuntime } from './features/runtime'
 import type { ShellSettingsStore } from './settings'
 
 const execFile = promisify(execFileCallback)
-const CATALOG: Readonly<Record<ApplicationId, { label: string; bundleId: string }>> = {
-  amove: { label: 'Amove', bundleId: 'com.opense.Amove' }, vox: { label: 'Vox', bundleId: 'com.moirasia.vox' }, exithibition: { label: 'Exithibition', bundleId: 'com.local.Exithibition' }, bonded: { label: 'Bonded', bundleId: 'com.opense.Bonded' }, orbis: { label: 'Orbis', bundleId: 'com.opense.Orbis' }
-}
 
 interface AgentRecord { id: ApplicationId; installed: boolean; running: boolean; path?: string }
 export interface ApplicationAgent { snapshot(): Promise<readonly AgentRecord[]>; open(record: AgentRecord): Promise<void>; quit(record: AgentRecord): Promise<boolean>; openLoginItemsSettings(): Promise<void> }
 
 export class ApplicationController {
-  #applications: ApplicationStatus[] = APPLICATION_IDS.map((id) => ({ id, ...CATALOG[id], installed: false, running: false }))
+  #applications: ApplicationStatus[] = featureCatalog.entries.map(({ id, label, bundleId }) => ({ id, label, bundleId, installed: false, running: false }))
   #listeners = new Set<(snapshot: ControllerSnapshot) => void>()
   #busy = new Map<ApplicationId, ApplicationStatus['busy']>()
   #errors = new Map<ApplicationId, string>()
@@ -28,7 +25,7 @@ export class ApplicationController {
   subscribe(listener: (snapshot: ControllerSnapshot) => void): () => void { this.#listeners.add(listener); return () => this.#listeners.delete(listener) }
   async refresh(): Promise<ControllerSnapshot> {
     const records = await this.agent.snapshot()
-    this.#applications = APPLICATION_IDS.map((id) => { const record = records.find((item) => item.id === id); const prior = this.#applications.find((item) => item.id === id); const busy = this.#busy.get(id); const error = this.#errors.get(id); return { id, ...CATALOG[id], installed: record?.installed ?? false, running: record?.running ?? false, ...(record?.path ? { path: record.path } : {}), ...(prior?.loginItem ? { loginItem: prior.loginItem } : {}), ...(busy !== undefined ? { busy } : {}), ...(error !== undefined ? { error } : {}) } })
+    this.#applications = APPLICATION_IDS.map((id) => { const record = records.find((item) => item.id === id); const prior = this.#applications.find((item) => item.id === id); const busy = this.#busy.get(id); const error = this.#errors.get(id); const { label, bundleId } = featureCatalog.get(id); return { id, label, bundleId, installed: record?.installed ?? false, running: record?.running ?? false, ...(record?.path ? { path: record.path } : {}), ...(prior?.loginItem ? { loginItem: prior.loginItem } : {}), ...(busy !== undefined ? { busy } : {}), ...(error !== undefined ? { error } : {}) } })
     await this.#retryPending(); this.#emit(); return this.snapshot()
   }
   async open(id: ApplicationId): Promise<ControllerSnapshot> { return this.#action(id, 'opening', async (record) => { await this.agent.open(record) }) }
@@ -37,12 +34,12 @@ export class ApplicationController {
   openFeature(id: ApplicationId): void { this.features.activate(id) }
   reportPage(page: ControllerPage): void { this.features.setActive(isFeatureId(page) ? page : undefined) }
   relaunch(): void { this.features.relaunch() }
-  async quit(id: ApplicationId): Promise<ControllerSnapshot> { return this.#action(id, 'quitting', async (record) => { if (!await this.agent.quit(record)) throw new Error(`${CATALOG[id].label} did not quit within 10 seconds.`) }) }
+  async quit(id: ApplicationId): Promise<ControllerSnapshot> { return this.#action(id, 'quitting', async (record) => { if (!await this.agent.quit(record)) throw new Error(`${featureCatalog.get(id).label} did not quit within 10 seconds.`) }) }
   async setAppearance(product: ProductId, appearance: Appearance): Promise<ControllerSnapshot> { await this.appearances.set(product, appearance); this.#emit(); return this.snapshot() }
   async setAllAppearances(appearance: Appearance): Promise<ControllerSnapshot> { await this.appearances.setAll(appearance); this.#emit(); return this.snapshot() }
   async setLoginItem(id: ApplicationId, enabled: boolean): Promise<ControllerSnapshot> {
     const status = this.#applications.find((item) => item.id === id)
-    if (!status?.installed || !status.path) throw new Error(`${CATALOG[id].label} is not installed.`)
+    if (!status?.installed || !status.path) throw new Error(`${featureCatalog.get(id).label} is not installed.`)
     this.#busy.set(id, 'login-item'); this.#emit()
     try {
       const result = await invokeLoginControl(status.path, id, enabled ? 'login-item:set:on' : 'login-item:set:off')
@@ -58,7 +55,7 @@ export class ApplicationController {
 
   async #action(id: ApplicationId, busy: NonNullable<ApplicationStatus['busy']>, operation: (record: AgentRecord) => Promise<void>): Promise<ControllerSnapshot> {
     const current = this.#applications.find((item) => item.id === id)
-    if (!current?.installed) throw new Error(`${CATALOG[id].label} is not installed.`)
+    if (!current?.installed) throw new Error(`${featureCatalog.get(id).label} is not installed.`)
     this.#busy.set(id, busy); this.#errors.delete(id); this.#emit()
     try { await operation({ id, installed: current.installed, running: current.running, ...(current.path ? { path: current.path } : {}) }) }
     catch (error) { this.#errors.set(id, message(error)); throw error }
@@ -89,10 +86,10 @@ class SwiftApplicationAgent implements ApplicationAgent {
 }
 
 async function invokeLoginControl(bundlePath: string, id: ApplicationId, command: string): Promise<LoginItemControlResult> {
-  const executable = join(bundlePath, 'Contents', 'MacOS', CATALOG[id].label)
+  const executable = join(bundlePath, 'Contents', 'MacOS', featureCatalog.get(id).executableName)
   const { stdout } = await execFile(executable, [`--moirasia-control=${command}`], { timeout: 5_000, maxBuffer: 64 * 1024 })
   const result = JSON.parse(stdout.trim().split(/\r?\n/).at(-1) ?? '') as LoginItemControlResult
-  if (result.protocolVersion !== 1 || result.appId !== id) throw new Error(`Invalid control response from ${CATALOG[id].label}.`)
+  if (result.protocolVersion !== 1 || result.appId !== id) throw new Error(`Invalid control response from ${featureCatalog.get(id).label}.`)
   return result
 }
 function message(error: unknown): string { return error instanceof Error ? error.message : String(error) }

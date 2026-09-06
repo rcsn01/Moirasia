@@ -1,12 +1,9 @@
 import type { WebContents } from 'electron'
 import type { ProductId } from './index'
+import { featureCatalog, type FeatureId, type FeatureResourceRequirements } from './feature-catalog'
 
-export const FEATURE_IDS = ['amove', 'vox', 'exithibition', 'bonded', 'orbis'] as const
-export type FeatureId = (typeof FEATURE_IDS)[number]
-
-export function isFeatureId(value: unknown): value is FeatureId {
-  return typeof value === 'string' && FEATURE_IDS.some((id) => id === value)
-}
+export { featureCatalog, FEATURE_IDS, isFeatureId } from './feature-catalog'
+export type { FeatureId, FeatureIconKey, FeatureGroupId, FeatureCatalogEntry, FeatureHostMode, FeatureResourceRequirements } from './feature-catalog'
 
 /**
  * Resources are keyed by the name a feature uses, rather than by whatever
@@ -68,18 +65,10 @@ export interface EmbeddedFeatureContext extends FeatureContextBase {
 export type FeatureContext = StandaloneFeatureContext | EmbeddedFeatureContext
 
 export type FeatureResourceKind = 'preloads' | 'renderers' | 'native' | 'workers'
-export interface FeatureResourceRequirements {
-  readonly preloads?: readonly string[]
-  readonly renderers?: readonly string[]
-  readonly native?: readonly string[]
-  readonly workers?: readonly string[]
-  readonly assetsDirectory?: boolean
-  readonly dataDirectory?: boolean
-}
 
-/** Validate host-owned resource values before a feature starts side effects. */
+/** Validate host-owned resource values before a feature starts side effects. Requirements default to the feature catalog's per-mode table. */
 export function validateFeatureResources(context: FeatureContext, requirements?: FeatureResourceRequirements): void {
-  const required = requirements ?? defaultRequirements(context)
+  const required = requirements ?? featureCatalog.get(context.id).requirements[context.mode]
   const { paths } = context
   for (const name of required.preloads ?? []) {
     requireResource(paths.preloads?.[name] ?? (name === 'main' ? paths.preload : undefined), 'preloads', name, false)
@@ -98,35 +87,6 @@ export function validateFeatureResources(context: FeatureContext, requirements?:
   if (required.dataDirectory) requireDirectory(paths.dataDirectory, 'dataDirectory')
   for (const directory of paths.legacyDataDirectories ?? []) requireDirectory(directory, 'legacyDataDirectories')
 }
-
-function defaultRequirements(context: FeatureContext): FeatureResourceRequirements {
-  switch (context.id) {
-    case 'amove':
-      return context.mode === 'standalone'
-        ? { preloads: ['main', 'shelf'], renderers: ['main', 'shelf'], native: ['addon'], assetsDirectory: true, dataDirectory: true }
-        : { preloads: ['shelf'], renderers: ['shelf'], native: ['addon'], assetsDirectory: true, dataDirectory: true }
-    case 'vox':
-      return context.mode === 'standalone'
-        ? { preloads: ['main', 'overlay'], renderers: ['main', 'overlay'], native: ['executable'], dataDirectory: true }
-        : { preloads: ['overlay'], renderers: ['overlay'], native: ['executable'], dataDirectory: true }
-    case 'exithibition':
-      return context.mode === 'standalone'
-        ? { preloads: ['main'], renderers: ['main'], native: ['executable'], dataDirectory: true }
-        : { native: ['executable'], dataDirectory: true }
-    case 'bonded':
-      return context.mode === 'standalone'
-        ? { preloads: ['main'], renderers: ['main'], native: ['helper'], dataDirectory: true }
-        : { native: ['helper'], dataDirectory: true }
-    case 'orbis':
-      return context.mode === 'standalone'
-        ? { preloads: ['main'], renderers: ['main'], workers: ['scan'], dataDirectory: true }
-        : { workers: ['scan'], dataDirectory: true }
-    default:
-      return assertNever(context.id)
-  }
-}
-
-function assertNever(value: never): never { throw new Error(`Unknown feature '${String(value)}'`) }
 
 function requireResource(value: string | undefined, kind: FeatureResourceKind, name: string, allowUrl: boolean): string {
   if (!value || (!allowUrl && !isAbsolutePath(value)) || (allowUrl && !isAbsolutePath(value) && !isUrl(value))) {

@@ -19,6 +19,9 @@ const api: ControllerApi = {
   onSnapshot(listener) { const handler = (_event: Electron.IpcRendererEvent, snapshot: ControllerSnapshot) => listener(snapshot); ipcRenderer.on(IPC.snapshot, handler); return () => ipcRenderer.removeListener(IPC.snapshot, handler) },
   onNavigate(listener) { const handler = (_event: Electron.IpcRendererEvent, page: ControllerPage) => listener(page); ipcRenderer.on(IPC.navigate, handler); return () => ipcRenderer.removeListener(IPC.navigate, handler) }
 }
+// Bridge exposure is a security seam: every contextBridge call is an explicit,
+// hand-reviewed statement of what leaves the preload sandbox. It is deliberately
+// not driven by the feature catalog.
 contextBridge.exposeInMainWorld('moirasia', Object.freeze(api))
 contextBridge.exposeInMainWorld('amove', Object.freeze(createAmoveBridge(ipcRenderer)))
 contextBridge.exposeInMainWorld('vox', Object.freeze(createVoxBridge(ipcRenderer)))
