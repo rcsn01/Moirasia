@@ -4,6 +4,8 @@ import { dirname, join } from 'node:path'
 import { APPEARANCES, PRODUCT_IDS, isAppearance, isProductId, type Appearance, type AppearanceSnapshot, type LoginItemControlResult, type ProductId } from './index'
 
 export { runLoginItemControl } from './login-item-control'
+export { runStandaloneLaunch } from './standalone-launch'
+export type { StandaloneLaunchOptions, StandaloneLaunchOutcome } from './standalone-launch'
 
 const DEFAULTS: Record<ProductId, Appearance> = { moirasia: 'system', amove: 'system', vox: 'system', exithibition: 'dark', bonded: 'system', orbis: 'system', yn360: 'system' }
 const EMPTY: AppearanceSnapshot = { version: 1, revision: 0, values: DEFAULTS }
