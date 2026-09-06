@@ -2,9 +2,14 @@ import { mkdtemp, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { describe, expect, it, vi } from 'vitest'
-import { AppearanceRegistry, applyWindowAppearance, desktopWindowChromeOptions, neutralWindowBackground } from '../packages/desktop-shell/src/main'
+import { AppearanceRegistry, applyWindowAppearance, defaultProductAppearance, desktopWindowChromeOptions, neutralWindowBackground } from '../packages/desktop-shell/src/main'
 
 describe('AppearanceRegistry migration', () => {
+  it('exposes the product defaults that seed every surface background', () => {
+    expect(defaultProductAppearance('exithibition')).toBe('dark')
+    expect(defaultProductAppearance('bonded')).toBe('system')
+    expect(defaultProductAppearance('moirasia')).toBe('system')
+  })
   it('keeps macOS chrome separate from app-owned dimensions', () => {
     expect(desktopWindowChromeOptions('darwin')).toEqual({ titleBarStyle: 'hiddenInset', trafficLightPosition: { x: 16, y: 11 } })
     expect(desktopWindowChromeOptions('linux')).toEqual({})

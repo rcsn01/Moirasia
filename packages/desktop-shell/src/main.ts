@@ -10,6 +10,9 @@ export type { StandaloneLaunchOptions, StandaloneLaunchOutcome } from './standal
 const DEFAULTS: Record<ProductId, Appearance> = { moirasia: 'system', amove: 'system', vox: 'system', exithibition: 'dark', bonded: 'system', orbis: 'system', yn360: 'system' }
 const EMPTY: AppearanceSnapshot = { version: 1, revision: 0, values: DEFAULTS }
 
+/** The product's default appearance — DEFAULTS stays the single owner of the seed table. */
+export function defaultProductAppearance(product: ProductId): Appearance { return DEFAULTS[product] }
+
 export function appearanceRegistryPath(appData = app.getPath('appData')): string {
   return join(appData, 'Moirasia', 'appearance.json')
 }
