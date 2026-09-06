@@ -1,265 +1,501 @@
-# Plan: complete the feature catalog — one owner for artifact facts
+# Plan: Deepen the standalone launcher — `runStandaloneLaunch`
 
-The feature catalog (`packages/desktop-shell/src/feature-catalog.ts`) is declared "the single owner of every shared fact about the four embedded features," yet the heaviest facts — artifact filenames, staged paths, packaged resource destinations, and dev build layouts — live in four places outside it. Adding one embedded feature today means editing five files and hoping four of them agree. This plan finishes the catalog: it gains an **artifacts facet** that names every binary, worker, and asset bundle a feature ships, where the build stages it, and where packaged resources land — as pure data. Hosts keep resolving; the facts stop being duplicated.
+**Status:** Approved for implementation · **Date:** 2026-09-07
+**Source:** Architecture review candidate 1 (`Strong`). Vocabulary: `CONTEXT.md` (domain) and the codebase-design glossary (module, interface, implementation, seam, adapter, leverage, locality).
 
-## Decisions
+---
 
-Grilling was run against the full decision tree; per instruction every fork took the recommended answer. Record below — each decision names the fork, the recommended answer taken, and why it beat the alternative.
+## 1. Problem and evidence
 
-### Round 1 — scope and shape
+The standalone launch sequence — login-item control branch, single-instance lock, ready-time registration, activation re-focus, quit policy, awaited teardown — is hand-copied in **five** entry files. The module is shallow in five places at once: every caller must know the whole sequence (large interface) for ~0 leverage. Deletion test: delete a shared module and the sequence reappears in five callers — a shared module earns its keep.
 
-**Q1 · What does the artifacts facet own?**
-➡️ **Filenames + build layouts + staged paths + packaged destinations, as pure data templates.** Not resolved paths — the catalog never resolves (no Electron, no fs). Hosts join facts with roots. Filename-only was rejected because staged/destination paths are the facts that actually drift (the Exithibition flat path proves it); full path resolution in the catalog was rejected because it would violate the catalog's documented purity.
+| | Amove | Exithibition | Bonded | Orbis | YN360 |
+|---|---|---|---|---|---|
+| `setName` timing | module scope | **inside whenReady** (drift) | module scope | module scope | module scope |
+| `setAppUserModelId` | yes | **missing** (drift) | yes | yes | yes |
+| Platform guard | darwin/win32/linux | none | darwin+arm64 | none | darwin+arm64 |
+| Guard vs control check | **guard first** | n/a | control first | n/a | control first |
+| Single-instance lock | after control check | after | after | after | **before control check** (latent hang) |
+| `userData` env override | — | — | `BONDED_USER_DATA` | `ORBIS_USER_DATA` | — |
+| `before-quit` | preventDefault, **awaits dispose**, re-entry flags | **`void feature.dispose()` — fire-and-forget, teardown can be dropped on quit** (bug) | preventDefault, awaits, flags | preventDefault, awaits, flags | preventDefault, awaits, flags |
+| `activate` listener | inside control branch | inside | inside | **module scope — fires even in `--moirasia-control` mode** (bug) | inside |
+| Register failure | console.error + quit | console.error + quit | dialogs (lease error → info dialog) | console.error + quit | error dialog + quit |
+| `window-all-closed` | platform + feature policy (only copy) | always quit | always quit | always quit | always quit |
 
-**Q2 · Who owns the native-addon platform filename matrix?**
-➡️ **A pure function in the catalog: `nativeAddonFileName(base, platform?, arch?)`.** It replaces three verbatim duplicates: `nativeAddonName()` in `runtime.ts`, `nativeAddonName()` in Orbis `standalone.ts`, and `standaloneNativeName()` in Amove `standalone.ts`. Platform/arch become parameters (accept dependencies, don't create them) so the matrix is testable without touching `process`.
+Files:
 
-**Q3 · Normalize Exithibition's flat staging?**
-➡️ **Yes.** `native/staged/features/ExithibitionNative` → `native/staged/features/exithibition/native/ExithibitionNative`, and its packaged destination `native/ExithibitionNative` → `features/exithibition/native/ExithibitionNative`. This removes the one special case so every artifact follows one rule: staged `native/staged/features/<id>/<dir>`, suite destination `features/<id>/<dir>`. Only the suite is affected — Exithibition's own bundle keeps `native/ExithibitionNative`. Nothing in tests or scripts pins the old flat path (verified: only `tests/feature-runtime.test.ts` uses `ExithibitionNative` inside an arbitrary `/tmp` fixture).
+```
+apps/integrated/Amove/src/main/index.ts
+apps/integrated/Exithibition/src/main/index.ts
+apps/integrated/Bonded/src/main/index.ts
+apps/integrated/Orbis/src/main/index.ts
+apps/standalone/YN360/src/main/index.ts
+packages/desktop-shell/src/main.ts        (hosts runLoginItemControl today)
+```
 
-**Q4 · Do preload/renderer page facts join the facet?**
-➡️ **No.** They are build-config wiring (`electron.vite.config.ts` entries, `paths.ts` maps, per-app build outputs), a different mechanism that the architecture doc deliberately leaves host-explicit. Conflating them would widen the facet without removing a real duplication.
+The YN360 lock-ordering bug, verified in source: the lock is requested **before** `runLoginItemControl` re-points `userData` to its isolated per-pid directory. A `--moirasia-control` process launched while the real app runs is refused the lock on the default `userData` path and calls `app.quit()` **without answering the control protocol** — the caller hangs waiting for the JSON response. The comment justifying the order ("a second launch can never race the first through the login-item control") protects against a race that control-first ordering also prevents; control-first is strictly safer.
 
-**Q5 · How do non-TS consumers (stage script, `electron-builder.yml`) relate to the catalog?**
-➡️ **Contract pins, not imports.** The stage script is a plain `.mjs` (no TS loader available: no `tsx`, `js-yaml` not importable) and the builder config is YAML. Both stay hand-written; a new contract test reads them as text and asserts every catalog fact appears in them. This is the pattern the repo already uses for the Swift application agent (`platform-integration.test.ts` pins `main.swift` strings against `application-catalog`). A JS builder config importing the catalog was rejected as build-system risk for zero test gain.
+---
 
-**Q6 · Keep the per-feature switch in `suiteFeatureContext`?**
-➡️ **Keep the switch.** The literal `import()` loaders above it are a rollup requirement (code-splitting, uninstalled features never evaluated); the switch below it becomes a thin join of catalog facts with host roots — 3–6 lines per case. A fully table-driven context builder was rejected: it hides the literal imports that make code-splitting work and would put Electron-specific resolution into the catalog.
+## 2. Decisions (design tree, recommended answers adopted)
 
-**Q7 · Extract the suite context builder into its own module?**
-➡️ **Yes.** `suiteFeatureContext` and its helpers are ~100 of `runtime.ts`'s 234 lines. It becomes `src/main/features/suite-context.ts`, leaving `FeatureRuntime` a smaller interface (lifecycle only) and giving the context join its own testable seam that needs no feature loaders.
+### Round 1 — shape of the deep module
 
-### Round 2 — data model and consumers (frontier opened by Round 1 answers)
+**Q1 Where does the module live?**
+➡️ `packages/desktop-shell/src/standalone-launch.ts`, re-exported through the existing `'./main'` export. All five apps already depend on the package (`link:../../../packages/desktop-shell`, except YN360's `file:../../../packages/desktop-shell` — same local-workspace resolution); no dependency changes.
 
-**Q8 · Which additional shared facts join the facet?**
-➡️ **Two: `directory` on the entry, and `standaloneResource` on each artifact.**
-- `directory` — the app repo directory name (`'Amove'`, `'Exithibition'`, …). Today it is hard-coded in the suite dev paths (`join(app.getAppPath(), 'apps', 'integrated', 'Amove', …)`), the stage script, and `package.json` scripts. Catalog owns it; TS consumers use it; scripts stay text-pinned.
-- `standaloneResource` records where each artifact lands in the *app's own* packaged bundle (`native`, `features/orbis/native`, …). It kills the packaged-mode literals in the four `standalone.ts` files. Each app's own `electron-builder.yml` stays app-owned — the yml is the app's packaging decision, the catalog records the fact the resolver needs.
+**Q2 What does it return?**
+➡️ `Promise<StandaloneLaunchOutcome>` — resolves when the launch attempt settles (`'started'`, `'start-failed'`, or a terminal pre-launch state); production callers `void` it at module scope, tests `await` it for determinism. The process keeps running after `'started'` until the app quits.
 
-**Q9 · Catalog validation rules for the facet?**
-➡️ **Three, enforced in `buildCatalog()` (throw-at-import style, matching existing checks):**
-1. Every `native: [...]` requirement name must have an artifact of the same `name` whose kind is `native` or `executable` (both live in the `paths.native` map — Exithibition's `executable` artifact sits in the `native` requirement bucket today, so bucket-name equality with `ArtifactKind` is not the check); every `workers: [...]` requirement name must have an artifact of the same `name` with kind `worker`.
-2. Artifact `name`s are unique per feature.
-3. `kind: 'native'` artifacts carry a napi base name (validated: no `.node` suffix in `file`); other kinds carry an exact filename with an extension.
-Preload/renderer/asset requirement names are exempt (not artifacts).
+**Q3 How does the module call the product?**
+➡️ Three function fields: `register`, `dispose`, `activate`. `register` is a closure that builds its own `FeatureContext` inside (e.g. `() => feature.register(standaloneContext())`) — laziness is natural, no type parameters, no separate context field, YN360-style controllers fit with a three-line closure. The `MoirasiaFeature` contract stays untouched.
 
-**Q10 · Do literal path expectations in tests stay, or become catalog-derived?**
-➡️ **Literals stay; new pins join them.** The repo's culture is pinning (bundle ids pinned against `main.swift`, `desktop-shell.test.tsx` byte-asserts CSS). `tests/feature-paths.test.ts` extends from one feature to all four × both modes with literal final paths — that pins the join. The catalog data itself is pinned by catalog tests; the contract pins (Q5) tie script and YAML to the catalog. Drift anywhere turns a test red instead of silently re-encoding.
+**Q4 Canonical ordering of guard / control / lock?**
+➡️ Control check **first**, then platform/arch guard, then `userData` override, then single-instance lock. Kills the YN360 control hang; the protocol always answers, even on an unsupported platform (Amove's guard-before-control is superseded — strictly more robust). No listeners are registered in control mode — kills the Orbis bug structurally.
 
-## Current inventory — every site an artifact fact appears
+**Q5 Identity facts required?**
+➡️ `productName` required (module scope, fixes Exithibition's deferred `setName`); `appUserModelId` optional (Exithibition gains `com.local.Exithibition`). `appId: string`, not `ProductId` — future adopters (LiteMaptica…) are not product ids.
 
-Verified by reading each file; `rg` note: the root repo gitignores `apps/`, so app-repo sites were read directly.
+### Round 2 — variation, as data
 
-| # | File | Facts hard-coded |
-| --- | --- | --- |
-| 1 | `src/main/features/runtime.ts:135–233` | `suiteFeatureContext` per-feature switch: packaged `features/<id>/…` and `native/ExithibitionNative` destinations; dev app-root joins (`apps/integrated/<App>`); dev build layouts (`.build/arm64-apple-macosx/debug`, `native/`, staged worker/native for Orbis); `nativeAddonName()` platform matrix for both `amove-native` and `orbis-metadata` |
-| 2 | `apps/integrated/Amove/src/main/standalone.ts` | `standaloneNativeName()` matrix (verbatim duplicate of #1); packaged `native/<file>`; dev `<appRoot>/native/<file>` |
-| 3 | `apps/integrated/Orbis/src/main/standalone.ts` | `nativeAddonName()` matrix (verbatim duplicate of #1); packaged `features/orbis/{native,worker}`; dev `native/`, `worker-dist/` |
-| 4 | `apps/integrated/Exithibition/src/main/standalone.ts` | packaged `native/ExithibitionNative`; dev `.build/arm64-apple-macosx/debug/ExithibitionNative` |
-| 5 | `apps/integrated/Bonded/src/main/standalone.ts` | packaged `native/BondedFirewallHelper`; dev `native/.build/arm64-apple-macosx/debug/BondedFirewallHelper` |
-| 6 | `scripts/stage-feature-binaries.mjs` | per-feature build commands + source artifact paths (`.build/arm64-apple-macosx/release/…`, `native/*.node`) → staged destinations; builds release where the suite dev build reads debug (#1) — divergence encoded twice |
-| 7 | `electron-builder.yml:9–24` | 7 `extraResources` mappings repeating staged paths and destinations, including the Exithibition flat one-off |
-| 8 | `package.json:17` | `features:worker --outDir native/staged/features/orbis/worker` (staged worker path) |
-| 9 | `apps/integrated/{Amove,Exithibition,Bonded,Orbis}/electron-builder.yml` | each app's own packaged layout (`native/*.node`, `native/ExithibitionNative`, `native/BondedFirewallHelper`, `features/orbis/{native,worker}`) — app-owned, but the *filenames* are shared facts |
-| 10 | Orbis app tests (`orbis-bulk-node-parity.test.ts`, `orbis-fsevents-live.test.ts`) | recompute the addon filename locally — app-repo concern, optional follow-up |
+**Q6 Menus and CSP?** ➡️ App-owned data: `menu?: () => MenuItemConstructorOptions[]` (module installs via `Menu.buildFromTemplate`/`setApplicationMenu`) and `contentSecurityPolicy?: (rendererUrl) => string` (module reads `ELECTRON_RENDERER_URL`, wires `session.defaultSession.webRequest.onHeadersReceived`). Apps keep their policy strings and templates; the module owns only the wiring.
 
-Out of scope, recorded so future walks don't re-suggest them: the application-agent staging (`scripts/build-application-agent.mjs`, `paths.ts applicationAgentPath`) is a controller fact, not a feature artifact; preload/renderer pages (Q4); the Swift agent's product table (already pinned by `platform-integration.test.ts`).
+**Q7 Quit policy?** ➡️ `quitOnLastWindow?: boolean | (() => boolean)`, default `true`. Four of five apps are the data value `true`; Amove passes its platform+presence predicate as a closure. The module holds no quit-policy opinion.
 
-## Target design
+**Q8 Register-failure UX?** ➡️ The module always `console.error`s, then awaits `onRegisterError?` (Bonded/YN360 pass their dialog closures, Bonded special-cases `BondedRuntimeInUseError`), then `app.quit()`. A throwing hook is logged; quit still proceeds.
 
-### Types (in `packages/desktop-shell/src/feature-catalog.ts`)
+**Q9 YN360's about panel?** ➡️ No `aboutPanel` field (one app, zero hidden behavior — hatch discipline: named fields only for variations shared by ≥2 apps). It folds into YN360's `register` closure, which is the app's whenReady body.
+
+**Q10 Generic escape hatches (`wire`, `configure`)?** ➡️ Rejected. `register` is the extension point for ready-time product extras; unforeseen events stay in the entry or justify a named field once a pattern appears in ≥3 apps.
+
+### Round 3 — testing and rollout
+
+**Q11 Test seam?** ➡️ Mock category: the module imports `app`/`Menu`/`session` directly; tests cross the module's interface with a `vi.mock('electron')` double plus `vi.mock` of the sibling `login-item-control` module. One new root test file; the interface is the test surface. Per-app unit tests of app-owned facts (CSP helper, ipc authorization) survive unchanged.
+
+**Q12 File split?** ➡️ Extract `runLoginItemControl` to `packages/desktop-shell/src/login-item-control.ts`; `main.ts` re-exports it (specifier `'@moirasia/desktop-shell/main'` unchanged) and also re-exports the launcher. Avoids a circular import (`standalone-launch` → `main` → `standalone-launch`).
+
+**Q13 Migration order?** ➡️ Exithibition first (simplest, fixes the worst drift) → Orbis → Bonded → Amove → YN360 (optional final step, fixes the latent control hang). One commit per step; each app migrates independently; the module is additive until its callers adopt it.
+
+**Q14 Docs?** ➡️ `CONTEXT.md` term **Standalone launcher** added (done). `docs/architecture/standalone-applications.md` paragraph about thin entries rewritten in the final step (see §7 step 10).
+
+---
+
+## 3. Design-it-twice comparison (three sub-agent designs)
+
+| | A — minimize | B — maximise flexibility | C — optimise common caller |
+|---|---|---|---|
+| Shape | one function, 13-field spec, `void` | generic `TApp`/`TContext`, `Promise<LaunchOutcome>`, `wire` registrar + `configure` hooks | one function, 4 required fields + 6 optional hatches, `void` |
+| Ordering | lock **before** control (wrong — rests on the isolated-userData assumption, which is falsified by YN360's source: the re-point happens inside `runLoginItemControl`, after the lock check) | control first, guard, userData, lock — correct, with the sharpest deadlock analysis | control first — correct |
+| Depth | high, but `aboutPanel` field for one app | depth eroded by two type params + dumping-ground hatches (acknowledged) | highest for the common caller; trivial 5-line default |
+| Verdict | basis for the lean field set | adopted the outcome union | **basis of the winner** |
+
+**Chosen: hybrid, C-dominant.** C's shape and ordering, B's `Promise<Outcome>` for deterministic tests, A's lean three-field lifecycle (no `context` field, no type params). Rejected: A's ordering, B's `wire`/`configure` hatches and generics, a hypothetical `aboutPanel` field.
+
+---
+
+## 4. The interface
+
+New file `packages/desktop-shell/src/standalone-launch.ts`:
 
 ```ts
-/** Artifact roles mirror the requirement tables: a host validates 'native.addon',
- *  the catalog says what that file is and where it lives. */
-export type ArtifactKind = 'native' | 'executable' | 'worker' | 'assets'
+import { app, Menu, session } from 'electron'
+import type { MenuItemConstructorOptions } from 'electron'
+import { runLoginItemControl } from './login-item-control'
 
-export interface FeatureArtifact {
-  /** Symbolic name matching the per-mode requirements tables ('addon', 'helper', 'executable', 'scan', …). */
-  readonly name: string
-  readonly kind: ArtifactKind
-  /**
-   * kind 'native': napi base name — the real filename comes from nativeAddonFileName(base, …).
-   * other kinds: exact filename ('ExithibitionNative', 'scan-worker.mjs'); kind 'assets' carries none.
-   */
-  readonly file?: string
-  /** Where the build output lands inside the app repo, relative to the app root. `{configuration}` → 'debug' | 'release'. */
-  readonly buildOutput: string
-  /** Suite-repo-relative path the staging script places the artifact at (directory for multi-file kinds). */
-  readonly staged: string
-  /** Suite-packaged destination under Contents/Resources (directory; the filename inside is `file`). */
-  readonly suiteResource: string
-  /** Which source the suite trusts in development: the app's own build output, or the staged copy. */
-  readonly suiteDevSource: 'buildOutput' | 'staged'
-  /** Destination under the app's own Contents/Resources in standalone packaging. */
-  readonly standaloneResource: string
+/** Terminal state of a launch attempt. The promise resolves when the attempt settles;
+ *  the process keeps running after 'started' until the app quits. Production callers void it. */
+export type StandaloneLaunchOutcome =
+  | 'controlled'                // the login-item control protocol claimed the process; it self-exits
+  | 'unsupported-platform'      // platform/arch guard failed; app.exit(1) already dispatched
+  | 'single-instance-refused'   // lock lost; app.quit() already dispatched
+  | 'started'                   // register() resolved
+  | 'start-failed'              // register() rejected; failure hook ran; app.quit() dispatched
+  | 'launch-failed'             // the control/launch chain itself rejected; app.exit(1) dispatched
+
+export interface StandaloneLaunchOptions {
+  /** Login-item control id, also names diagnostics ('amove', 'orbis', 'yn360', …). */
+  readonly appId: string
+  /** app.setName — applied synchronously at module scope. */
+  readonly productName: string
+  /** app.setAppUserModelId — applied synchronously; Windows identity. */
+  readonly appUserModelId?: string
+  /** The whenReady body. Build the FeatureContext inside: it runs after the userData
+   *  override, so getPath('userData') sees the overridden path. Also the place for
+   *  product extras (about panel, …). */
+  readonly register: () => Promise<void> | void
+  /** Teardown. May be called before register() settles (quit during startup); features
+   *  already tolerate that. Awaited exactly once, before the final quit. */
+  readonly dispose: () => Promise<void> | void
+  /** Re-focus hook, wired to both 'activate' and 'second-instance'. Optional. */
+  readonly activate?: () => void
+  /** Allowed platforms; omitted = no guard. Checked after the control check. */
+  readonly platforms?: readonly NodeJS.Platform[]
+  /** Allowed architectures; omitted = no guard. */
+  readonly archs?: readonly NodeJS.Architecture[]
+  /** Env var that overrides app.setPath('userData') before the lock (e.g. 'BONDED_USER_DATA'). */
+  readonly userDataEnv?: string
+  /** CSP policy for the default session; the module reads ELECTRON_RENDERER_URL and wires the header. */
+  readonly contentSecurityPolicy?: (rendererUrl: string | undefined) => string
+  /** Application menu template; the module builds and installs it inside whenReady. */
+  readonly menu?: () => MenuItemConstructorOptions[]
+  /** Quit when the last window closes. Default true; Amove passes a predicate. */
+  readonly quitOnLastWindow?: boolean | (() => boolean)
+  /** Additive failure UX after a register() rejection (dialogs). The module always logs. */
+  readonly onRegisterError?: (error: unknown) => void | Promise<void>
+}
+
+export function runStandaloneLaunch(options: StandaloneLaunchOptions): Promise<StandaloneLaunchOutcome>
+```
+
+`packages/desktop-shell/src/main.ts` gains:
+
+```ts
+export { runStandaloneLaunch } from './standalone-launch'
+export type { StandaloneLaunchOptions, StandaloneLaunchOutcome } from './standalone-launch'
+```
+
+## 5. Canonical sequence, invariants, error modes
+
+The implementation — the whole point is that this exists **once**:
+
+```
+runStandaloneLaunch(options):
+  1  app.setName(options.productName)
+  2  if (options.appUserModelId) app.setAppUserModelId(options.appUserModelId)
+  3  try:
+  4    controlled = await runLoginItemControl(options.appId)
+  5    if controlled: return 'controlled'              # zero listeners registered — Orbis bug dead
+  6    if (options.platforms && !platforms.includes(process.platform)): app.exit(1); return 'unsupported-platform'
+  7    if (options.archs && !archs.includes(process.arch)):            app.exit(1); return 'unsupported-platform'
+  8    if (options.userDataEnv && env[options.userDataEnv]) app.setPath('userData', env[options.userDataEnv])
+  9    if (!app.requestSingleInstanceLock()): app.quit(); return 'single-instance-refused'
+ 10    app.on('second-instance', () => options.activate?.())
+ 11    app.on('activate',         () => options.activate?.())
+ 12    app.on('window-all-closed', () => { quit = resolveQuitPolicy(); if (quit) app.quit() })
+ 13    quitting = false; stopped = false
+ 14    app.on('before-quit', (event) => {
+ 15      if (stopped) return                            # second pass-through quits
+ 16      event.preventDefault()
+ 17      if (quitting) return
+ 18      quitting = true
+ 19      void Promise.resolve(options.dispose()).catch(log).finally(() => { stopped = true; app.quit() })
+ 20    })
+ 21    try:
+ 22      await app.whenReady()
+ 23      if (options.contentSecurityPolicy) installCsp(options.contentSecurityPolicy(process.env.ELECTRON_RENDERER_URL))
+ 24      if (options.menu) Menu.setApplicationMenu(Menu.buildFromTemplate(options.menu()))
+ 25      await options.register()
+ 26      return 'started'
+ 27    catch (error):
+ 28      console.error(error)
+ 29      await Promise.resolve(options.onRegisterError?.(error)).catch(log)   # failure UX is additive
+ 30      app.quit()
+ 31      return 'start-failed'
+ 32  catch (error):                                    # the control/launch chain itself failed
+ 33    console.error(error)
+ 34    app.exit(1)
+ 35    return 'launch-failed'
+
+installCsp(policy):
+  session.defaultSession.webRequest.onHeadersReceived((details, callback) =>
+    callback({ responseHeaders: { ...details.responseHeaders, 'Content-Security-Policy': [policy] } }))
+
+resolveQuitPolicy(): undefined → true; boolean → itself; function → call it
+```
+
+**Invariants (the interface, beyond the types):**
+
+- Call exactly once, at module scope, before `whenReady`.
+- Identity (`setName`/`setAppUserModelId`) is applied synchronously — before any `await`.
+- `register` runs inside `whenReady`, **after** the `userData` override — build the `FeatureContext` inside the closure.
+- No listeners are ever registered in control mode.
+- `dispose` is awaited at most once; a rejecting `dispose`/`onRegisterError` is logged and the quit still proceeds.
+- The module owns every `app.quit()`/`app.exit(1)` decision; entries never call them.
+
+**Error modes:** the six `StandaloneLaunchOutcome` states — each is side-effect-complete (exit/quit already dispatched).
+
+## 6. What the implementation hides vs. what stays app-owned
+
+**Hidden behind the seam (locality):** the canonical ordering and its rationale; the control-mode gate; the `before-quit` preventDefault/re-entry/await protocol (the subtlest logic, previously five divergent copies including one bug); CSP wiring mechanics; menu installation; lock arbitration and `second-instance` wiring; the `ELECTRON_RENDERER_URL` read; error routing and exit-code conventions.
+
+**App-owned, passed as data (honest leaks):** menu templates (Orbis's call `feature.addLocation()`); CSP policy strings; identity strings; failure-dialog copy (Bonded's lease special case); Amove's quit predicate; YN360's about-panel one-liner inside its `register`.
+
+## 7. Implementation steps
+
+Each step is one commit. Verify after every step.
+
+### Step 1 — extract `login-item-control.ts` (no behavior change)
+
+- Move `runLoginItemControl` from `packages/desktop-shell/src/main.ts` to new `packages/desktop-shell/src/login-item-control.ts` (imports: `app` from `electron`; `join`/`tmpdir`; `writeSync`/`rm`; the `LoginItemControlResult` type stays in `index.ts`, import it).
+- `main.ts`: `export { runLoginItemControl } from './login-item-control'` — the `'@moirasia/desktop-shell/main'` specifier keeps working for all five entries.
+- Verify: `pnpm typecheck && pnpm test` (root).
+
+### Step 2 — add `standalone-launch.ts` (no callers yet)
+
+- New file with the interface from §4 and the implementation from §5, doc comments carrying the invariants.
+- `main.ts` re-exports it (see §4).
+- Verify: `pnpm typecheck && pnpm test`.
+
+### Step 3 — the test surface
+
+New `tests/standalone-launch.test.ts` (root suite; `vitest.config.ts` coverage already includes `packages/desktop-shell/src/**/*.ts`):
+
+- Double: `vi.hoisted` electron double — an `EventEmitter`-based `app` with spy methods `setName`, `setAppUserModelId`, `setPath`, `requestSingleInstanceLock` (toggleable), `whenReady` (returns a controllable deferred), `quit`, `exit`; `Menu.buildFromTemplate`/`setApplicationMenu` spies; `session.defaultSession.webRequest.onHeadersReceived` spy. `vi.mock('electron', ...)`.
+- `vi.mock` the sibling `../packages/desktop-shell/src/login-item-control` module to resolve `true`/`false`/reject on demand. (Its own control-branch behavior is a separate module with its own interface; each seam is tested at its interface.)
+- Drive everything through `runStandaloneLaunch` + `await outcome` + emitting events on the double; assert observable outcomes, never internals.
+
+Test matrix:
+
+| # | Scenario | Asserts |
+|---|---|---|
+| 1 | Happy path | identity sync before anything (`invocationCallOrder`); whenReady → CSP wired with the `ELECTRON_RENDERER_URL` policy value → menu installed → `register` once; `'started'` |
+| 2 | Control mode | `runLoginItemControl` → true: `'controlled'`; **zero** `app.on` registrations; `register` never called; `setName` was called |
+| 3 | Platform guard | platform outside list → `exit(1)`, `'unsupported-platform'`, lock never requested; arch variant ditto |
+| 4 | Lock refused | `quit()`, `'single-instance-refused'`, no listeners |
+| 5 | Register rejects | `console.error`; `onRegisterError` awaited before `quit`; `'start-failed'`; hook itself rejecting → still logs and quits |
+| 6 | before-quit protocol | `preventDefault` once; `dispose` awaited before final `quit`; second `before-quit` passes through; throwing `dispose` logged, quit proceeds |
+| 7 | Quit policy | default → quit on `window-all-closed`; boolean `false` → no quit; Amove-shaped predicate → honored |
+| 8 | userData override | env set → `setPath('userData', value)` **before** the lock; `register`'s closure observes it; env unset → no `setPath` |
+| 9 | Control chain rejects | `console.error` + `exit(1)`, `'launch-failed'` |
+| 10 | No activate hook | `second-instance`/`activate` tolerated |
+| 11 | Optional wiring | no `contentSecurityPolicy` → no header wiring; no `menu` → `setApplicationMenu` never called |
+
+- Verify: `pnpm test` — all green.
+
+### Step 4 — migrate Exithibition (fixes the worst drift)
+
+New `apps/integrated/Exithibition/src/main/index.ts` in full:
+
+```ts
+import { runStandaloneLaunch } from '@moirasia/desktop-shell/main'
+import { feature } from './feature'
+import { standaloneContext } from './standalone'
+
+void runStandaloneLaunch({
+  appId: 'exithibition',
+  productName: 'Exithibition',
+  appUserModelId: 'com.local.Exithibition',
+  register: () => feature.register(standaloneContext()),
+  activate: () => feature.activate(),
+  dispose: () => feature.dispose()
+})
+```
+
+Gained by this step alone: teardown awaited on quit (the bug), `setName` at module scope, Windows identity set, activation wired inside the control branch.
+Verify: `pnpm -C apps/integrated/Exithibition typecheck && pnpm -C apps/integrated/Exithibition test` and root `pnpm typecheck && pnpm test`.
+
+### Step 5 — migrate Orbis
+
+New `apps/integrated/Orbis/src/main/index.ts`:
+
+```ts
+import type { MenuItemConstructorOptions } from 'electron'
+import { runStandaloneLaunch } from '@moirasia/desktop-shell/main'
+import { feature } from './feature'
+import { standaloneContext } from './standalone'
+
+void runStandaloneLaunch({
+  appId: 'orbis',
+  productName: 'Orbis',
+  appUserModelId: 'com.opense.Orbis',
+  userDataEnv: 'ORBIS_USER_DATA',
+  contentSecurityPolicy: orbisContentSecurityPolicy,
+  menu: orbisMenu,
+  register: () => feature.register(standaloneContext()),
+  activate: () => feature.activate(),
+  dispose: () => feature.dispose()
+})
+
+function orbisContentSecurityPolicy(rendererUrl: string | undefined): string {
+  // same string as today's installContentSecurityPolicy
+}
+
+function orbisMenu(): MenuItemConstructorOptions[] {
+  // same template as today's installApplicationMenu (File → Choose Folder… / Rescan call feature)
 }
 ```
 
-`FeatureCatalogEntry` gains `readonly directory: string` (app repo directory name) and `readonly artifacts: readonly FeatureArtifact[]`; the builder freezes entries and artifacts like `requirements`. The existing purity header comment stays true: still no Electron/React/fs/product imports — a pure function for the platform matrix is data-shaped, not resolution.
+Delete `installContentSecurityPolicy`/`installApplicationMenu`/the module-scope listener block; the `activate`-in-control-mode bug dies.
+Verify: `pnpm -C apps/integrated/Orbis typecheck && pnpm -C apps/integrated/Orbis test` + root gates.
 
-### The facet table (complete — this is the single source of truth after landing)
+### Step 6 — migrate Bonded
 
-| Feature | Artifact | name | kind | file | buildOutput | staged | suiteResource | suiteDevSource | standaloneResource |
-| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| Amove | native addon | `addon` | native | `amove-native` | `native` | `native/staged/features/amove/native` | `features/amove/native` | buildOutput | `native` |
-| Amove | assets | `assets` | assets | — | `assets` | `native/staged/features/amove/assets` | `features/amove/assets` | buildOutput | `assets`¹ |
-| Exithibition | Swift executable | `executable` | executable | `ExithibitionNative` | `.build/arm64-apple-macosx/{configuration}` | `native/staged/features/exithibition/native`² | `features/exithibition/native`² | buildOutput | `native` |
-| Bonded | firewall helper | `helper` | native | `BondedFirewallHelper` | `native/.build/arm64-apple-macosx/{configuration}` | `native/staged/features/bonded/native` | `features/bonded/native` | buildOutput | `native` |
-| Orbis | metadata addon | `metadata` | native | `orbis-metadata` | `native` | `native/staged/features/orbis/native` | `features/orbis/native` | staged | `features/orbis/native` |
-| Orbis | scan worker | `scan` | worker | `scan-worker.mjs` | `worker-dist` | `native/staged/features/orbis/worker` | `features/orbis/worker` | staged | `features/orbis/worker` |
-
-¹ Amove's standalone assets are asar-embedded (`files: assets/**/*`), not an extraResource — the catalog records the app-internal convention, Amove's `standalone.ts` keeps resolving it against `app.getAppPath()`.
-² Normalized per Q3 (was flat `native/staged/features/ExithibitionNative`).
-
-The suite dev source asymmetry is real and recorded as data: Amove/Exithibition/Bonded suite dev reads the app repo's build output; Orbis suite dev reads the staged copies (`features:worker`/`features:native` place them there in `predev`). Normalizing Orbis to `buildOutput` would change which artifacts `pnpm dev` requires and is not worth it.
-
-Pure function replacing three duplicates:
+New `apps/integrated/Bonded/src/main/index.ts`:
 
 ```ts
-export function nativeAddonFileName(
-  base: string,
-  platform: NodeJS.Platform = process.platform,
-  arch: NodeJS.Architecture = process.arch
-): string {
-  const a = arch === 'arm64' ? 'arm64' : 'x64'
-  if (platform === 'darwin') return `${base}.darwin-${a}.node`
-  if (platform === 'win32') return `${base}.win32-x64-msvc.node`
-  return `${base}.linux-x64-gnu.node`
+import { dialog } from 'electron'
+import { runStandaloneLaunch } from '@moirasia/desktop-shell/main'
+import { feature } from './feature'
+import { BondedRuntimeInUseError } from './runtime-lease'
+import { standaloneContext } from './standalone'
+
+void runStandaloneLaunch({
+  appId: 'bonded',
+  productName: 'Bonded',
+  appUserModelId: 'com.opense.Bonded',
+  platforms: ['darwin'],
+  archs: ['arm64'],
+  userDataEnv: 'BONDED_USER_DATA',
+  contentSecurityPolicy: bondedContentSecurityPolicy,
+  menu: bondedMenu,
+  register: () => feature.register(standaloneContext()),
+  activate: () => feature.activate(),
+  dispose: () => feature.dispose(),
+  onRegisterError: async (error) => {
+    if (error instanceof BondedRuntimeInUseError) {
+      await dialog.showMessageBox({ type: 'info', title: 'Bonded is already running', message: error.message, detail: 'Close the other host before opening standalone Bonded.' })
+      return
+    }
+    await dialog.showMessageBox({ type: 'error', title: 'Bonded could not start', message: error instanceof Error ? error.message : 'An unknown startup error occurred.' })
+  }
+})
+
+function bondedContentSecurityPolicy(rendererUrl: string | undefined): string {
+  // same policy string as today (scriptPolicy dev/packaged split)
+}
+
+function bondedMenu(): MenuItemConstructorOptions[] {
+  // same template as today
 }
 ```
 
-Behaviour is byte-identical to today's matrices (linux/x64-gnu and win32 ignore arch — preserved deliberately).
+The dialogs now run after the module's own `console.error` (additive UX, matching today's visible behavior).
+Verify: `pnpm -C apps/integrated/Bonded typecheck && pnpm -C apps/integrated/Bonded test` + `pnpm -C apps/integrated/Bonded build:renderer` + root gates.
 
-### Resolution rules per host
+### Step 7 — migrate Amove
 
-Each rule below joins a *directory* (composed by the caller from a catalog fact) with the artifact's *filename* (which the shared helper resolves, since it depends on `kind`). A single `(root, artifact)` helper cannot do both halves itself — suite-packaged and standalone-packaged both call it with `root = process.resourcesPath` and no configuration, yet must resolve different directory facts (`suiteResource` vs `standaloneResource`); only the caller knows which mode it's in. So the helper's contract is scoped to the part that actually repeats across ~12 call sites — the kind-dependent filename — and callers compose the directory inline (already a one-liner in every case below):
+New `apps/integrated/Amove/src/main/index.ts`:
 
 ```ts
-export function artifactPath(directory: string, artifact: FeatureArtifact): string
-// join(directory, artifact.kind === 'native' ? nativeAddonFileName(artifact.file!) : artifact.file!)
+import type { MenuItemConstructorOptions } from 'electron'
+import { runStandaloneLaunch } from '@moirasia/desktop-shell/main'
+import { feature } from './feature'
+import { standaloneContext } from './standalone'
+import { contentSecurityPolicy } from './content-security-policy'
+
+void runStandaloneLaunch({
+  appId: 'amove',
+  productName: 'Amove',
+  appUserModelId: 'com.opense.Amove',
+  platforms: ['darwin', 'win32', 'linux'],
+  contentSecurityPolicy,
+  menu: amoveMenu,
+  register: () => feature.register(standaloneContext()),
+  activate: () => feature.activate(),
+  dispose: () => feature.dispose(),
+  quitOnLastWindow: () => process.platform !== 'darwin' && feature.shouldQuitWhenWindowAllClosed()
+})
+
+function amoveMenu(): MenuItemConstructorOptions[] {
+  // same platform-conditional template as today's installStandaloneMenu
+}
 ```
 
-- **Suite packaged:** `artifactPath(join(process.resourcesPath, suiteResource), artifact)` — one rule for every artifact; the `features/amove/native` filter-based directory mappings in `electron-builder.yml` keep working because destinations stay directories.
-- **Suite dev:** `suiteDevSource === 'buildOutput'`
-  → `artifactPath(join(app.getAppPath(), 'apps', 'integrated', directory, buildOutput.replace('{configuration}', 'debug')), artifact)`
-  else → `artifactPath(join(app.getAppPath(), staged), artifact)`.
-- **Standalone packaged:** `artifactPath(join(process.resourcesPath, standaloneResource), artifact)`.
-- **Standalone dev:** `artifactPath(join(appDevRoot, buildOutput.replace('{configuration}', 'debug')), artifact)` — `appDevRoot` stays host-owned (Amove's `import.meta.dirname/../..` vs Orbis's `app.getAppPath()` distinction is window-layout, not artifact, knowledge).
-- Preload/renderer maps, `dataDirectory`, `legacyDataDirectories`: unchanged, host-owned as before.
+`content-security-policy.ts` and its test are untouched. Behavior change: the platform guard now runs after the control check — a control command on an unsupported platform answers the protocol (more robust, unreachable in practice).
+Verify: `pnpm -C apps/integrated/Amove typecheck && pnpm -C apps/integrated/Amove test` + root gates.
 
-Every call site still shrinks to one line (the directory join plus `artifactPath`), but it is a directory-then-artifact call, not a bare-root one — the earlier bare-root framing let the packaged-suite/packaged-standalone ambiguity hide.
+### Step 8 — migrate YN360 (fixes the latent control hang)
 
-## Work items
+New `apps/standalone/YN360/src/main/index.ts`:
 
-### Phase A — catalog gains the facet (root repo, `packages/desktop-shell`)
+```ts
+import { app, dialog } from 'electron'
+import { runStandaloneLaunch } from '@moirasia/desktop-shell/main'
+import { Yn360Controller } from './controller'
+import { standaloneContext } from './standalone'
 
-A1. `src/feature-catalog.ts`:
-- Add `ArtifactKind`, `FeatureArtifact`, `nativeAddonFileName`, `artifactPath` as above.
-- Add `directory` and `artifacts` to each of the four seeds per the facet table; `directory` values: `'Amove'`, `'Exithibition'`, `'Bonded'`, `'Orbis'`.
-- Extend `buildCatalog()` validation (Q9 rules) — plus: `assets` kind must not carry `file`; `staged`/`suiteResource`/`standaloneResource` non-empty. (No separate check that `nativeAddonFileName(file)` ends in `.node` — every branch of that function appends `.node` unconditionally, so the check can never fail; the meaningful assertion is Q9 rule 3, that the input `file` doesn't already carry the suffix.)
-- Update the header comment: artifacts facts are catalog-owned; hosts resolve them. Export the new names from `src/feature.ts` (re-export block) and `src/index.ts` as needed.
+const controller = new Yn360Controller()
+void runStandaloneLaunch({
+  appId: 'yn360',
+  productName: 'YN360 Controller',
+  appUserModelId: 'com.yn360.controller',
+  platforms: ['darwin'],
+  archs: ['arm64'],
+  contentSecurityPolicy: yn360ContentSecurityPolicy,
+  menu: yn360Menu,
+  register: () => {
+    app.setAboutPanelOptions({ applicationName: 'YN360 Controller', applicationVersion: app.getVersion(), copyright: 'Copyright 2026 YN360 Controller contributors' })
+    return controller.start(standaloneContext())
+  },
+  activate: () => controller.activate(),
+  dispose: () => controller.dispose(),
+  onRegisterError: async (error) => {
+    await dialog.showMessageBox({ type: 'error', title: 'YN360 Controller could not start', message: error instanceof Error ? error.message : 'An unknown startup error occurred.' })
+  }
+})
 
-A2. No change to `application-catalog.ts` (Q5 keeps the Swift agent out of scope).
+function yn360ContentSecurityPolicy(rendererUrl: string | undefined): string {
+  // same policy string as today
+}
 
-### Phase B — suite consumers (root repo)
-
-B1. New `src/main/features/suite-context.ts`:
-- Move `suiteFeatureContext` + `assertNever` out of `runtime.ts`; delete `nativeAddonName()`.
-- Each feature case becomes a join: catalog entry + `artifactPath` + host roots (`process.resourcesPath`, `app.getAppPath()`, `paths.preload/renderer` for Amove's shelf — that map stays in `paths.ts`).
-- Exithibition case switches to the normalized staged layout (dev unchanged: `.build/…/debug` via `buildOutput`).
-- `runtime.ts` re-exports `suiteFeatureContext` for its existing importers/tests so no caller moves.
-
-B2. `scripts/stage-feature-binaries.mjs`: rewrite only the Exithibition staging lines to the normalized path (`native/staged/features/exithibition/native/`); all other literals already match the catalog and stay (they are pinned, not derived — Q5). Keep the bespoke build commands per app; they are toolchain facts, not paths.
-
-B3. `electron-builder.yml`: replace the Exithibition mapping with the uniform one:
-```yaml
-  - from: native/staged/features/exithibition/native
-    to: features/exithibition/native
+function yn360Menu(): MenuItemConstructorOptions[] {
+  // same template as today
+}
 ```
-Other mappings unchanged (already catalog-shaped).
 
-B4. `package.json` `features:worker`: no change (the outDir literal is pinned by the contract test, not duplicated in TS).
+The lock moves after the control check: control commands while the app runs now answer instead of hanging.
+Verify: `pnpm -C apps/standalone/YN360 typecheck && pnpm -C apps/standalone/YN360 test` + root gates.
 
-### Phase C — standalone app consumers (app repos; each app must keep building standalone)
+### Step 9 — architecture doc
 
-C1. `apps/integrated/Amove/src/main/standalone.ts`: delete `standaloneNativeName()`; import `featureCatalog` + `artifactPath` from `@moirasia/desktop-shell/feature`; native path = `artifactPath(appRoot/native root, addon artifact)`; assets directory = `join(appRoot, 'assets')` (app-internal, stays a literal per facet-table note ¹).
+Update the paragraph in `docs/architecture/standalone-applications.md` that says the standalone entries "stay thin and keep only identity and platform scoping: `app.setName`, the bundle id, the single-instance lock, login-item control, host-specific menus, and quitting when all windows close" to:
 
-C2. `apps/integrated/Orbis/src/main/standalone.ts`: delete `nativeAddonName()`; derive worker/metadata paths via `artifactPath` + `standaloneResource`/`buildOutput`.
+> The standalone launcher (`runStandaloneLaunch`, `@moirasia/desktop-shell/main`) owns the standalone launch sequence: the login-item control branch, the single-instance lock, ready-time registration, activation re-focus, quit policy, and awaited teardown. Entry files keep only app facts — identity, platform scope, the `userData` override env, the menu template, the CSP policy, failure-dialog copy, and Amove's quit predicate. The control check precedes the platform guard and the lock, so a control command always answers. Product behavior still lives in each app repository; the suite host is untouched.
 
-C3. `apps/integrated/Exithibition/src/main/standalone.ts` and `apps/integrated/Bonded/src/main/standalone.ts`: same treatment; dev paths via `buildOutput` with `debug`, packaged via `standaloneResource`.
+### Step 10 — final gates
 
-C4. Optional follow-up (not this change): Orbis app tests (`orbis-bulk-node-parity`, `orbis-fsevents-live`) may import `nativeAddonFileName` instead of recomputing the filename.
+```
+pnpm typecheck && pnpm test
+pnpm -C apps/integrated/Amove typecheck && pnpm -C apps/integrated/Amove test
+pnpm -C apps/integrated/Exithibition typecheck && pnpm -C apps/integrated/Exithibition test
+pnpm -C apps/integrated/Bonded typecheck && pnpm -C apps/integrated/Bonded test
+pnpm -C apps/integrated/Orbis typecheck && pnpm -C apps/integrated/Orbis test
+pnpm -C apps/standalone/YN360 typecheck && pnpm -C apps/standalone/YN360 test
+```
 
-### Phase D — tests (root repo)
+Then the repo's full gate `pnpm ui:verify` (baseline it before starting; pre-existing unrelated failures don't block this change).
 
-D1. New `tests/feature-artifacts.test.ts`:
-- Facet table pins: per feature, artifact `name`/`kind`/`file`/`staged`/`suiteResource`/`standaloneResource`/`suiteDevSource`/`directory` match the table above.
-- Platform matrix: `nativeAddonFileName('amove-native' | 'orbis-metadata')` across darwin arm64/x64, win32, linux — byte-exact.
-- Catalog validation: a hostile seed (requirement name without artifact; duplicate artifact name; native artifact with `.node` suffix) throws — tested via a small seed-fixture harness or by asserting on the built catalog's invariants plus a direct `buildCatalog`-style check if the builder is exported; if not exported, pin via the public catalog and keep hostile-seed cases out (builder stays private).
-- Requirement↔artifact alignment: for every entry and host mode, each `native`/`workers` requirement name resolves to an artifact.
-- Contract pins (text reads, `existsSync`-guarded so app-repo absence fails loudly):
-  - `scripts/stage-feature-binaries.mjs` contains every artifact's `staged` path and source layout.
-  - `electron-builder.yml` contains `from: <staged>` + `to: <suiteResource>` for every artifact.
-  - `package.json` `features:worker` contains the Orbis worker `staged` dir.
-  - Each app's `electron-builder.yml` contains its `standaloneResource` and (for single-file kinds) the `file`.
+### Manual smoke checklist (per migrated app)
 
-D2. `tests/feature-paths.test.ts`: extend from one Bonded describe-block to all four features × dev/packaged, literal final paths (Q10). Bonded's existing two tests keep their exact strings.
+- `pnpm -C apps/integrated/<App> dev`: app launches; Dock/menu product name correct.
+- Second launch focuses the first instance (`second-instance`).
+- Quit fully tears down: process exits promptly, no orphaned native helpers (Exithibition especially).
+- Login-item toggle from the Moirasia General page answers the protocol (family apps).
+- `ORBIS_USER_DATA` / `BONDED_USER_DATA` override honored (data lands in the override dir).
+- CSP header present in devtools (network panel) in dev; locked down when packaged (`package:dir`).
+- Amove: `presenceMode: 'taskbar'` on darwin keeps the app running with all windows closed.
+- YN360: `--moirasia-control=login-item:get` while the app is running **answers** (the fixed hang).
 
-D3. `tests/feature-runtime.test.ts`: unaffected (loader fakes); keep the `ExithibitionNative` fixture string or rename to match the new layout — cosmetic either way.
+## 8. Behavior-change ledger (intended)
 
-D4. `tests/feature-catalog.test.ts`: add facet pins (artifact counts per feature: Amove 2, Exithibition 1, Bonded 1, Orbis 2; `directory` values; freeze depth covers `entry.artifacts`).
+| App | Change | Why |
+|---|---|---|
+| Exithibition | `before-quit` awaits `dispose()`; `setName` at module scope; `setAppUserModelId('com.local.Exithibition')`; activation inside control branch | teardown-on-quit bug + drift |
+| Orbis | `activate`/`window-all-closed`/`before-quit` no longer fire in control mode | drift bug |
+| YN360 | lock after control check | control hang |
+| Amove | platform guard after control check | protocol always answers; unreachable in practice |
+| Bonded, YN360 | failure dialogs run after the module's own `console.error` | additive UX, same visible behavior |
+| All | control-chain rejection → `console.error` + `exit(1)` (Amove, Exithibition lacked it — unhandled rejection today; Bonded, Orbis, YN360 already had it) | one error funnel |
 
-### Phase E — docs and domain vocabulary
+## 9. Risks and mitigations
 
-E1. `docs/architecture/standalone-applications.md`: revise the catalog paragraph — the feature catalog additionally owns artifact facts (filenames, staged paths, suite-packaged destinations, dev build layouts, platform `.node` naming); hosts resolve them through `artifactPath`; resource paths are no longer "explicit in each host," they are *facts in the catalog, resolved by each host*. Update the staging/packaging paragraph for the Exithibition normalization.
+1. **`vi.mock` double fidelity** (it fakes event semantics, not real Electron): mitigated by the manual smoke checklist + per-app Playwright e2e suites.
+2. **Exithibition's deferred `setName` might have been deliberate**: module-scope is Electron-standard; smoke-verify the Dock name; if ever needed, add a named field only when a second app needs it.
+3. **Bundler cycles after the split**: `login-item-control.ts` imports nothing from `main.ts`; `standalone-launch.ts` imports only from it — verified acyclic by typecheck + each app's `build:app`.
+4. **Quit during startup** (dispose before register settles): parity with today — features already tolerate (`controller?.dispose()`); documented as an invariant.
+5. **Rollback**: every step is an independent commit; each app can revert independently; the module is additive until adopted.
 
-E2. `README.md`: no build-command changes; nothing user-visible moves except nothing — packaging output layout changes only for Exithibition inside the suite bundle.
+## 10. Out of scope
 
-E3. `CONTEXT.md` (new, repo root): record the domain terms this plan relies on — controller, feature host, embedded feature, standalone application, feature catalog, application catalog, feature runtime, `FeatureContext`, host mode, **artifact fact** (the new term this deepening introduces), staged resources — with one-line definitions and a pointer to the architecture doc.
+- Vox (Bun workflow, tray/overlay/lease lifecycle — different shape).
+- LiteMaptica, Mini-NSW, Semiquaver (not audited; the launcher is available to them when they want it).
+- Review candidates 2–6 (durable JSON store, artifact join, legacy field deletion, appearance defaults, authorize helper).
+- The suite host, the `MoirasiaFeature` contract, `runLoginItemControl` behavior itself.
 
-## Sequencing
+## 11. Success criteria
 
-1. **Phase A** lands first (catalog types + data + validation). Green on its own: nothing consumes the facet yet; existing tests pass unchanged.
-2. **Phase B** same commit or immediately after (suite resolver + normalizations). `pnpm typecheck && pnpm test` must stay green; the Exithibition path change is invisible until packaging.
-3. **Phase C** app repos next — each app `pnpm -C apps/integrated/<App> typecheck && test` after its edit. App repos are gitignored by the root; commit in each app's own git.
-4. **Phase D** tests with/after B (root) — the contract pins must exist before anyone edits staging paths again.
-5. **Phase E** docs last.
-
-## Verification matrix
-
-Root repo:
-- `pnpm typecheck`
-- `pnpm test` — new artifacts tests + extended path tests green; no other suite regressions
-- `pnpm build` → `release/`-staged `native/staged/features/exithibition/native/ExithibitionNative` exists; `out/` build clean
-- `pnpm dist:mac` smoke (optional but recommended once): packaged app contains `Resources/features/exithibition/native/ExithibitionNative` and all four features load (Features page, each tab mounts)
-- `rg -n "ExithibitionNative" src scripts electron-builder.yml` → matches only catalog-expected sites
-- `rg -n "darwin-.*\.node|win32-x64-msvc|linux-x64-gnu" src apps/integrated/*/src/main` → only the catalog (no matrix duplicates left)
-
-Per app: `pnpm -C apps/integrated/<App> typecheck && pnpm -C apps/integrated/<App> test` (all four), plus `pnpm -C apps/integrated/<App> dev` smoke for Amove and Orbis (native/worker actually loads).
-
-## Risks and mitigations
-
-- **Packaged-layout change for Exithibition (normalization).** Mitigation: verified nothing pins the old path (tests, sign script, agent); `pnpm dist:mac` smoke in the verification matrix; the suite rebuilds its own bundle, so no user-side migration applies.
-- **App repos drift from the catalog.** The apps gitignore the root's history and consume the catalog via `file:../../../packages/desktop-shell` — a catalog change lands for them on their next install. Mitigation: the contract pins (D1) run in the root and read the app files as text, so a root-side catalog change that contradicts an app file fails the root suite immediately; app repos' `pnpm install` refreshes the link before their typecheck.
-- **The stage script's release-vs-debug divergence.** The script builds release; suite dev reads debug from app `.build` dirs (Amove/Exithibition/Bonded) or staged copies (Orbis). This plan records it as data (`suiteDevSource`) rather than normalizing it — changing when `pnpm dev` builds/stages what is out of scope.
-- **Contract pins are string-level.** A reformat of `electron-builder.yml` could break pins without semantic drift. Mitigation: pins match on `from:`/`to:` line pairs, tolerant of ordering; failures point at the catalog table as the reference.
-
-## Out of scope
-
-- Preload/renderer page facts (Q4) and the `electron.vite.config.ts` entry list.
-- The application agent's staging and its Swift product table (controller facts, already pinned).
-- App-repo `electron-builder.yml` generation (their ymls stay app-owned; filenames are contract-pinned).
-- Deriving builder config or scripts from the catalog at build time (Q5 — pins instead).
-- Orbis `suiteDevSource` normalization and `pnpm dev` staging-flow changes.
-- Orbis app tests switching to `nativeAddonFileName` (optional follow-up, C4).
-- The runtime-lease collapse (review candidate #1) and the desktop-shell split (#3) — separate changes.
-
-## Definition of done
-
-- Every artifact filename, staged path, suite-packaged destination, dev build layout, and the platform `.node` matrix exists exactly once, in `feature-catalog.ts`; the three `nativeAddonName`/`standaloneNativeName` duplicates are deleted.
-- `suiteFeatureContext` lives in its own module and every path it returns is a catalog fact joined with a host root; `FeatureRuntime`'s module keeps only lifecycle.
-- The four `standalone.ts` files resolve paths from the catalog; no packaged-mode filename literals remain in any app repo's context builder.
-- The contract test pins stage script, root builder yml, root `package.json` worker outDir, and the four app builder ymls against the catalog — adding a feature's artifacts starts with one catalog entry plus the bespoke build commands, and any drift turns a test red.
-- All four apps still build, typecheck, and test green as standalone apps; the suite typechecks, tests, builds, and packages green.
-- The architecture doc and new `CONTEXT.md` describe artifacts as catalog-owned facts resolved by hosts.
+- Five entry files are data specs; the `runStandaloneLaunch` call itself is ≈10–20 lines in every case, and the launch sequence exists exactly once. Total file length still varies with how much app-owned template code stays inline: Exithibition ~12 lines and Amove ~25 (its CSP already lives in a separate file), but Orbis, Bonded, and YN360 keep non-trivial CSP-string and menu-template functions in the entry file (carried over verbatim) and land around 40–45 lines — still well down from today's 57/47/51, just not uniformly ≤30.
+- The drift bugs are dead: Exithibition teardown-on-quit, Orbis control-mode activation, YN360 control hang.
+- The §3 test matrix is green through the module's interface; root and per-app typecheck/test/build green.
+- Deletion test holds: removing the module would scatter the sequence back across five callers.
+- Adding the next family app requires only a spec object — leverage: one interface, five adapters, N future apps.
