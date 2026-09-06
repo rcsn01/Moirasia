@@ -27,8 +27,8 @@ const exithibitionRoot = 'apps/integrated/Exithibition'
 const result = spawnSync('env', ['-u', 'SDKROOT', 'CLANG_MODULE_CACHE_PATH=/private/tmp/exithibition-module-cache', 'swift', 'build', '--disable-sandbox', '-c', 'release', '--arch', 'arm64'], { cwd: exithibitionRoot, stdio: 'inherit' })
 if (result.status !== 0) process.exit(result.status ?? 1)
 
-mkdirSync('native/staged/features', { recursive: true })
-copyFileSync(`${exithibitionRoot}/.build/arm64-apple-macosx/release/ExithibitionNative`, 'native/staged/features/ExithibitionNative')
+mkdirSync('native/staged/features/exithibition/native', { recursive: true })
+copyFileSync(`${exithibitionRoot}/.build/arm64-apple-macosx/release/ExithibitionNative`, 'native/staged/features/exithibition/native/ExithibitionNative')
 
 const bondedRoot = 'apps/integrated/Bonded'
 run('pnpm', ['native:release'], bondedRoot)

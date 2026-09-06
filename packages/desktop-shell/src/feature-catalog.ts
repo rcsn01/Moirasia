@@ -1,10 +1,15 @@
 /**
  * The feature catalog: the single owner of every shared fact about the four
  * embedded features — identity, labels, bundle and executable names,
- * descriptions, display groups, icon keys, order, and per-host-mode resource
- * requirements. Pure data: no Electron, React, filesystem, or product-package
- * imports. Host-specific code (literal dynamic imports, renderer panel
- * adapters, preload bridge exposure, resource paths) stays with its host.
+ * descriptions, display groups, icon keys, order, per-host-mode resource
+ * requirements, and artifact facts: every binary, worker, and asset bundle a
+ * feature ships, its filename, the dev build layout it comes from, where
+ * staging places it, and where packaged resources land. Pure data and pure
+ * string helpers: no Electron, React, filesystem, or product-package imports
+ * (not even node:path — the suite renderer bundles this module). Hosts join
+ * the facts with their own roots via artifactPath; resolution, literal
+ * dynamic imports, renderer panel adapters, and preload bridge exposure stay
+ * with the host.
  */
 
 export type FeatureHostMode = 'suite' | 'standalone'
@@ -26,6 +31,56 @@ export interface FeatureResourceRequirements {
 
 export interface FeatureGroupId { id: string; label: string }
 
+/** Artifact roles mirror the requirement tables: a host validates 'native.addon',
+ *  the catalog says what that file is and where it lives. */
+export type ArtifactKind = 'native' | 'executable' | 'worker' | 'assets'
+
+export interface FeatureArtifact {
+  /** Symbolic name matching the per-mode requirements tables ('addon', 'helper', 'executable', 'scan', …). */
+  readonly name: string
+  readonly kind: ArtifactKind
+  /**
+   * kind 'native': napi base name — the real filename comes from nativeAddonFileName(base, …).
+   * other kinds: exact filename ('ExithibitionNative', 'scan-worker.mjs'); kind 'assets' carries none.
+   */
+  readonly file?: string
+  /** Where the build output lands inside the app repo, relative to the app root. `{configuration}` → 'debug' | 'release'. */
+  readonly buildOutput: string
+  /** Suite-repo-relative path the staging script places the artifact at (directory for multi-file kinds). */
+  readonly staged: string
+  /** Suite-packaged destination under Contents/Resources (directory; the filename inside is `file`). */
+  readonly suiteResource: string
+  /** Which source the suite trusts in development: the app's own build output, or the staged copy. */
+  readonly suiteDevSource: 'buildOutput' | 'staged'
+  /** Destination under the app's own Contents/Resources in standalone packaging. */
+  readonly standaloneResource: string
+}
+
+/** The platform `.node` naming matrix for napi addons — one copy for every host
+ * that loads a native addon. Linux and win32 names ignore the arch, deliberately. */
+export function nativeAddonFileName(
+  base: string,
+  platform: NodeJS.Platform = process.platform,
+  arch: NodeJS.Architecture = process.arch
+): string {
+  const a = arch === 'arm64' ? 'arm64' : 'x64'
+  if (platform === 'darwin') return `${base}.darwin-${a}.node`
+  if (platform === 'win32') return `${base}.win32-x64-msvc.node`
+  return `${base}.linux-x64-gnu.node`
+}
+
+/** Join a host-owned directory (a root composed with a catalog destination fact)
+ *  with the artifact's kind-dependent filename. 'assets' artifacts are directories
+ *  and return the directory itself. The join is a pure string concat so this
+ *  module stays renderer-bundlable; facts use '/' separators and roots arrive
+ *  absolute, which every Node and Electron API accepts on every platform. */
+export function artifactPath(directory: string, artifact: FeatureArtifact): string {
+  if (artifact.kind === 'assets') return directory
+  const file = artifact.kind === 'native' ? nativeAddonFileName(artifact.file!) : artifact.file!
+  const separator = directory.endsWith('/') || directory.endsWith('\\') ? '' : '/'
+  return `${directory}${separator}${file}`
+}
+
 /** The four embedded features. The catalog seeds below and this union must stay in sync;
  * tests pin the exact list and every Record<FeatureId, …> consumer enforces exhaustiveness. */
 export type FeatureId = 'amove' | 'exithibition' | 'bonded' | 'orbis'
@@ -38,7 +93,9 @@ export interface FeatureCatalogEntry {
   readonly bundleId: string       // standalone bundle identifier
   readonly iconKey: FeatureIconKey
   readonly groupId: string
+  readonly directory: string      // app repo directory name under apps/integrated
   readonly requirements: Readonly<Record<FeatureHostMode, FeatureResourceRequirements>>
+  readonly artifacts: readonly FeatureArtifact[]
 }
 
 const GROUPS = [
@@ -55,10 +112,17 @@ const FEATURE_SEEDS = [
     description: 'Move windows between displays and stage files on its floating Shelf.',
     iconKey: 'app-window',
     groupId: 'window-management',
+    directory: 'Amove',
     requirements: {
       standalone: { preloads: ['main', 'shelf'], renderers: ['main', 'shelf'], native: ['addon'], assetsDirectory: true, dataDirectory: true },
       suite: { preloads: ['shelf'], renderers: ['shelf'], native: ['addon'], assetsDirectory: true, dataDirectory: true }
-    }
+    },
+    artifacts: [
+      // Standalone assets are asar-embedded (files: assets/**/*), not an extraResource;
+      // standaloneResource records the app-internal convention.
+      { name: 'addon', kind: 'native', file: 'amove-native', buildOutput: 'native', staged: 'native/staged/features/amove/native', suiteResource: 'features/amove/native', suiteDevSource: 'buildOutput', standaloneResource: 'native' },
+      { name: 'assets', kind: 'assets', buildOutput: 'assets', staged: 'native/staged/features/amove/assets', suiteResource: 'features/amove/assets', suiteDevSource: 'buildOutput', standaloneResource: 'assets' }
+    ]
   },
   {
     id: 'exithibition',
@@ -68,10 +132,14 @@ const FEATURE_SEEDS = [
     description: 'Live Apple-silicon telemetry rendered as an interactive hardware schematic.',
     iconKey: 'activity',
     groupId: 'monitoring',
+    directory: 'Exithibition',
     requirements: {
       standalone: { preloads: ['main'], renderers: ['main'], native: ['executable'], dataDirectory: true },
       suite: { native: ['executable'], dataDirectory: true }
-    }
+    },
+    artifacts: [
+      { name: 'executable', kind: 'executable', file: 'ExithibitionNative', buildOutput: '.build/arm64-apple-macosx/{configuration}', staged: 'native/staged/features/exithibition/native', suiteResource: 'features/exithibition/native', suiteDevSource: 'buildOutput', standaloneResource: 'native' }
+    ]
   },
   {
     id: 'bonded',
@@ -81,10 +149,15 @@ const FEATURE_SEEDS = [
     description: 'Monitor network activity and block destinations learned from selected applications.',
     iconKey: 'shield-check',
     groupId: 'monitoring',
+    directory: 'Bonded',
     requirements: {
       standalone: { preloads: ['main'], renderers: ['main'], native: ['helper'], dataDirectory: true },
       suite: { native: ['helper'], dataDirectory: true }
-    }
+    },
+    artifacts: [
+      // A SwiftPM executable like Exithibition's: exact filename, not a napi base name.
+      { name: 'helper', kind: 'executable', file: 'BondedFirewallHelper', buildOutput: 'native/.build/arm64-apple-macosx/{configuration}', staged: 'native/staged/features/bonded/native', suiteResource: 'features/bonded/native', suiteDevSource: 'buildOutput', standaloneResource: 'native' }
+    ]
   },
   {
     id: 'orbis',
@@ -94,10 +167,16 @@ const FEATURE_SEEDS = [
     description: 'Read-only disk usage scanning with a sunburst view of the folders taking space.',
     iconKey: 'bar-chart-3',
     groupId: 'monitoring',
+    directory: 'Orbis',
     requirements: {
       standalone: { preloads: ['main'], renderers: ['main'], workers: ['scan'], dataDirectory: true },
       suite: { workers: ['scan'], dataDirectory: true }
-    }
+    },
+    artifacts: [
+      // The suite trusts the staged copies: features:worker/features:native place them there in predev.
+      { name: 'metadata', kind: 'native', file: 'orbis-metadata', buildOutput: 'native', staged: 'native/staged/features/orbis/native', suiteResource: 'features/orbis/native', suiteDevSource: 'staged', standaloneResource: 'features/orbis/native' },
+      { name: 'scan', kind: 'worker', file: 'scan-worker.mjs', buildOutput: 'worker-dist', staged: 'native/staged/features/orbis/worker', suiteResource: 'features/orbis/worker', suiteDevSource: 'staged', standaloneResource: 'features/orbis/worker' }
+    ]
   }
 ] as const satisfies readonly FeatureCatalogEntry[]
 
@@ -129,6 +208,9 @@ function buildCatalog(): FeatureCatalog {
   const groupIds = new Set<string>(GROUPS.map((group) => group.id))
   const ids = new Set<string>()
   const bundleIds = new Set<string>()
+  // A native: requirement may name a napi addon ('native') or a plain native binary ('executable') —
+  // both land in the paths.native map, so requirement-bucket and ArtifactKind names are not the same check.
+  const nativeRequirementKinds: ReadonlySet<ArtifactKind> = new Set(['native', 'executable'])
   for (const seed of FEATURE_SEEDS) {
     if (ids.has(seed.id)) throw new Error(`Feature catalog has a duplicate id '${seed.id}'.`)
     if (bundleIds.has(seed.bundleId)) throw new Error(`Feature catalog has a duplicate bundle id '${seed.bundleId}'.`)
@@ -136,7 +218,36 @@ function buildCatalog(): FeatureCatalog {
     if (!seed.label.trim()) throw new Error(`Feature '${seed.id}' has an empty label.`)
     if (!seed.description.trim()) throw new Error(`Feature '${seed.id}' has an empty description.`)
     if (!seed.executableName.trim()) throw new Error(`Feature '${seed.id}' has an empty executable name.`)
+    if (!seed.directory.trim()) throw new Error(`Feature '${seed.id}' has an empty directory.`)
     if (!seed.requirements.standalone || !seed.requirements.suite) throw new Error(`Feature '${seed.id}' is missing requirements for a host mode.`)
+
+    const artifactNames = new Set<string>()
+    for (const seedArtifact of seed.artifacts) {
+      const artifact: FeatureArtifact = seedArtifact
+      if (artifactNames.has(artifact.name)) throw new Error(`Feature '${seed.id}' has a duplicate artifact name '${artifact.name}'.`)
+      artifactNames.add(artifact.name)
+      if (!artifact.staged.trim() || !artifact.suiteResource.trim() || !artifact.standaloneResource.trim()) {
+        throw new Error(`Feature '${seed.id}' artifact '${artifact.name}' is missing a staged or resource destination.`)
+      }
+      if (artifact.kind === 'assets') {
+        if (artifact.file) throw new Error(`Feature '${seed.id}' assets artifact '${artifact.name}' must not carry a filename.`)
+      } else if (!artifact.file?.trim()) {
+        throw new Error(`Feature '${seed.id}' artifact '${artifact.name}' is missing a filename.`)
+      } else if (artifact.kind === 'native' && artifact.file.endsWith('.node')) {
+        throw new Error(`Feature '${seed.id}' native artifact '${artifact.name}' must carry a napi base name, not '${artifact.file}'.`)
+      }
+    }
+    for (const mode of ['standalone', 'suite'] as const) {
+      const requirements: FeatureResourceRequirements = seed.requirements[mode]
+      for (const name of requirements.native ?? []) {
+        const artifact = seed.artifacts.find((candidate) => candidate.name === name)
+        if (!artifact || !nativeRequirementKinds.has(artifact.kind)) throw new Error(`Feature '${seed.id}' requires a native artifact named '${name}' for ${mode}.`)
+      }
+      for (const name of requirements.workers ?? []) {
+        const artifact = seed.artifacts.find((candidate) => candidate.name === name)
+        if (!artifact || artifact.kind !== 'worker') throw new Error(`Feature '${seed.id}' requires a worker artifact named '${name}' for ${mode}.`)
+      }
+    }
     ids.add(seed.id)
     bundleIds.add(seed.bundleId)
   }
@@ -146,7 +257,8 @@ function buildCatalog(): FeatureCatalog {
       standalone: freezeRequirements(seed.requirements.standalone),
       suite: freezeRequirements(seed.requirements.suite)
     }
-    return Object.freeze({ ...seed, requirements: Object.freeze(requirements) }) as FeatureCatalogEntry
+    const artifacts = Object.freeze(seed.artifacts.map((artifact) => Object.freeze({ ...artifact })))
+    return Object.freeze({ ...seed, requirements: Object.freeze(requirements), artifacts }) as FeatureCatalogEntry
   })
   const groups = GROUPS.map((group) => Object.freeze({
     id: group.id,

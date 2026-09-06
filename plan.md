@@ -1,253 +1,265 @@
-# Plan: move Vox out of the Moirasia suite into `apps/standalone`
+# Plan: complete the feature catalog — one owner for artifact facts
 
-Move the Vox repository from `apps/integrated/Vox` to `apps/standalone/Vox`, remove Vox from the suite's embedded-feature system, and have standalone Vox adopt the data that the embedded feature accumulated.
+The feature catalog (`packages/desktop-shell/src/feature-catalog.ts`) is declared "the single owner of every shared fact about the four embedded features," yet the heaviest facts — artifact filenames, staged paths, packaged resource destinations, and dev build layouts — live in four places outside it. Adding one embedded feature today means editing five files and hoping four of them agree. This plan finishes the catalog: it gains an **artifacts facet** that names every binary, worker, and asset bundle a feature ships, where the build stages it, and where packaged resources land — as pure data. Hosts keep resolving; the facts stop being duplicated.
 
-## Decisions (confirmed)
+## Decisions
 
-1. **Full de-integration.** The repo splits product repositories by suite support: `apps/integrated/` holds products embedded in the Moirasia window, `apps/standalone/` holds independent apps (YN360, LiteMaptica, Mini-NSW, Semiquaver). Moving the directory therefore means removing the embedding, not just changing paths. Vox becomes standalone-only, like YN360.
-2. **Vox stays in the Applications menu.** Command+2 keeps opening the standalone Vox bundle. The menu, controller, agent, login-item control, and appearance registration keep treating Vox as one of the five family applications; only the embedded panel goes away.
-3. **Reverse-migrate suite data.** On first standalone launch after the move, Vox merges `Application Support/Moirasia/features/vox/vox.sqlite` back into `Application Support/Vox/vox.sqlite`, then removes the suite copy.
+Grilling was run against the full decision tree; per instruction every fork took the recommended answer. Record below — each decision names the fork, the recommended answer taken, and why it beat the alternative.
 
-## Why the panel must go
+### Round 1 — scope and shape
 
-`docs/architecture/standalone-applications.md` defines the split: "Independent product repositories are split by suite support." Keeping the panel while moving the directory would make `apps/standalone` a lie in the tree layout and would leave two catalogs disagreeing about what Vox is. The embedded panel, the suite overlay hosting, the suite staging of VoxNative, and the suite-side runtime lease all die with the embedding. What survives: the Vox bundle itself, its appearance product, its login-item protocol, and its slot in the Applications menu.
+**Q1 · What does the artifacts facet own?**
+➡️ **Filenames + build layouts + staged paths + packaged destinations, as pure data templates.** Not resolved paths — the catalog never resolves (no Electron, no fs). Hosts join facts with roots. Filename-only was rejected because staged/destination paths are the facts that actually drift (the Exithibition flat path proves it); full path resolution in the catalog was rejected because it would violate the catalog's documented purity.
 
-## What Vox integration touches today (inventory)
+**Q2 · Who owns the native-addon platform filename matrix?**
+➡️ **A pure function in the catalog: `nativeAddonFileName(base, platform?, arch?)`.** It replaces three verbatim duplicates: `nativeAddonName()` in `runtime.ts`, `nativeAddonName()` in Orbis `standalone.ts`, and `standaloneNativeName()` in Amove `standalone.ts`. Platform/arch become parameters (accept dependencies, don't create them) so the matrix is testable without touching `process`.
 
-Verified by search; every path below is referenced from the root repo today.
+**Q3 · Normalize Exithibition's flat staging?**
+➡️ **Yes.** `native/staged/features/ExithibitionNative` → `native/staged/features/exithibition/native/ExithibitionNative`, and its packaged destination `native/ExithibitionNative` → `features/exithibition/native/ExithibitionNative`. This removes the one special case so every artifact follows one rule: staged `native/staged/features/<id>/<dir>`, suite destination `features/<id>/<dir>`. Only the suite is affected — Exithibition's own bundle keeps `native/ExithibitionNative`. Nothing in tests or scripts pins the old flat path (verified: only `tests/feature-runtime.test.ts` uses `ExithibitionNative` inside an arbitrary `/tmp` fixture).
 
-Suite host (root repo):
+**Q4 · Do preload/renderer page facts join the facet?**
+➡️ **No.** They are build-config wiring (`electron.vite.config.ts` entries, `paths.ts` maps, per-app build outputs), a different mechanism that the architecture doc deliberately leaves host-explicit. Conflating them would widen the facet without removing a real duplication.
 
-| File | Vox coupling |
-| --- | --- |
-| `packages/desktop-shell/src/feature-catalog.ts` | `'vox'` entry in `FeatureId`, `FEATURE_SEEDS`, `FeatureIconKey` (`mic`), `GROUPS` (`voice`), requirements for both host modes |
-| `packages/desktop-shell/src/index.ts` | `PRODUCT_IDS = ['moirasia', ...FEATURE_IDS, 'yn360']` (vox arrives via `FEATURE_IDS`) |
-| `src/shared/contracts.ts` | `APPLICATION_IDS = FEATURE_IDS`, `ApplicationId = FeatureId`, `ControllerPage = 'general' \| 'features' \| FeatureId` |
-| `src/main/features/runtime.ts` | `LOADERS.vox` literal dynamic import of `apps/integrated/Vox/src/main/feature`; the `'vox'` case in `suiteFeatureContext` (overlay preload/renderer paths, VoxNative path, suite data dir, legacy dir) |
-| `src/main/paths.ts` | `feature-vox-overlay` preload and renderer page entries |
-| `src/preload/shell.ts` | imports `createVoxBridge` from Vox, exposes `window.vox` |
-| `src/renderer/shell/app.tsx` | lazy `VoxPanel` import; `PRIMARY_PANELS.vox` |
-| `src/renderer/shell/global.d.ts` | `window.vox: VoxAPI` |
-| `src/renderer/shell/styles.css` | `@import "../../../apps/integrated/Vox/src/renderer/styles.css"` |
-| `src/renderer/shell/controller.ts` | `EMPTY` snapshot builds `applications` from `featureCatalog.entries`; appearances include `vox` |
-| `src/renderer/shell/screens/features.tsx` | Features page renders `featureCatalog.groups` (vox in the `voice` group) |
-| `src/renderer/shell/feature-icons.tsx` | `mic` icon entry |
-| `src/main/menu.ts` | Applications submenu from `featureCatalog.entries`; Command+2 is Vox |
-| `src/main/application-controller.ts` | application list, labels, bundle ids from `featureCatalog` |
-| `src/main/ipc.ts` | guards use `isApplicationId` for all handlers including install/uninstall/openFeature |
-| `src/main/settings.ts` | v3 settings keyed by `ApplicationId`; `features.vox` flag may exist in stores |
-| `electron.vite.config.ts` | `feature-vox-overlay` preload entry; `feature-vox-overlay` renderer entry (`apps/integrated/Vox/overlay.html`) |
-| `electron-builder.yml` | `native/staged/features/vox/native` extraResource; `NSMicrophoneUsageDescription`, `NSSpeechRecognitionUsageDescription`, `NSAppleEventsUsageDescription` on the Moirasia bundle |
-| `scripts/stage-feature-binaries.mjs` | builds and stages VoxNative from `apps/integrated/Vox/native` |
-| `scripts/sign-after-pack.mjs` | ad-hoc codesigns the staged VoxNative |
-| `scripts/check-ui-ownership.mjs` | Vox renderer root, `.vox-feature-panel` rules, vox product-color and icon allowlists |
-| `package.json` | `predev` builds Vox native debug; `test:dev-ready:all` checks `apps/integrated/Vox`; `ui:verify` runs `bun --cwd apps/integrated/Vox` typecheck and tests |
-| `tsconfig.node.json`, `tsconfig.react.json` | include `apps/integrated/Vox/src/**` |
-| `native/application-agent/main.swift` | `Product(id: "vox", ... bundleIdentifier: "com.moirasia.vox")` — stays unchanged |
-| `tests/*` | see the test section below |
-| `README.md`, `docs/architecture/standalone-applications.md` | describe Vox as an embedded feature, suite data import, runtime lease |
+**Q5 · How do non-TS consumers (stage script, `electron-builder.yml`) relate to the catalog?**
+➡️ **Contract pins, not imports.** The stage script is a plain `.mjs` (no TS loader available: no `tsx`, `js-yaml` not importable) and the builder config is YAML. Both stay hand-written; a new contract test reads them as text and asserts every catalog fact appears in them. This is the pattern the repo already uses for the Swift application agent (`platform-integration.test.ts` pins `main.swift` strings against `application-catalog`). A JS builder config importing the catalog was rejected as build-system risk for zero test gain.
 
-Vox repository (`apps/integrated/Vox`, its own git repo):
+**Q6 · Keep the per-feature switch in `suiteFeatureContext`?**
+➡️ **Keep the switch.** The literal `import()` loaders above it are a rollup requirement (code-splitting, uninstalled features never evaluated); the switch below it becomes a thin join of catalog facts with host roots — 3–6 lines per case. A fully table-driven context builder was rejected: it hides the literal imports that make code-splitting work and would put Electron-specific resolution into the catalog.
 
-| File | Role after the move |
-| --- | --- |
-| `src/main/feature.ts` | `VoxFeature` implementing `MoirasiaFeature` for the suite loader. Delete. |
-| `src/main/runtime-lease.ts` | per-user lease arbitrating standalone vs suite Vox. Keep as a legacy guard through one release (see Risks), then delete. |
-| `src/main/data-migration.ts` | one-time standalone-to-suite import. Delete; replaced by the reverse merge. |
-| `src/main/standalone.ts` | builds the runtime context. Becomes the only context builder. |
-| `src/main/controller.ts` | branches on `context.mode === 'suite'` (surface activation, authorized IPC set, launchAtLogin rejection, event targets). Suite branches go away. |
-| `src/main/index.ts` | standalone entry; constructs `VoxFeature`. Constructs the controller directly instead. |
-| `src/renderer/App.tsx` | standalone dashboard plus the `VoxPanel` export for the suite panel and an `embedded` flag hiding the launchAtLogin toggle. Panel export and flag go away. |
-| `src/renderer/styles.css` | `.vox-feature-panel` suite-panel blocks. Remove those blocks. |
-| `electron-builder.yml` | already ships Vox's own mic/speech/AppleEvents usage descriptions at `Resources/native/VoxNative`. Unchanged. |
-| `package.json` | deps use `file:../../../packages/desktop-shell` and `file:../../../packages/ui-react`; same depth at the new location, so no changes. `test:dev-ready` uses `../../../scripts/check-electron-install.mjs`; same depth, no change. |
-| `bun.lock` | no path-dependent entries; deps unchanged, so the lock stays valid. |
+**Q7 · Extract the suite context builder into its own module?**
+➡️ **Yes.** `suiteFeatureContext` and its helpers are ~100 of `runtime.ts`'s 234 lines. It becomes `src/main/features/suite-context.ts`, leaving `FeatureRuntime` a smaller interface (lifecycle only) and giving the context join its own testable seam that needs no feature loaders.
 
-No root workspace change is needed: `pnpm-workspace.yaml` already excludes `apps/**`.
+### Round 2 — data model and consumers (frontier opened by Round 1 answers)
 
-## Target shape
+**Q8 · Which additional shared facts join the facet?**
+➡️ **Two: `directory` on the entry, and `standaloneResource` on each artifact.**
+- `directory` — the app repo directory name (`'Amove'`, `'Exithibition'`, …). Today it is hard-coded in the suite dev paths (`join(app.getAppPath(), 'apps', 'integrated', 'Amove', …)`), the stage script, and `package.json` scripts. Catalog owns it; TS consumers use it; scripts stay text-pinned.
+- `standaloneResource` records where each artifact lands in the *app's own* packaged bundle (`native`, `features/orbis/native`, …). It kills the packaged-mode literals in the four `standalone.ts` files. Each app's own `electron-builder.yml` stays app-owned — the yml is the app's packaging decision, the catalog records the fact the resolver needs.
 
-- `applicationCatalog` (new, in `packages/desktop-shell`) owns the facts of the five family applications: `amove`, `vox`, `exithibition`, `bonded`, `orbis`. Fields: `id`, `label`, `executableName`, `bundleId`. Consumers: Applications menu, `ApplicationController`, the agent contract (`main.swift` stays as is), login-item retry, `APPLICATION_IDS`, and the renderer's empty-state application list.
-- `featureCatalog` shrinks to the four embedded features: `amove`, `exithibition`, `bonded`, `orbis`. It keeps icon keys, groups, descriptions, and per-host-mode requirements. The `voice` group and the `mic` icon key disappear.
-- `ApplicationId` becomes its own union of the five application ids. `FeatureId` shrinks to four. `ControllerPage` drops `'vox'` (there is no Vox page to navigate to; Command+2 calls `open`, not `navigate`).
-- `PRODUCT_IDS` becomes `['moirasia', ...FEATURE_IDS, 'vox', 'yn360']`. Vox remains an appearance product; existing `appearance.json` values for `vox` stay valid. `packages/design-system`'s `product-tokens.json` and most of `preset.mjs` list products by string key and need no change, but `preset.mjs`'s `check()` also reads `apps/integrated/Vox/package.json` by literal path to pin the local font dependency version (line ~185); that one path must follow the move or `pnpm ui:preset:check` — the first step of `ui:verify` — throws `ENOENT` instead of failing cleanly.
-- The suite no longer builds, stages, signs, or loads anything Vox. Moirasia's bundle loses the mic/speech/AppleEvents usage descriptions; the Vox bundle already carries its own.
-- Vox runs only as its own bundle. It keeps the desktop shell chrome, its dashboard, tray, overlay, login-item protocol, and `com.moirasia.vox` identity. On first launch it merges suite data back (spec below).
+**Q9 · Catalog validation rules for the facet?**
+➡️ **Three, enforced in `buildCatalog()` (throw-at-import style, matching existing checks):**
+1. Every `native: [...]` requirement name must have an artifact of the same `name` whose kind is `native` or `executable` (both live in the `paths.native` map — Exithibition's `executable` artifact sits in the `native` requirement bucket today, so bucket-name equality with `ArtifactKind` is not the check); every `workers: [...]` requirement name must have an artifact of the same `name` with kind `worker`.
+2. Artifact `name`s are unique per feature.
+3. `kind: 'native'` artifacts carry a napi base name (validated: no `.node` suffix in `file`); other kinds carry an exact filename with an extension.
+Preload/renderer/asset requirement names are exempt (not artifacts).
+
+**Q10 · Do literal path expectations in tests stay, or become catalog-derived?**
+➡️ **Literals stay; new pins join them.** The repo's culture is pinning (bundle ids pinned against `main.swift`, `desktop-shell.test.tsx` byte-asserts CSS). `tests/feature-paths.test.ts` extends from one feature to all four × both modes with literal final paths — that pins the join. The catalog data itself is pinned by catalog tests; the contract pins (Q5) tie script and YAML to the catalog. Drift anywhere turns a test red instead of silently re-encoding.
+
+## Current inventory — every site an artifact fact appears
+
+Verified by reading each file; `rg` note: the root repo gitignores `apps/`, so app-repo sites were read directly.
+
+| # | File | Facts hard-coded |
+| --- | --- | --- |
+| 1 | `src/main/features/runtime.ts:135–233` | `suiteFeatureContext` per-feature switch: packaged `features/<id>/…` and `native/ExithibitionNative` destinations; dev app-root joins (`apps/integrated/<App>`); dev build layouts (`.build/arm64-apple-macosx/debug`, `native/`, staged worker/native for Orbis); `nativeAddonName()` platform matrix for both `amove-native` and `orbis-metadata` |
+| 2 | `apps/integrated/Amove/src/main/standalone.ts` | `standaloneNativeName()` matrix (verbatim duplicate of #1); packaged `native/<file>`; dev `<appRoot>/native/<file>` |
+| 3 | `apps/integrated/Orbis/src/main/standalone.ts` | `nativeAddonName()` matrix (verbatim duplicate of #1); packaged `features/orbis/{native,worker}`; dev `native/`, `worker-dist/` |
+| 4 | `apps/integrated/Exithibition/src/main/standalone.ts` | packaged `native/ExithibitionNative`; dev `.build/arm64-apple-macosx/debug/ExithibitionNative` |
+| 5 | `apps/integrated/Bonded/src/main/standalone.ts` | packaged `native/BondedFirewallHelper`; dev `native/.build/arm64-apple-macosx/debug/BondedFirewallHelper` |
+| 6 | `scripts/stage-feature-binaries.mjs` | per-feature build commands + source artifact paths (`.build/arm64-apple-macosx/release/…`, `native/*.node`) → staged destinations; builds release where the suite dev build reads debug (#1) — divergence encoded twice |
+| 7 | `electron-builder.yml:9–24` | 7 `extraResources` mappings repeating staged paths and destinations, including the Exithibition flat one-off |
+| 8 | `package.json:17` | `features:worker --outDir native/staged/features/orbis/worker` (staged worker path) |
+| 9 | `apps/integrated/{Amove,Exithibition,Bonded,Orbis}/electron-builder.yml` | each app's own packaged layout (`native/*.node`, `native/ExithibitionNative`, `native/BondedFirewallHelper`, `features/orbis/{native,worker}`) — app-owned, but the *filenames* are shared facts |
+| 10 | Orbis app tests (`orbis-bulk-node-parity.test.ts`, `orbis-fsevents-live.test.ts`) | recompute the addon filename locally — app-repo concern, optional follow-up |
+
+Out of scope, recorded so future walks don't re-suggest them: the application-agent staging (`scripts/build-application-agent.mjs`, `paths.ts applicationAgentPath`) is a controller fact, not a feature artifact; preload/renderer pages (Q4); the Swift agent's product table (already pinned by `platform-integration.test.ts`).
+
+## Target design
+
+### Types (in `packages/desktop-shell/src/feature-catalog.ts`)
+
+```ts
+/** Artifact roles mirror the requirement tables: a host validates 'native.addon',
+ *  the catalog says what that file is and where it lives. */
+export type ArtifactKind = 'native' | 'executable' | 'worker' | 'assets'
+
+export interface FeatureArtifact {
+  /** Symbolic name matching the per-mode requirements tables ('addon', 'helper', 'executable', 'scan', …). */
+  readonly name: string
+  readonly kind: ArtifactKind
+  /**
+   * kind 'native': napi base name — the real filename comes from nativeAddonFileName(base, …).
+   * other kinds: exact filename ('ExithibitionNative', 'scan-worker.mjs'); kind 'assets' carries none.
+   */
+  readonly file?: string
+  /** Where the build output lands inside the app repo, relative to the app root. `{configuration}` → 'debug' | 'release'. */
+  readonly buildOutput: string
+  /** Suite-repo-relative path the staging script places the artifact at (directory for multi-file kinds). */
+  readonly staged: string
+  /** Suite-packaged destination under Contents/Resources (directory; the filename inside is `file`). */
+  readonly suiteResource: string
+  /** Which source the suite trusts in development: the app's own build output, or the staged copy. */
+  readonly suiteDevSource: 'buildOutput' | 'staged'
+  /** Destination under the app's own Contents/Resources in standalone packaging. */
+  readonly standaloneResource: string
+}
+```
+
+`FeatureCatalogEntry` gains `readonly directory: string` (app repo directory name) and `readonly artifacts: readonly FeatureArtifact[]`; the builder freezes entries and artifacts like `requirements`. The existing purity header comment stays true: still no Electron/React/fs/product imports — a pure function for the platform matrix is data-shaped, not resolution.
+
+### The facet table (complete — this is the single source of truth after landing)
+
+| Feature | Artifact | name | kind | file | buildOutput | staged | suiteResource | suiteDevSource | standaloneResource |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| Amove | native addon | `addon` | native | `amove-native` | `native` | `native/staged/features/amove/native` | `features/amove/native` | buildOutput | `native` |
+| Amove | assets | `assets` | assets | — | `assets` | `native/staged/features/amove/assets` | `features/amove/assets` | buildOutput | `assets`¹ |
+| Exithibition | Swift executable | `executable` | executable | `ExithibitionNative` | `.build/arm64-apple-macosx/{configuration}` | `native/staged/features/exithibition/native`² | `features/exithibition/native`² | buildOutput | `native` |
+| Bonded | firewall helper | `helper` | native | `BondedFirewallHelper` | `native/.build/arm64-apple-macosx/{configuration}` | `native/staged/features/bonded/native` | `features/bonded/native` | buildOutput | `native` |
+| Orbis | metadata addon | `metadata` | native | `orbis-metadata` | `native` | `native/staged/features/orbis/native` | `features/orbis/native` | staged | `features/orbis/native` |
+| Orbis | scan worker | `scan` | worker | `scan-worker.mjs` | `worker-dist` | `native/staged/features/orbis/worker` | `features/orbis/worker` | staged | `features/orbis/worker` |
+
+¹ Amove's standalone assets are asar-embedded (`files: assets/**/*`), not an extraResource — the catalog records the app-internal convention, Amove's `standalone.ts` keeps resolving it against `app.getAppPath()`.
+² Normalized per Q3 (was flat `native/staged/features/ExithibitionNative`).
+
+The suite dev source asymmetry is real and recorded as data: Amove/Exithibition/Bonded suite dev reads the app repo's build output; Orbis suite dev reads the staged copies (`features:worker`/`features:native` place them there in `predev`). Normalizing Orbis to `buildOutput` would change which artifacts `pnpm dev` requires and is not worth it.
+
+Pure function replacing three duplicates:
+
+```ts
+export function nativeAddonFileName(
+  base: string,
+  platform: NodeJS.Platform = process.platform,
+  arch: NodeJS.Architecture = process.arch
+): string {
+  const a = arch === 'arm64' ? 'arm64' : 'x64'
+  if (platform === 'darwin') return `${base}.darwin-${a}.node`
+  if (platform === 'win32') return `${base}.win32-x64-msvc.node`
+  return `${base}.linux-x64-gnu.node`
+}
+```
+
+Behaviour is byte-identical to today's matrices (linux/x64-gnu and win32 ignore arch — preserved deliberately).
+
+### Resolution rules per host
+
+Each rule below joins a *directory* (composed by the caller from a catalog fact) with the artifact's *filename* (which the shared helper resolves, since it depends on `kind`). A single `(root, artifact)` helper cannot do both halves itself — suite-packaged and standalone-packaged both call it with `root = process.resourcesPath` and no configuration, yet must resolve different directory facts (`suiteResource` vs `standaloneResource`); only the caller knows which mode it's in. So the helper's contract is scoped to the part that actually repeats across ~12 call sites — the kind-dependent filename — and callers compose the directory inline (already a one-liner in every case below):
+
+```ts
+export function artifactPath(directory: string, artifact: FeatureArtifact): string
+// join(directory, artifact.kind === 'native' ? nativeAddonFileName(artifact.file!) : artifact.file!)
+```
+
+- **Suite packaged:** `artifactPath(join(process.resourcesPath, suiteResource), artifact)` — one rule for every artifact; the `features/amove/native` filter-based directory mappings in `electron-builder.yml` keep working because destinations stay directories.
+- **Suite dev:** `suiteDevSource === 'buildOutput'`
+  → `artifactPath(join(app.getAppPath(), 'apps', 'integrated', directory, buildOutput.replace('{configuration}', 'debug')), artifact)`
+  else → `artifactPath(join(app.getAppPath(), staged), artifact)`.
+- **Standalone packaged:** `artifactPath(join(process.resourcesPath, standaloneResource), artifact)`.
+- **Standalone dev:** `artifactPath(join(appDevRoot, buildOutput.replace('{configuration}', 'debug')), artifact)` — `appDevRoot` stays host-owned (Amove's `import.meta.dirname/../..` vs Orbis's `app.getAppPath()` distinction is window-layout, not artifact, knowledge).
+- Preload/renderer maps, `dataDirectory`, `legacyDataDirectories`: unchanged, host-owned as before.
+
+Every call site still shrinks to one line (the directory join plus `artifactPath`), but it is a directory-then-artifact call, not a bare-root one — the earlier bare-root framing let the packaged-suite/packaged-standalone ambiguity hide.
 
 ## Work items
 
-### Phase A: suite host de-integration (one root commit, includes the move)
+### Phase A — catalog gains the facet (root repo, `packages/desktop-shell`)
 
-A1. Catalog split in `packages/desktop-shell`:
+A1. `src/feature-catalog.ts`:
+- Add `ArtifactKind`, `FeatureArtifact`, `nativeAddonFileName`, `artifactPath` as above.
+- Add `directory` and `artifacts` to each of the four seeds per the facet table; `directory` values: `'Amove'`, `'Exithibition'`, `'Bonded'`, `'Orbis'`.
+- Extend `buildCatalog()` validation (Q9 rules) — plus: `assets` kind must not carry `file`; `staged`/`suiteResource`/`standaloneResource` non-empty. (No separate check that `nativeAddonFileName(file)` ends in `.node` — every branch of that function appends `.node` unconditionally, so the check can never fail; the meaningful assertion is Q9 rule 3, that the input `file` doesn't already carry the suffix.)
+- Update the header comment: artifacts facts are catalog-owned; hosts resolve them. Export the new names from `src/feature.ts` (re-export block) and `src/index.ts` as needed.
 
-- New `src/application-catalog.ts`: five application seeds (copy `label`, `executableName`, `bundleId` from the current feature seeds), the `ApplicationEntry` type, `applicationCatalog` with `ids`, `entries`, `isId`, `get`, built with the same freeze/validation style as `feature-catalog.ts`.
-- `src/feature-catalog.ts`: remove the `vox` seed, the `mic` key from `FeatureIconKey`, and the `voice` group. `FeatureId` shrinks to four. Update the header comment ("five embedded features" to four).
-- `src/index.ts`: re-export the application catalog; `PRODUCT_IDS = ['moirasia', ...FEATURE_IDS, 'vox', 'yn360']`.
-- `src/main.ts`: `DEFAULTS` and `requiredLegacyProducts` already include `vox`; no change.
+A2. No change to `application-catalog.ts` (Q5 keeps the Swift agent out of scope).
 
-A2. `src/shared/contracts.ts`: `APPLICATION_IDS = applicationCatalog.ids`; `ApplicationId = 'amove' | 'vox' | 'exithibition' | 'bonded' | 'orbis'` derived from the catalog; `isApplicationId` from the catalog; `ControllerPage = 'general' | 'features' | FeatureId`.
+### Phase B — suite consumers (root repo)
 
-A3. `src/main/features/runtime.ts`: delete `LOADERS.vox`; delete the `'vox'` case in `suiteFeatureContext` (the `assertNever` default keeps the switch exhaustive).
+B1. New `src/main/features/suite-context.ts`:
+- Move `suiteFeatureContext` + `assertNever` out of `runtime.ts`; delete `nativeAddonName()`.
+- Each feature case becomes a join: catalog entry + `artifactPath` + host roots (`process.resourcesPath`, `app.getAppPath()`, `paths.preload/renderer` for Amove's shelf — that map stays in `paths.ts`).
+- Exithibition case switches to the normalized staged layout (dev unchanged: `.build/…/debug` via `buildOutput`).
+- `runtime.ts` re-exports `suiteFeatureContext` for its existing importers/tests so no caller moves.
 
-A4. `src/main/paths.ts`: remove the `feature-vox-overlay` entries from `preloadPages` and `rendererPages`.
+B2. `scripts/stage-feature-binaries.mjs`: rewrite only the Exithibition staging lines to the normalized path (`native/staged/features/exithibition/native/`); all other literals already match the catalog and stay (they are pinned, not derived — Q5). Keep the bespoke build commands per app; they are toolchain facts, not paths.
 
-A5. `src/preload/shell.ts`: remove the `createVoxBridge` import and the `window.vox` exposure. `src/renderer/shell/global.d.ts`: remove the `VoxAPI` import and the `vox` field.
+B3. `electron-builder.yml`: replace the Exithibition mapping with the uniform one:
+```yaml
+  - from: native/staged/features/exithibition/native
+    to: features/exithibition/native
+```
+Other mappings unchanged (already catalog-shaped).
 
-A6. Renderer:
+B4. `package.json` `features:worker`: no change (the outDir literal is pinned by the contract test, not duplicated in TS).
 
-- `app.tsx`: remove the `VoxPanel` lazy import and the `vox` entry in `PRIMARY_PANELS` (the `Record<FeatureId, ...>` stays exhaustive with four keys).
-- `controller.ts`: build `EMPTY.applications` from `applicationCatalog.entries`; keep `vox: 'system'` in appearances.
-- `feature-icons.tsx`: remove the `mic` entry.
-- `styles.css`: remove the Vox styles import.
-- `screens/features.tsx` needs no edit; it renders whatever the catalog has.
+### Phase C — standalone app consumers (app repos; each app must keep building standalone)
 
-A7. `src/main/menu.ts`: Applications submenu from `applicationCatalog.entries`. Order stays `amove, vox, exithibition, bonded, orbis`, so Command+2 stays Vox.
+C1. `apps/integrated/Amove/src/main/standalone.ts`: delete `standaloneNativeName()`; import `featureCatalog` + `artifactPath` from `@moirasia/desktop-shell/feature`; native path = `artifactPath(appRoot/native root, addon artifact)`; assets directory = `join(appRoot, 'assets')` (app-internal, stays a literal per facet-table note ¹).
 
-A8. `src/main/application-controller.ts`: derive the application list, labels, and bundle ids from `applicationCatalog`. Keep `installFeature`/`openFeature`/`reportPage` feature-scoped.
+C2. `apps/integrated/Orbis/src/main/standalone.ts`: delete `nativeAddonName()`; derive worker/metadata paths via `artifactPath` + `standaloneResource`/`buildOutput`.
 
-A9. `src/main/ipc.ts`: tighten `installFeature`, `uninstallFeature`, and `openFeature` to validate `isFeatureId` instead of `isApplicationId`, so `installFeature('vox')` fails at the guard with a clear message rather than a runtime error deeper in `FeatureRuntime`.
+C3. `apps/integrated/Exithibition/src/main/standalone.ts` and `apps/integrated/Bonded/src/main/standalone.ts`: same treatment; dev paths via `buildOutput` with `debug`, packaged via `standaloneResource`.
 
-A10. Build and packaging:
+C4. Optional follow-up (not this change): Orbis app tests (`orbis-bulk-node-parity`, `orbis-fsevents-live`) may import `nativeAddonFileName` instead of recomputing the filename.
 
-- `electron.vite.config.ts`: remove both `feature-vox-overlay` entries (preload and renderer).
-- `electron-builder.yml`: remove the `features/vox/native` extraResource and the three usage-description strings.
-- `scripts/stage-feature-binaries.mjs`: remove the VoxNative block (`voxRoot` through the bundle copy loop).
-- `scripts/sign-after-pack.mjs`: remove the VoxNative block.
+### Phase D — tests (root repo)
 
-A11. Scripts and configs:
+D1. New `tests/feature-artifacts.test.ts`:
+- Facet table pins: per feature, artifact `name`/`kind`/`file`/`staged`/`suiteResource`/`standaloneResource`/`suiteDevSource`/`directory` match the table above.
+- Platform matrix: `nativeAddonFileName('amove-native' | 'orbis-metadata')` across darwin arm64/x64, win32, linux — byte-exact.
+- Catalog validation: a hostile seed (requirement name without artifact; duplicate artifact name; native artifact with `.node` suffix) throws — tested via a small seed-fixture harness or by asserting on the built catalog's invariants plus a direct `buildCatalog`-style check if the builder is exported; if not exported, pin via the public catalog and keep hostile-seed cases out (builder stays private).
+- Requirement↔artifact alignment: for every entry and host mode, each `native`/`workers` requirement name resolves to an artifact.
+- Contract pins (text reads, `existsSync`-guarded so app-repo absence fails loudly):
+  - `scripts/stage-feature-binaries.mjs` contains every artifact's `staged` path and source layout.
+  - `electron-builder.yml` contains `from: <staged>` + `to: <suiteResource>` for every artifact.
+  - `package.json` `features:worker` contains the Orbis worker `staged` dir.
+  - Each app's `electron-builder.yml` contains its `standaloneResource` and (for single-file kinds) the `file`.
 
-- `package.json`: `predev` drops `pnpm -C apps/integrated/Vox build:native:debug`; `test:dev-ready:all` drops the Vox leg; `ui:verify` replaces the Vox leg with `bun --cwd apps/standalone/Vox run typecheck && bun --cwd apps/standalone/Vox test`.
-- `tsconfig.node.json`: remove the three `apps/integrated/Vox/src/main|preload|shared` includes.
-- `tsconfig.react.json`: remove the two Vox includes.
-- `scripts/check-ui-ownership.mjs`: this script has six separate literal reads of `apps/integrated/Vox/...` paths, not two, and each throws `ENOENT` (not a clean check failure) once the directory moves: the `rendererRoots` entry (the general renderer scan), the `requiredImports` entry (`styles.css` must import `vox.css` and declare `@source`), the `primaryWindows` entry (`standalone.css`/`App.tsx` must use the shared shell), the `embeddedStyleEntrypoints` entry (the `.vox-feature-panel` selector-scoping rule), the `shellStyles` expected-import line (looks for the same Vox `@import` that A6 removes from `src/renderer/shell/styles.css`), and the per-line `voxStyles` loop that scopes `--vox-color-` usage to the overlay/status selectors. All six go. Leave `allowedTokens.vox` alone — it validates `packages/design-system/product-tokens.json`, which stays in the root repo since Vox stays a product; there is no separate "icon allowlist" for Vox in this script (that check lives in `feature-icons.tsx`, covered by A6). Follow-up: port the still-relevant rules (dashboard and overlay token scoping) into Vox's own test suite.
-- `packages/design-system/scripts/preset.mjs`: update the `apps/integrated/Vox/package.json` path in `check()` to `apps/standalone/Vox/package.json`.
+D2. `tests/feature-paths.test.ts`: extend from one Bonded describe-block to all four features × dev/packaged, literal final paths (Q10). Bonded's existing two tests keep their exact strings.
 
-A12. Move the directory: `mv apps/integrated/Vox apps/standalone/Vox`. The root repo does not track `apps/` (gitignored), and Vox has its own `.git`, so the move carries the history with no root git surgery. Vox's dependency paths (`file:../../../packages/...`) stay valid at the same depth.
+D3. `tests/feature-runtime.test.ts`: unaffected (loader fakes); keep the `ExithibitionNative` fixture string or rename to match the new layout — cosmetic either way.
 
-A13. `native/application-agent/main.swift`: no change. The agent keeps resolving `com.moirasia.vox`.
+D4. `tests/feature-catalog.test.ts`: add facet pins (artifact counts per feature: Amove 2, Exithibition 1, Bonded 1, Orbis 2; `directory` values; freeze depth covers `entry.artifacts`).
 
-### Phase B: Vox repository de-integration (Vox's own git)
+### Phase E — docs and domain vocabulary
 
-B1. Delete `src/main/feature.ts`. `src/main/index.ts` constructs `VoxController` directly with `standaloneContext()` and keeps the single-instance lock, login-item control, and quit policy. `feature.ts` is today the only caller of `acquireVoxRuntimeLease`/`lease.release()` (`VoxController` itself has no lease code), so deleting it silently drops the lease guard unless that call moves too: move the `acquireVoxRuntimeLease(...)` call into `VoxController.start()` (before it touches the database) and `lease.release()` into `stop()` (see B3), so `index.ts`'s existing catch around startup still sees `VoxRuntimeInUseError` and shows the "Vox is already running" dialog. `feature.ts` also called `validateFeatureResources(context)`, which reads `featureCatalog.get(context.id)` and would throw once `vox` leaves the catalog (A1) — that call does not need a new home: it's suite-oriented plumbing (every other standalone app, e.g. YN360, skips it too), so it's dropped along with `feature.ts`, not relocated.
+E1. `docs/architecture/standalone-applications.md`: revise the catalog paragraph — the feature catalog additionally owns artifact facts (filenames, staged paths, suite-packaged destinations, dev build layouts, platform `.node` naming); hosts resolve them through `artifactPath`; resource paths are no longer "explicit in each host," they are *facts in the catalog, resolved by each host*. Update the staging/packaging paragraph for the Exithibition normalization.
 
-B2. Keep `src/main/runtime-lease.ts` for one release as a legacy guard against stale pre-move Moirasia builds, which still embed Vox and would contend for the lease. Standalone Vox already shows the "Vox is already running" dialog in that case. Delete the module and its test in a follow-up release once stale builds are gone.
+E2. `README.md`: no build-command changes; nothing user-visible moves except nothing — packaging output layout changes only for Exithibition inside the suite bundle.
 
-B3. `src/main/controller.ts`: remove the suite branches. The authorized-IPC set and `surface` activation go away; `mutable` becomes always true; the launchAtLogin getter/setter drops its suite rejection path; the event-targets list drops the suite `webContents` leg; `activate()` focuses the dashboard only. Replace the standalone-to-suite `prepareVoxDataDirectory` call with the reverse merge (B5). `start()` also gains the lease acquisition moved from `feature.ts` (B1) as its first step, wrapped so a thrown `VoxRuntimeInUseError` propagates out of `start()` unchanged; `stop()` releases the lease alongside the database close.
+E3. `CONTEXT.md` (new, repo root): record the domain terms this plan relies on — controller, feature host, embedded feature, standalone application, feature catalog, application catalog, feature runtime, `FeatureContext`, host mode, **artifact fact** (the new term this deepening introduces), staged resources — with one-line definitions and a pointer to the architecture doc.
 
-B4. `src/main/standalone.ts`: stays the single context builder. It may keep using the `FeatureContext` type from `@moirasia/desktop-shell/feature` (that module remains exported for the other four apps) or move to a local type; prefer the local type to stop implying a suite mode. Delete `src/main/data-migration.ts`.
+## Sequencing
 
-B5. New `src/main/suite-merge.ts` implementing the reverse migration (spec below), wired into startup before the controller opens its database.
-
-B6. Renderer:
-
-- `App.tsx`: remove the `VoxPanel` export, its props, and the `embedded` flag; the launchAtLogin toggle becomes unconditional.
-- `styles.css`: remove the `.vox-feature-panel` blocks.
-
-B7. Vox `package.json`: no dependency changes. Optionally add a `verify` leg running the new merge tests (they are part of `bun test` anyway).
-
-B8. Vox docs (`README.md`, `ARCHITECTURE.md`, `CAPABILITIES.md`): rewrite the suite-mode sections. State that Vox is standalone-only, describe the one-time suite merge, and note that the lease guard is transitional.
-
-### Phase C: tests
-
-Root repo:
-
-- `tests/contracts.test.ts`: `APPLICATION_IDS` keeps five ids; `FEATURE_IDS` pins four; `isControllerPage('vox')` flips to `false`; add a pin of the application catalog order.
-- `tests/feature-catalog.test.ts`: drop the vox expectations; the requirements, bundle-id, and group pins lose their vox lines.
-- New `tests/application-catalog.test.ts`: pin the five application ids and order, the `com.moirasia.vox` bundle id, executable names, and freeze behavior, mirroring the feature-catalog tests.
-- `tests/feature-contract.test.ts`: remove the vox cases.
-- `tests/feature-paths.test.ts`: remove the "Vox suite paths" describe block.
-- `tests/feature-runtime.test.ts`: loader-key expectations shrink to four; the `'Vox is already using Vox.'` fixture string is arbitrary and may stay or be renamed.
-- `tests/platform-integration.test.ts`: the Command+2 test should keep passing unchanged once the menu reads `applicationCatalog`.
-- `tests/shell-renderer.test.tsx`: remove the Vox panel mock, the vox feature fixtures, and vox-specific assertions; keep `vox` in the appearances fixture (still a product).
-- `tests/embedded-panel-chrome.test.tsx`: remove the `VoxPanel` import and its cases; keep the other panels' cases.
-- `tests/desktop-shell.test.tsx`: the `product="Vox"` chrome test and the `tokens.vox` test stay; the assertions that read `apps/integrated/Vox/src/renderer/styles.css` for `.vox-feature-panel` padding move into Vox's repo or die with the panel.
-- `tests/vox-workspace.test.tsx`: the panel is gone, so port these cases (model download progress, engine choices) into Vox's repo against the dashboard UI, then delete the file.
-- `tests/appearance-registry.test.ts`, `tests/shell-settings.test.ts`: unaffected.
-
-Vox repo:
-
-- `tests/runtime-lease.test.ts` stays while the lease guard exists.
-- Rewrite the `data-migration` tests as `suite-merge` tests: no suite store; suite store with no standalone store; both stores merged per the policy below; failure leaves both stores untouched; marker written; login-item setting preserved; suite directory removed after success.
-- Update `ipc` and controller tests that used suite-mode fixtures.
-
-### Phase D: docs
-
-- Root `README.md`: intro keeps Vox in the family but as a standalone app ("controller and feature host for Amove, Exithibition, Bonded, and Orbis; controller for Vox"). Move the Vox development commands into the standalone-apps section like YN360's, with the `apps/standalone/Vox` path. The `bun --cwd apps/integrated/Vox install` line moves to `apps/standalone/Vox`. Update the Applications-menu paragraph: Command+2 opens the standalone Vox bundle; the Apps sidebar no longer has a Vox tab. Replace the suite Vox data and lease paragraphs with the reverse-merge description.
-- `docs/architecture/standalone-applications.md`: rewrite the Vox paragraphs. The catalog is now "the four embedded features plus the application catalog that also owns Vox"; describe Vox as a standalone-only family app, the retired suite lease, and the reverse merge.
-- `docs/design-system/README.md`: the "YN360 is the first standalone app" line stays true; add a line noting Vox adopted the same standalone setup.
-
-### Phase E: reverse migration spec (`src/main/suite-merge.ts`)
-
-Trigger: standalone Vox startup, before the controller opens its database, once per data directory, gated by a marker file `.vox-suite-merge-v1.json` in `Application Support/Vox`.
-
-Inputs:
-
-- Suite store: `<appData>/Moirasia/features/vox/vox.sqlite` plus `-wal`/`-shm` and the old import marker.
-- Standalone store: `<appData>/Vox/vox.sqlite`.
-
-Steps:
-
-1. Marker present: no-op.
-2. Snapshot the suite store to a temp copy using the same technique as the current `data-migration.ts` (copy db plus WAL/SHM; never open the original with writes).
-3. No standalone store: install the snapshot as the standalone store. Caveat to document: the suite store's `launchAtLogin` was force-cleared on import, so the copied value is the last suite state, not the pre-suite preference.
-4. Both stores exist: merge on the snapshot plus the live store.
-   - Schema check: both stores must report the same schema version; otherwise skip the merge, surface a non-blocking notice, and keep both stores.
-   - Entity tables (profiles, custom modes, dictionary terms, correction rules, snippets, workflows) and meeting-schema tables (meetings, speakers, meeting_segments): union by id, suite row wins on an id collision. This is verified against `src/main/database.ts`, not deferred to the executor: none of the eleven tables in `VOX_PERSISTENT_TABLES` carries an `updated_at` or other last-modified column, and every id in these tables is an app-generated `crypto.randomUUID()` (see the profile/custom-mode/snippet/dictionary-term creators in `App.tsx`), so a same-id collision between two independently-run databases isn't a realistic merge case — it would require two calls to `randomUUID()` to collide. A timestamp-based tie-break has no data to act on and guards against a scenario that doesn't occur; a flat "suite wins the rare collision" rule is both correct and simpler. Implementation is the same shape as the existing fresh-install path: attach the snapshot and run `INSERT OR IGNORE INTO main.<table> SELECT * FROM legacy.<table>` per table inside one transaction (mirroring `VoxDatabase.importFrom`'s attach/`quick_check`/table-list validation), then re-run with source and destination swapped for the columns where the suite should overwrite an existing standalone row — or, simpler still, delete-then-reinsert the colliding id from the suite side. Either is a few lines of SQL, not a per-table policy table.
-   - Settings: suite value wins per key, except `launchAtLogin`, which the standalone store keeps (the suite copy was force-cleared by design).
-   - Daily aggregates: per day take the max of each counter. A sum would double-count days when both hosts ran.
-5. Before any write to the standalone store, copy it once to `vox.pre-merge-backup.sqlite` in the standalone data directory.
-6. On success: delete `Application Support/Moirasia/features/vox` entirely (store, WAL/SHM, old marker), write the standalone marker with the outcome, and re-apply the stored `launchAtLogin` value to the macOS login item so the standalone preference wins over the suite's forced-off value.
-7. On failure: leave both stores untouched, write the marker with the error, show a non-blocking notice in the dashboard, and retry on the next launch.
-8. Credentials and models need no migration: provider secrets live in the shared `com.moirasia.vox.providers` Keychain service and models in the shared `Application Support/Vox/Models`.
-
-Re-run safety: a stale Moirasia could later re-create the suite store by importing from standalone again. The standalone marker prevents a second merge; document rather than automate.
-
-## Sequencing and git notes
-
-1. Prepare the Vox repo changes on a branch in Vox's own git first, but merge only after the root commit lands (the old root build still imports `feature.ts` until the flip).
-2. Land Phase A as a single root commit: the move plus every root-side reference change together, because the root build breaks between the `mv` and the edits otherwise.
-3. Merge the Vox branch.
-4. Docs and follow-up cleanups can land after.
+1. **Phase A** lands first (catalog types + data + validation). Green on its own: nothing consumes the facet yet; existing tests pass unchanged.
+2. **Phase B** same commit or immediately after (suite resolver + normalizations). `pnpm typecheck && pnpm test` must stay green; the Exithibition path change is invisible until packaging.
+3. **Phase C** app repos next — each app `pnpm -C apps/integrated/<App> typecheck && test` after its edit. App repos are gitignored by the root; commit in each app's own git.
+4. **Phase D** tests with/after B (root) — the contract pins must exist before anyone edits staging paths again.
+5. **Phase E** docs last.
 
 ## Verification matrix
 
-Root:
-
-- `pnpm ui:preset:check` (preset lock and ownership checks)
+Root repo:
 - `pnpm typecheck`
-- `pnpm test`
-- `pnpm build`, then confirm `out/` contains no `feature-vox-overlay` chunks and `release/` staging contains no `features/vox`
-- `pnpm dev` smoke: Applications menu lists the five apps; Command+2 opens or focuses an installed standalone Vox; Features page shows four features in two groups; no Vox entry in the Apps sidebar; appearance picker still offers Vox
+- `pnpm test` — new artifacts tests + extended path tests green; no other suite regressions
+- `pnpm build` → `release/`-staged `native/staged/features/exithibition/native/ExithibitionNative` exists; `out/` build clean
+- `pnpm dist:mac` smoke (optional but recommended once): packaged app contains `Resources/features/exithibition/native/ExithibitionNative` and all four features load (Features page, each tab mounts)
+- `rg -n "ExithibitionNative" src scripts electron-builder.yml` → matches only catalog-expected sites
+- `rg -n "darwin-.*\.node|win32-x64-msvc|linux-x64-gnu" src apps/integrated/*/src/main` → only the catalog (no matrix duplicates left)
 
-Vox:
-
-- `cd apps/standalone/Vox && bun install --frozen-lockfile && bun run typecheck && bun test && bun run build:renderer && bun run test:swift`
-- `bun run package:dir`, install the bundle, launch Moirasia, and confirm the agent snapshot reports Vox installed and Command+2 works
-- Reverse-migration smoke: seed fixture stores in both locations, launch dev Vox with `VOX_OFFLINE=1`, verify merged rows, the marker, the backup file, and the removed suite directory; relaunch to confirm the no-op path
-
-Cross-checks:
-
-- `rg -i "apps/integrated/Vox"` over the root repo returns nothing
-- `rg -i "vox" out/ release/` after a clean build returns nothing suite-side
+Per app: `pnpm -C apps/integrated/<App> typecheck && pnpm -C apps/integrated/<App> test` (all four), plus `pnpm -C apps/integrated/<App> dev` smoke for Amove and Orbis (native/worker actually loads).
 
 ## Risks and mitigations
 
-- **Stale Moirasia builds.** A pre-move Moirasia.app still embeds Vox and grabs the runtime lease. Mitigation: keep the lease guard in Vox for one release; ship both apps in the same release cycle and say so in the notes.
-- **Bad merge.** A wrong policy could corrupt the standalone store. Mitigation: pre-merge backup copy, failure keeps both stores, merge runs on a snapshot, marker records the outcome.
-- **Permission re-grants.** macOS mic and Accessibility grants are per bundle. Suite grants on Moirasia become unused; users who only used embedded Vox grant mic and Accessibility to the Vox bundle once. Document in the release notes.
-- **bun.lock validity.** Dependencies and relative paths are unchanged, so the lock should hold; if Bun rejects it, regenerate with `bun install` and commit the new lock in Vox's repo.
+- **Packaged-layout change for Exithibition (normalization).** Mitigation: verified nothing pins the old path (tests, sign script, agent); `pnpm dist:mac` smoke in the verification matrix; the suite rebuilds its own bundle, so no user-side migration applies.
+- **App repos drift from the catalog.** The apps gitignore the root's history and consume the catalog via `file:../../../packages/desktop-shell` — a catalog change lands for them on their next install. Mitigation: the contract pins (D1) run in the root and read the app files as text, so a root-side catalog change that contradicts an app file fails the root suite immediately; app repos' `pnpm install` refreshes the link before their typecheck.
+- **The stage script's release-vs-debug divergence.** The script builds release; suite dev reads debug from app `.build` dirs (Amove/Exithibition/Bonded) or staged copies (Orbis). This plan records it as data (`suiteDevSource`) rather than normalizing it — changing when `pnpm dev` builds/stages what is out of scope.
+- **Contract pins are string-level.** A reformat of `electron-builder.yml` could break pins without semantic drift. Mitigation: pins match on `from:`/`to:` line pairs, tolerant of ordering; failures point at the catalog table as the reference.
 
 ## Out of scope
 
-- Deleting inert `features.vox` keys from existing v3 shell settings stores.
-- Porting the full UI-ownership rule set into Vox's repo (only the still-relevant token-scoping rules).
-- Removing the runtime lease (follow-up after the transition release).
-- Adding a Vox status card or any Vox UI back to the Features page.
-- YN360, LiteMaptica, Mini-NSW, Semiquaver changes.
+- Preload/renderer page facts (Q4) and the `electron.vite.config.ts` entry list.
+- The application agent's staging and its Swift product table (controller facts, already pinned).
+- App-repo `electron-builder.yml` generation (their ymls stay app-owned; filenames are contract-pinned).
+- Deriving builder config or scripts from the catalog at build time (Q5 — pins instead).
+- Orbis `suiteDevSource` normalization and `pnpm dev` staging-flow changes.
+- Orbis app tests switching to `nativeAddonFileName` (optional follow-up, C4).
+- The runtime-lease collapse (review candidate #1) and the desktop-shell split (#3) — separate changes.
 
 ## Definition of done
 
-- Vox lives at `apps/standalone/Vox`, builds and tests green with its own Bun workflow, and packages a working bundle.
-- The root suite builds, typechecks, and tests green with zero references to `apps/integrated/Vox`; the Features page lists four features; the Applications menu keeps five entries with Command+2 on Vox.
-- Existing suite Vox data is merged into the standalone store on first standalone launch, the suite store directory is removed, and the outcome is recorded in a marker.
-- Root and Vox docs describe the new split, the reverse migration, and the transitional lease.
+- Every artifact filename, staged path, suite-packaged destination, dev build layout, and the platform `.node` matrix exists exactly once, in `feature-catalog.ts`; the three `nativeAddonName`/`standaloneNativeName` duplicates are deleted.
+- `suiteFeatureContext` lives in its own module and every path it returns is a catalog fact joined with a host root; `FeatureRuntime`'s module keeps only lifecycle.
+- The four `standalone.ts` files resolve paths from the catalog; no packaged-mode filename literals remain in any app repo's context builder.
+- The contract test pins stage script, root builder yml, root `package.json` worker outDir, and the four app builder ymls against the catalog — adding a feature's artifacts starts with one catalog entry plus the bespoke build commands, and any drift turns a test red.
+- All four apps still build, typecheck, and test green as standalone apps; the suite typechecks, tests, builds, and packages green.
+- The architecture doc and new `CONTEXT.md` describe artifacts as catalog-owned facts resolved by hosts.

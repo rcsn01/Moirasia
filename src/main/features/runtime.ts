@@ -1,10 +1,11 @@
 import { app } from 'electron'
-import { join } from 'node:path'
-import { isFeatureId, type EmbeddedFeatureSurface, type FeatureContext, type FeatureId, type MoirasiaFeature } from '@moirasia/desktop-shell/feature'
+import { isFeatureId, type FeatureContext, type FeatureId, type MoirasiaFeature } from '@moirasia/desktop-shell/feature'
 import type { ApplicationId, FeatureStatus } from '../../shared/contracts'
 import type { EmbeddedFeatureHost } from './embedded-host'
-import { paths } from '../paths'
 import type { ShellSettingsStore } from '../settings'
+import { suiteFeatureContext } from './suite-context'
+
+export { suiteFeatureContext }
 
 type FeatureLoader = () => Promise<{ feature: MoirasiaFeature }>
 
@@ -160,75 +161,6 @@ function narrow(id: ApplicationId): FeatureId {
   return id
 }
 
-export function suiteFeatureContext(id: FeatureId, surface: EmbeddedFeatureSurface): FeatureContext {
-  const dataDirectory = join(app.getPath('userData'), 'features', id)
-  switch (id) {
-    case 'amove': {
-      const root = app.isPackaged ? join(process.resourcesPath, 'features', 'amove') : join(app.getAppPath(), 'apps', 'integrated', 'Amove')
-      const rendererUrl = process.env.ELECTRON_RENDERER_URL
-      return {
-        id, mode: 'suite', productId: id, surface,
-        paths: {
-          preloads: { shelf: paths.preload('feature-amove-shelf') },
-          renderers: { shelf: rendererUrl ? `${rendererUrl}/apps/integrated/Amove/src/renderer/shelf.html` : paths.renderer('feature-amove-shelf') },
-          native: { addon: app.isPackaged ? join(root, 'native', nativeAddonName()) : join(app.getAppPath(), 'apps', 'integrated', 'Amove', 'native', nativeAddonName()) },
-          assetsDirectory: app.isPackaged ? join(root, 'assets') : join(app.getAppPath(), 'apps', 'integrated', 'Amove', 'assets'),
-          dataDirectory,
-          legacyDataDirectories: [join(app.getPath('appData'), 'Amove')]
-        }
-      }
-    }
-    case 'exithibition':
-      return {
-        id, mode: 'suite', productId: id, surface,
-        paths: {
-          native: { executable: app.isPackaged ? join(process.resourcesPath, 'native', 'ExithibitionNative') : join(app.getAppPath(), 'apps', 'integrated', 'Exithibition', '.build', 'arm64-apple-macosx', 'debug', 'ExithibitionNative') },
-          dataDirectory
-        }
-      }
-    case 'bonded':
-      return {
-        id, mode: 'suite', productId: id, surface,
-        paths: {
-          native: { helper: app.isPackaged
-            ? join(process.resourcesPath, 'features', 'bonded', 'native', 'BondedFirewallHelper')
-            : join(app.getAppPath(), 'apps', 'integrated', 'Bonded', 'native', '.build', 'arm64-apple-macosx', 'debug', 'BondedFirewallHelper') },
-          dataDirectory,
-          legacyDataDirectories: [join(app.getPath('appData'), 'Bonded')]
-        }
-      }
-    case 'orbis':
-      return {
-        id, mode: 'suite', productId: id, surface,
-        paths: {
-          workers: { scan: app.isPackaged
-            ? join(process.resourcesPath, 'features', 'orbis', 'worker', 'scan-worker.mjs')
-            : join(app.getAppPath(), 'native', 'staged', 'features', 'orbis', 'worker', 'scan-worker.mjs') },
-          native: { metadata: app.isPackaged
-            ? join(process.resourcesPath, 'features', 'orbis', 'native', nativeAddonName('orbis'))
-            : join(app.getAppPath(), 'native', 'staged', 'features', 'orbis', 'native', nativeAddonName('orbis')) },
-          dataDirectory
-        }
-      }
-    default:
-      return assertNever(id)
-  }
-}
-
-function assertNever(value: never): never { throw new Error(`Unknown feature '${String(value)}'`) }
 function errorMessage(error: unknown): string { return error instanceof Error ? error.message : String(error) }
-
-function nativeAddonName(feature: 'amove' | 'orbis' = 'amove'): string {
-  if (feature === 'orbis') {
-    const arch = process.arch === 'arm64' ? 'arm64' : 'x64'
-    if (process.platform === 'darwin') return `orbis-metadata.darwin-${arch}.node`
-    if (process.platform === 'win32') return 'orbis-metadata.win32-x64-msvc.node'
-    return 'orbis-metadata.linux-x64-gnu.node'
-  }
-  const arch = process.arch === 'arm64' ? 'arm64' : 'x64'
-  if (process.platform === 'darwin') return `amove-native.darwin-${arch}.node`
-  if (process.platform === 'win32') return 'amove-native.win32-x64-msvc.node'
-  return 'amove-native.linux-x64-gnu.node'
-}
 
 export type { FeatureLoader }

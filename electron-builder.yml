@@ -9,8 +9,8 @@ files:
 extraResources:
   - from: native/staged/application-agent
     to: application-agent
-  - from: native/staged/features/ExithibitionNative
-    to: native/ExithibitionNative
+  - from: native/staged/features/exithibition/native
+    to: features/exithibition/native
   - from: native/staged/features/amove/native
     to: features/amove/native
   - from: native/staged/features/amove/assets

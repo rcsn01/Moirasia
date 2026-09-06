@@ -50,6 +50,15 @@ describe('feature catalog', () => {
     expect(featureCatalog.entries.map((entry) => entry.executableName)).toEqual(['Amove', 'Exithibition', 'Bonded', 'Orbis'])
   })
 
+  it('owns the artifact facet for every feature', () => {
+    expect(featureCatalog.entries.map((entry) => [entry.id, entry.directory, entry.artifacts.length])).toEqual([
+      ['amove', 'Amove', 2],
+      ['exithibition', 'Exithibition', 1],
+      ['bonded', 'Bonded', 1],
+      ['orbis', 'Orbis', 2]
+    ])
+  })
+
   it('throws on unknown ids and freezes the catalog against mutation', () => {
     expect(() => featureCatalog.get('yn360' as FeatureId)).toThrow(/Unknown feature/)
     expect(Object.isFrozen(featureCatalog)).toBe(true)
@@ -58,6 +67,8 @@ describe('feature catalog', () => {
     for (const entry of featureCatalog.entries) {
       expect(Object.isFrozen(entry)).toBe(true)
       expect(Object.isFrozen(entry.requirements)).toBe(true)
+      expect(Object.isFrozen(entry.artifacts)).toBe(true)
+      for (const artifact of entry.artifacts) expect(Object.isFrozen(artifact)).toBe(true)
     }
   })
 })
