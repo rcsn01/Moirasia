@@ -31,6 +31,22 @@ export interface FeatureResourceRequirements {
 
 export interface FeatureGroupId { id: string; label: string }
 
+/** The standalone window's shape and navigation policy — the facts the feature
+ *  surface host joins with its own chrome and appearance options. Pure data:
+ *  sizes and policy names only, no Electron import. */
+export interface StandaloneWindowFacts {
+  readonly width: number
+  readonly height: number
+  readonly minWidth: number
+  readonly minHeight: number
+  /** Whether the standalone window may go fullscreen (Bonded: false). Default true. */
+  readonly fullscreenable?: boolean
+  /** will-navigate policy: 'deny' prevents all navigations; 'allow-same-url'
+   *  additionally permits reload/same-URL navigation (Amove). Default 'deny'.
+   *  window-open is always denied. */
+  readonly navigation?: 'deny' | 'allow-same-url'
+}
+
 /** Artifact roles mirror the requirement tables: a host validates 'native.addon',
  *  the catalog says what that file is and where it lives. */
 export type ArtifactKind = 'native' | 'executable' | 'worker' | 'assets'
@@ -96,12 +112,15 @@ export interface FeatureCatalogEntry {
   readonly directory: string      // app repo directory name under apps/integrated
   readonly requirements: Readonly<Record<FeatureHostMode, FeatureResourceRequirements>>
   readonly artifacts: readonly FeatureArtifact[]
+  readonly standaloneWindow: StandaloneWindowFacts
 }
 
 const GROUPS = [
   { id: 'window-management', label: 'Window management' },
   { id: 'monitoring', label: 'Monitoring' }
 ] as const
+
+const NAVIGATION_POLICIES: ReadonlySet<string> = new Set(['deny', 'allow-same-url'])
 
 const FEATURE_SEEDS = [
   {
@@ -117,6 +136,7 @@ const FEATURE_SEEDS = [
       standalone: { preloads: ['main', 'shelf'], renderers: ['main', 'shelf'], native: ['addon'], assetsDirectory: true, dataDirectory: true },
       suite: { preloads: ['shelf'], renderers: ['shelf'], native: ['addon'], assetsDirectory: true, dataDirectory: true }
     },
+    standaloneWindow: { width: 1180, height: 760, minWidth: 980, minHeight: 700, navigation: 'allow-same-url' },
     artifacts: [
       // Standalone assets are asar-embedded (files: assets/**/*), not an extraResource;
       // standaloneResource records the app-internal convention.
@@ -137,6 +157,7 @@ const FEATURE_SEEDS = [
       standalone: { preloads: ['main'], renderers: ['main'], native: ['executable'], dataDirectory: true },
       suite: { native: ['executable'], dataDirectory: true }
     },
+    standaloneWindow: { width: 1180, height: 760, minWidth: 1080, minHeight: 690 },
     artifacts: [
       { name: 'executable', kind: 'executable', file: 'ExithibitionNative', buildOutput: '.build/arm64-apple-macosx/{configuration}', staged: 'native/staged/features/exithibition/native', suiteResource: 'features/exithibition/native', suiteDevSource: 'buildOutput', standaloneResource: 'native' }
     ]
@@ -154,6 +175,7 @@ const FEATURE_SEEDS = [
       standalone: { preloads: ['main'], renderers: ['main'], native: ['helper'], dataDirectory: true },
       suite: { native: ['helper'], dataDirectory: true }
     },
+    standaloneWindow: { width: 430, height: 600, minWidth: 390, minHeight: 500, fullscreenable: false },
     artifacts: [
       // A SwiftPM executable like Exithibition's: exact filename, not a napi base name.
       { name: 'helper', kind: 'executable', file: 'BondedFirewallHelper', buildOutput: 'native/.build/arm64-apple-macosx/{configuration}', staged: 'native/staged/features/bonded/native', suiteResource: 'features/bonded/native', suiteDevSource: 'buildOutput', standaloneResource: 'native' }
@@ -172,6 +194,7 @@ const FEATURE_SEEDS = [
       standalone: { preloads: ['main'], renderers: ['main'], workers: ['scan'], dataDirectory: true },
       suite: { workers: ['scan'], dataDirectory: true }
     },
+    standaloneWindow: { width: 1280, height: 820, minWidth: 860, minHeight: 600 },
     artifacts: [
       // The suite trusts the staged copies: features:worker/features:native place them there in predev.
       { name: 'metadata', kind: 'native', file: 'orbis-metadata', buildOutput: 'native', staged: 'native/staged/features/orbis/native', suiteResource: 'features/orbis/native', suiteDevSource: 'staged', standaloneResource: 'features/orbis/native' },
@@ -197,6 +220,20 @@ export function isFeatureId(value: unknown): value is FeatureId {
   return featureCatalog.isId(value)
 }
 
+function validateStandaloneWindow(id: FeatureId, facts: StandaloneWindowFacts): void {
+  for (const [name, size] of [['width', facts.width], ['height', facts.height], ['minWidth', facts.minWidth], ['minHeight', facts.minHeight]] as const) {
+    if (!Number.isSafeInteger(size) || size <= 0) throw new Error(`Feature '${id}' standalone window ${name} must be a positive integer.`)
+  }
+  if (facts.minWidth > facts.width) throw new Error(`Feature '${id}' standalone window minWidth exceeds width.`)
+  if (facts.minHeight > facts.height) throw new Error(`Feature '${id}' standalone window minHeight exceeds height.`)
+  if (facts.navigation !== undefined && !NAVIGATION_POLICIES.has(facts.navigation)) {
+    throw new Error(`Feature '${id}' standalone window navigation policy '${String(facts.navigation)}' is unknown.`)
+  }
+  if (facts.fullscreenable !== undefined && facts.fullscreenable !== false) {
+    throw new Error(`Feature '${id}' standalone window fullscreenable must be false when present (true is the default).`)
+  }
+}
+
 function freezeRequirements(requirements: FeatureResourceRequirements): FeatureResourceRequirements {
   for (const values of [requirements.preloads, requirements.renderers, requirements.native, requirements.workers]) {
     if (values) Object.freeze(values)
@@ -204,14 +241,17 @@ function freezeRequirements(requirements: FeatureResourceRequirements): FeatureR
   return Object.freeze(requirements)
 }
 
-function buildCatalog(): FeatureCatalog {
+/** Builds and validates a catalog from feature seeds. The shared catalog is
+ *  built once at import time; the seeds parameter is the seam that lets tests
+ *  exercise the validation before any seed lands in the product catalog. */
+export function buildCatalog(seeds: readonly FeatureCatalogEntry[] = FEATURE_SEEDS): FeatureCatalog {
   const groupIds = new Set<string>(GROUPS.map((group) => group.id))
   const ids = new Set<string>()
   const bundleIds = new Set<string>()
   // A native: requirement may name a napi addon ('native') or a plain native binary ('executable') —
   // both land in the paths.native map, so requirement-bucket and ArtifactKind names are not the same check.
   const nativeRequirementKinds: ReadonlySet<ArtifactKind> = new Set(['native', 'executable'])
-  for (const seed of FEATURE_SEEDS) {
+  for (const seed of seeds) {
     if (ids.has(seed.id)) throw new Error(`Feature catalog has a duplicate id '${seed.id}'.`)
     if (bundleIds.has(seed.bundleId)) throw new Error(`Feature catalog has a duplicate bundle id '${seed.bundleId}'.`)
     if (!groupIds.has(seed.groupId)) throw new Error(`Feature '${seed.id}' references unknown group '${seed.groupId}'.`)
@@ -220,6 +260,7 @@ function buildCatalog(): FeatureCatalog {
     if (!seed.executableName.trim()) throw new Error(`Feature '${seed.id}' has an empty executable name.`)
     if (!seed.directory.trim()) throw new Error(`Feature '${seed.id}' has an empty directory.`)
     if (!seed.requirements.standalone || !seed.requirements.suite) throw new Error(`Feature '${seed.id}' is missing requirements for a host mode.`)
+    validateStandaloneWindow(seed.id, seed.standaloneWindow)
 
     const artifactNames = new Set<string>()
     for (const seedArtifact of seed.artifacts) {
@@ -252,13 +293,14 @@ function buildCatalog(): FeatureCatalog {
     bundleIds.add(seed.bundleId)
   }
 
-  const entries = FEATURE_SEEDS.map((seed) => {
+  const entries = seeds.map((seed) => {
     const requirements: Record<FeatureHostMode, FeatureResourceRequirements> = {
       standalone: freezeRequirements(seed.requirements.standalone),
       suite: freezeRequirements(seed.requirements.suite)
     }
     const artifacts = Object.freeze(seed.artifacts.map((artifact) => Object.freeze({ ...artifact })))
-    return Object.freeze({ ...seed, requirements: Object.freeze(requirements), artifacts }) as FeatureCatalogEntry
+    const standaloneWindow = Object.freeze({ ...seed.standaloneWindow })
+    return Object.freeze({ ...seed, requirements: Object.freeze(requirements), artifacts, standaloneWindow }) as FeatureCatalogEntry
   })
   const groups = GROUPS.map((group) => Object.freeze({
     id: group.id,

@@ -1,5 +1,13 @@
 import { describe, expect, it } from 'vitest'
-import { FEATURE_IDS, featureCatalog, isFeatureId, type FeatureId } from '../packages/desktop-shell/src/feature-catalog'
+import { FEATURE_IDS, buildCatalog, featureCatalog, isFeatureId, type FeatureCatalogEntry, type FeatureId } from '../packages/desktop-shell/src/feature-catalog'
+
+const amoveEntry = featureCatalog.get('amove')
+
+/** A complete, valid seed the mutation tests below break in exactly one way. */
+function validSeed(overrides: Partial<FeatureCatalogEntry> = {}): FeatureCatalogEntry {
+  const base = featureCatalog.get('orbis')
+  return { ...base, id: 'orbis', ...overrides } as FeatureCatalogEntry
+}
 
 describe('feature catalog', () => {
   it('pins the catalog order that menu accelerators and index-dependent consumers rely on', () => {
@@ -59,6 +67,31 @@ describe('feature catalog', () => {
     ])
   })
 
+  it('pins the standalone window facts the feature surface host joins with its own chrome', () => {
+    expect(featureCatalog.entries.map((entry) => [entry.id, entry.standaloneWindow])).toEqual([
+      ['amove', { width: 1180, height: 760, minWidth: 980, minHeight: 700, navigation: 'allow-same-url' }],
+      ['exithibition', { width: 1180, height: 760, minWidth: 1080, minHeight: 690 }],
+      ['bonded', { width: 430, height: 600, minWidth: 390, minHeight: 500, fullscreenable: false }],
+      ['orbis', { width: 1280, height: 820, minWidth: 860, minHeight: 600 }]
+    ])
+  })
+
+  it('rejects invalid standalone window facts at build time', () => {
+    const width = amoveEntry.standaloneWindow
+    const broken: Array<[string, Partial<FeatureCatalogEntry>]> = [
+      ['zero width', { standaloneWindow: { ...width, width: 0 } }],
+      ['fractional height', { standaloneWindow: { ...width, height: 760.5 } }],
+      ['negative minWidth', { standaloneWindow: { ...width, minWidth: -1 } }],
+      ['minWidth over width', { standaloneWindow: { ...width, minWidth: width.width + 1 } }],
+      ['minHeight over height', { standaloneWindow: { ...width, minHeight: width.height + 1 } }],
+      ['unknown navigation', { standaloneWindow: { ...width, navigation: 'bogus' as never } }],
+      ['explicit fullscreenable true', { standaloneWindow: { ...width, fullscreenable: true } }]
+    ]
+    for (const [label, overrides] of broken) {
+      expect(() => buildCatalog([validSeed(overrides)]), label).toThrow(/standalone window/)
+    }
+  })
+
   it('throws on unknown ids and freezes the catalog against mutation', () => {
     expect(() => featureCatalog.get('yn360' as FeatureId)).toThrow(/Unknown feature/)
     expect(Object.isFrozen(featureCatalog)).toBe(true)
@@ -68,6 +101,7 @@ describe('feature catalog', () => {
       expect(Object.isFrozen(entry)).toBe(true)
       expect(Object.isFrozen(entry.requirements)).toBe(true)
       expect(Object.isFrozen(entry.artifacts)).toBe(true)
+      expect(Object.isFrozen(entry.standaloneWindow)).toBe(true)
       for (const artifact of entry.artifacts) expect(Object.isFrozen(artifact)).toBe(true)
     }
   })
