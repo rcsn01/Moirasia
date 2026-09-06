@@ -1,9 +1,9 @@
 import { app, ipcMain, nativeTheme, type BrowserWindow, type BrowserWindowConstructorOptions, type NativeTheme, type WebContents } from 'electron'
 import { copyFile, mkdir, open, readFile, rename, rm, stat, watch } from 'node:fs/promises'
-import { writeSync } from 'node:fs'
 import { dirname, join } from 'node:path'
-import { tmpdir } from 'node:os'
 import { APPEARANCES, PRODUCT_IDS, isAppearance, isProductId, type Appearance, type AppearanceSnapshot, type LoginItemControlResult, type ProductId } from './index'
+
+export { runLoginItemControl } from './login-item-control'
 
 const DEFAULTS: Record<ProductId, Appearance> = { moirasia: 'system', amove: 'system', vox: 'system', exithibition: 'dark', bonded: 'system', orbis: 'system', yn360: 'system' }
 const EMPTY: AppearanceSnapshot = { version: 1, revision: 0, values: DEFAULTS }
@@ -166,31 +166,6 @@ export async function registerProductAppearance(product: ProductId, window: Brow
 
 export function desktopWindowChromeOptions(platform = process.platform): BrowserWindowConstructorOptions {
   return platform === 'darwin' ? { titleBarStyle: 'hiddenInset', trafficLightPosition: { x: 16, y: 11 } } : {}
-}
-
-export async function runLoginItemControl(appId: string, argv = process.argv): Promise<boolean> {
-  const argument = argv.find((value) => value.startsWith('--moirasia-control='))
-  const switchValue = app.commandLine.getSwitchValue('moirasia-control')
-  if (!argument && !switchValue) return false
-  const command = switchValue || argument!.slice('--moirasia-control='.length)
-  const isolated = join(tmpdir(), `moirasia-control-${appId}-${process.pid}`)
-  app.setPath('userData', isolated)
-  let result: LoginItemControlResult
-  try {
-    await app.whenReady()
-    if (command === 'login-item:set:on') app.setLoginItemSettings({ openAtLogin: true })
-    else if (command === 'login-item:set:off') app.setLoginItemSettings({ openAtLogin: false })
-    else if (command !== 'login-item:get') throw new Error('Unsupported control command')
-    const settings = app.getLoginItemSettings()
-    const status = process.platform !== 'darwin' ? 'unavailable' : settings.status === 'requires-approval' ? 'requires-approval' : settings.openAtLogin ? 'enabled' : command === 'login-item:set:on' ? 'requires-approval' : 'disabled'
-    result = { protocolVersion: 1, appId, openAtLogin: settings.openAtLogin, status }
-  } catch (error) {
-    result = { protocolVersion: 1, appId, openAtLogin: false, status: process.platform === 'darwin' ? 'error' : 'unavailable', error: error instanceof Error ? error.message : String(error) }
-  }
-  writeSync(1, `${JSON.stringify(result)}\n`)
-  await rm(isolated, { recursive: true, force: true }).catch(() => undefined)
-  app.exit(result.status === 'error' ? 1 : 0)
-  return true
 }
 
 async function readSnapshot(path: string): Promise<AppearanceSnapshot | undefined> {
