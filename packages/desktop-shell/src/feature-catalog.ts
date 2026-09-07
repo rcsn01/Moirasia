@@ -2,7 +2,7 @@
  * The feature catalog: the single owner of every shared fact about the four
  * embedded features — identity, labels, bundle and executable names,
  * descriptions, display groups, icon keys, order, per-host-mode resource
- * requirements, and artifact facts: every binary, worker, and asset bundle a
+ * requirements, standalone window facts, and artifact facts: every binary, worker, and asset bundle a
  * feature ships, its filename, the dev build layout it comes from, where
  * staging places it, and where packaged resources land. Pure data and pure
  * string helpers: no Electron, React, filesystem, or product-package imports

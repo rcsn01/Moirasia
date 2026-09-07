@@ -108,7 +108,10 @@ async function standaloneHandle(context: Extract<FeatureContext, { mode: 'standa
     async ready(): Promise<void> {
       if (disposed || loaded) return
       const renderer = context.paths.renderers?.main
-      if (!renderer) throw new Error(`Feature '${context.id}' is missing the standalone renderer 'renderers.main'.`)
+      if (!renderer) {
+        handle.dispose()
+        throw new Error(`Feature '${context.id}' is missing the standalone renderer 'renderers.main'.`)
+      }
       try {
         await (isHttpUrl(renderer) ? window.loadURL(renderer) : window.loadFile(renderer))
       } catch (error) {

@@ -3,7 +3,7 @@ import type { ProductId } from './index'
 import { featureCatalog, type FeatureId, type FeatureResourceRequirements } from './feature-catalog'
 
 export { featureCatalog, FEATURE_IDS, isFeatureId, nativeAddonFileName, artifactPath } from './feature-catalog'
-export type { FeatureId, FeatureIconKey, FeatureGroupId, FeatureCatalogEntry, FeatureHostMode, FeatureResourceRequirements, ArtifactKind, FeatureArtifact } from './feature-catalog'
+export type { FeatureId, FeatureIconKey, FeatureGroupId, FeatureCatalogEntry, FeatureHostMode, FeatureResourceRequirements, StandaloneWindowFacts, ArtifactKind, FeatureArtifact } from './feature-catalog'
 
 /**
  * Resources are keyed by the name a feature uses, rather than by whatever
