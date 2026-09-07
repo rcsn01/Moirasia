@@ -197,6 +197,26 @@ describe('runStandaloneLaunch', () => {
     expect(app.quit).toHaveBeenCalledTimes(1)
   })
 
+  it('before-quit waits for an in-flight registration before disposal', async () => {
+    let releaseRegister!: () => void
+    const registerGate = new Promise<void>((resolve) => { releaseRegister = resolve })
+    const register = vi.fn(() => registerGate)
+    const dispose = vi.fn()
+    const outcome = runStandaloneLaunch(launchOptions({ register, dispose }))
+    await vi.waitFor(() => expect(register).toHaveBeenCalledTimes(1))
+
+    const event = { preventDefault: vi.fn() }
+    mocks.emit('before-quit', event)
+    expect(event.preventDefault).toHaveBeenCalledTimes(1)
+    expect(dispose).not.toHaveBeenCalled()
+
+    releaseRegister()
+    await expect(outcome).resolves.toBe('started')
+    await vi.waitFor(() => expect(dispose).toHaveBeenCalledTimes(1))
+    expect(register.mock.invocationCallOrder[0]).toBeLessThan(dispose.mock.invocationCallOrder[0]!)
+    await vi.waitFor(() => expect(app.quit).toHaveBeenCalledTimes(1))
+  })
+
   it('a throwing dispose is logged and the quit still proceeds', async () => {
     const teardownFailure = new Error('helper refused to stop')
     await expect(runStandaloneLaunch(launchOptions({ register: () => undefined, dispose: () => { throw teardownFailure } }))).resolves.toBe('started')

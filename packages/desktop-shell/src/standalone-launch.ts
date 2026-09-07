@@ -69,8 +69,8 @@ export interface StandaloneLaunchOptions {
  *   while the real app holds the lock.
  * - `register` runs inside `whenReady`, after the `userData` override.
  * - No listeners are ever registered in control mode.
- * - `dispose` is awaited at most once; a rejecting `dispose`/`onRegisterError`
- *   is logged and the quit still proceeds.
+ * - `dispose` is awaited at most once and never races an in-flight `register`;
+ *   a rejecting `dispose`/`onRegisterError` is logged and the quit still proceeds.
  * - The module owns every `app.quit()`/`app.exit(1)` decision; entries never
  *   call them.
  */
@@ -89,18 +89,26 @@ export async function runStandaloneLaunch(options: StandaloneLaunchOptions): Pro
     app.on('window-all-closed', () => { if (resolveQuitPolicy(options.quitOnLastWindow)) app.quit() })
     let quitting = false
     let stopped = false
+    let registration: Promise<void> | undefined
+    let registrationSettled = false
     app.on('before-quit', (event) => {
       if (stopped) return
       event.preventDefault()
       if (quitting) return
       quitting = true
-      void runHook(options.dispose).finally(() => { stopped = true; app.quit() })
+      const teardown = registrationSettled
+        ? runHook(options.dispose)
+        : (registration ?? Promise.resolve()).catch(() => undefined).then(() => runHook(options.dispose))
+      void teardown.finally(() => { stopped = true; app.quit() })
     })
     try {
       await app.whenReady()
       if (options.contentSecurityPolicy) installContentSecurityPolicy(options.contentSecurityPolicy(process.env.ELECTRON_RENDERER_URL))
       if (options.menu) Menu.setApplicationMenu(Menu.buildFromTemplate(options.menu()))
-      await options.register()
+      // Publish the promise before register starts so before-quit cannot run
+      // disposal against a half-created feature.
+      registration = Promise.resolve().then(() => options.register())
+      try { await registration } finally { registrationSettled = true }
       return 'started'
     } catch (error) {
       console.error(error)
