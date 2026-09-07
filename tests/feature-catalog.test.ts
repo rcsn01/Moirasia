@@ -5,17 +5,17 @@ const amoveEntry = featureCatalog.get('amove')
 
 /** A complete, valid seed the mutation tests below break in exactly one way. */
 function validSeed(overrides: Partial<FeatureCatalogEntry> = {}): FeatureCatalogEntry {
-  const base = featureCatalog.get('orbis')
-  return { ...base, id: 'orbis', ...overrides } as FeatureCatalogEntry
+  const base = featureCatalog.get('bonded')
+  return { ...base, id: 'bonded', ...overrides } as FeatureCatalogEntry
 }
 
 describe('feature catalog', () => {
   it('pins the catalog order that menu accelerators and index-dependent consumers rely on', () => {
-    expect(FEATURE_IDS).toEqual(['amove', 'exithibition', 'bonded', 'orbis'])
+    expect(FEATURE_IDS).toEqual(['amove', 'bonded'])
     expect(featureCatalog.entries.map((entry) => entry.id)).toEqual(FEATURE_IDS)
   })
 
-  it('accepts exactly the four feature ids and rejects lookalikes', () => {
+  it('accepts exactly the two feature ids and rejects lookalikes', () => {
     for (const id of FEATURE_IDS) expect(isFeatureId(id)).toBe(true)
     for (const value of ['vox', 'apps', 'settings', '', null, undefined, 42, 'moirasia', 'yn360', 'amovee']) {
       expect(featureCatalog.isId(value)).toBe(false)
@@ -39,40 +39,33 @@ describe('feature catalog', () => {
   it('derives display groups in catalog order', () => {
     expect(featureCatalog.groups.map((group) => [group.id, group.features])).toEqual([
       ['window-management', ['amove']],
-      ['monitoring', ['exithibition', 'bonded', 'orbis']]
+      ['monitoring', ['bonded']]
     ])
   })
 
   it('keeps the requirements transcribed from the former defaultRequirements switch', () => {
     expect(featureCatalog.get('amove').requirements.standalone).toEqual({ preloads: ['main', 'shelf'], renderers: ['main', 'shelf'], native: ['addon'], assetsDirectory: true, dataDirectory: true })
-    expect(featureCatalog.get('orbis').requirements.suite).toEqual({ workers: ['scan'], dataDirectory: true })
-    expect(featureCatalog.get('exithibition').requirements.standalone).toEqual({ preloads: ['main'], renderers: ['main'], native: ['executable'], dataDirectory: true })
     expect(featureCatalog.get('bonded').requirements.suite).toEqual({ native: ['helper'], dataDirectory: true })
   })
 
   it('matches bundle ids and executable names to the standalone bundles', () => {
     expect(featureCatalog.get('amove').bundleId).toBe('com.opense.Amove')
-    expect(featureCatalog.get('exithibition').bundleId).toBe('com.local.Exithibition')
     expect(featureCatalog.get('bonded').bundleId).toBe('com.opense.Bonded')
-    expect(featureCatalog.get('orbis').bundleId).toBe('com.opense.Orbis')
-    expect(featureCatalog.entries.map((entry) => entry.executableName)).toEqual(['Amove', 'Exithibition', 'Bonded', 'Orbis'])
+    expect(featureCatalog.get('bonded').bundleId).toBe('com.opense.Bonded')
+    expect(featureCatalog.entries.map((entry) => entry.executableName)).toEqual(['Amove', 'Bonded'])
   })
 
   it('owns the artifact facet for every feature', () => {
     expect(featureCatalog.entries.map((entry) => [entry.id, entry.directory, entry.artifacts.length])).toEqual([
       ['amove', 'Amove', 2],
-      ['exithibition', 'Exithibition', 1],
-      ['bonded', 'Bonded', 1],
-      ['orbis', 'Orbis', 2]
+      ['bonded', 'Bonded', 1]
     ])
   })
 
   it('pins the standalone window facts the feature surface host joins with its own chrome', () => {
     expect(featureCatalog.entries.map((entry) => [entry.id, entry.standaloneWindow])).toEqual([
       ['amove', { width: 1180, height: 760, minWidth: 980, minHeight: 700, navigation: 'allow-same-url' }],
-      ['exithibition', { width: 1180, height: 760, minWidth: 1080, minHeight: 690 }],
-      ['bonded', { width: 430, height: 600, minWidth: 390, minHeight: 500, fullscreenable: false }],
-      ['orbis', { width: 1280, height: 820, minWidth: 860, minHeight: 600 }]
+      ['bonded', { width: 430, height: 600, minWidth: 390, minHeight: 500, fullscreenable: false }]
     ])
   })
 

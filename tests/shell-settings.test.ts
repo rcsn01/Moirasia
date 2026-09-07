@@ -55,28 +55,28 @@ describe('ShellSettingsStore', () => {
     await writeFile(store.filePath, JSON.stringify({ version: 1, launchAtLogin: false, autoStart: { amove: false, vox: true, exithibition: false } }))
     const updated = await store.load()
     expect(updated.pendingLoginItems).toEqual({ vox: true })
-    expect(updated.features).toEqual({ exithibition: true })
+    expect(updated.features).toEqual({})
   })
 
-  it('migrates v2 settings to v3 with the Exithibition feature installed by default', async () => {
+  it('migrates v2 settings to v3 with no features installed by default', async () => {
     const directory = await mkdtemp(join(tmpdir(), 'moirasia-settings-'))
     const store = new ShellSettingsStore(join(directory, 'settings.json'))
     await writeFile(store.filePath, JSON.stringify({ version: 2, launchAtLogin: true, pendingLoginItems: { amove: true, bogus: true } }))
 
     const migrated = await store.load()
 
-    expect(migrated).toEqual({ version: 3, launchAtLogin: true, pendingLoginItems: { amove: true }, features: { exithibition: true } })
+    expect(migrated).toEqual({ version: 3, launchAtLogin: true, pendingLoginItems: { amove: true }, features: {} })
   })
 
   it('round-trips v3 feature flags across writes and reloads', async () => {
     const directory = await mkdtemp(join(tmpdir(), 'moirasia-settings-'))
     const path = join(directory, 'settings.json')
     const store = new ShellSettingsStore(path)
-    await store.update({ features: { exithibition: false } })
+    await store.update({ features: { bonded: false } })
 
     const reloaded = await new ShellSettingsStore(path).load()
 
-    expect(reloaded.features).toEqual({ exithibition: false })
+    expect(reloaded.features).toEqual({ bonded: false })
   })
 
   it('preserves unknown feature flags written by newer builds', async () => {
@@ -86,6 +86,6 @@ describe('ShellSettingsStore', () => {
 
     const loaded = await store.load()
 
-    expect(loaded.features).toEqual({ exithibition: false, 'future-feature': true })
+    expect(loaded.features).toEqual({ 'future-feature': true })
   })
 })

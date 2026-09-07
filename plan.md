@@ -1,4 +1,4 @@
-# Plan: Deepen the standalone launcher — `runStandaloneLaunch`
+# Plan: Deepen the feature surface host — `acquireFeatureSurface`
 
 **Status:** Approved for implementation · **Date:** 2026-09-07
 **Source:** Architecture review candidate 1 (`Strong`). Vocabulary: `CONTEXT.md` (domain) and the codebase-design glossary (module, interface, implementation, seam, adapter, leverage, locality).
@@ -7,33 +7,36 @@
 
 ## 1. Problem and evidence
 
-The standalone launch sequence — login-item control branch, single-instance lock, ready-time registration, activation re-focus, quit policy, awaited teardown — is hand-copied in **five** entry files. The module is shallow in five places at once: every caller must know the whole sequence (large interface) for ~0 leverage. Deletion test: delete a shared module and the sequence reappears in five callers — a shared module earns its keep.
+Every embedded feature re-implements the host-mode surface: in suite mode, use the shell's `EmbeddedFeatureSurface` (never own a window); in standalone mode, create, guard, theme, load, show, activate, and destroy a private `BrowserWindow`. The interface each feature must know is nearly as complex as the implementation — four shallow copies of one deep concern, with drift:
 
-| | Amove | Exithibition | Bonded | Orbis | YN360 |
-|---|---|---|---|---|---|
-| `setName` timing | module scope | **inside whenReady** (drift) | module scope | module scope | module scope |
-| `setAppUserModelId` | yes | **missing** (drift) | yes | yes | yes |
-| Platform guard | darwin/win32/linux | none | darwin+arm64 | none | darwin+arm64 |
-| Guard vs control check | **guard first** | n/a | control first | n/a | control first |
-| Single-instance lock | after control check | after | after | after | **before control check** (latent hang) |
-| `userData` env override | — | — | `BONDED_USER_DATA` | `ORBIS_USER_DATA` | — |
-| `before-quit` | preventDefault, **awaits dispose**, re-entry flags | **`void feature.dispose()` — fire-and-forget, teardown can be dropped on quit** (bug) | preventDefault, awaits, flags | preventDefault, awaits, flags | preventDefault, awaits, flags |
-| `activate` listener | inside control branch | inside | inside | **module scope — fires even in `--moirasia-control` mode** (bug) | inside |
-| Register failure | console.error + quit | console.error + quit | dialogs (lease error → info dialog) | console.error + quit | error dialog + quit |
-| `window-all-closed` | platform + feature policy (only copy) | always quit | always quit | always quit | always quit |
+| | Amove | Exithibition | Bonded | Orbis |
+|---|---|---|---|---|
+| Window creation | `app-controller.ts` `createMainWindow` | `controller.ts` `createView` | inline in `feature.ts` | `createWindow` helper |
+| Guards | deny + allow-same-url | **none** (drift) | **none** (drift) | deny-all |
+| Appearance | standalone-only, `applyNativeTheme: true` | standalone-only, `true` | standalone-only, default `true` | standalone-only, `true` |
+| Initial background | `neutralWindowBackground('system')` | `neutralWindowBackground('dark')` | `'system'` | `'system'` |
+| `spellcheck` | unset (on) | unset (on) | **`false`** (drift) | unset (on) |
+| Show timing | after load | `ready-to-show` | `did-finish-load` | after load |
+| URL detection | `isRendererUrl` | `isRendererUrl` | `/^https?:\/\//` | `startsWith('http')` |
+| activate() standalone | show + focus | show + focus | **restore** + show + focus | show + focus |
+| activate() suite | `surface.activate()` | `surface.activate()` | activate + **focus** | activate only |
+| dispose() | appearance → destroy | appearance → destroy | IPC → appearance → stop → destroy | IPC → appearance → close → destroy |
 
-Files:
+Files (the duplicated implementation):
 
 ```
-apps/integrated/Amove/src/main/index.ts
-apps/integrated/Exithibition/src/main/index.ts
-apps/integrated/Bonded/src/main/index.ts
-apps/integrated/Orbis/src/main/index.ts
-apps/standalone/YN360/src/main/index.ts
-packages/desktop-shell/src/main.ts        (hosts runLoginItemControl today)
+apps/integrated/Amove/src/main/app-controller.ts        (createMainWindow, ~35 lines of the 337)
+apps/integrated/Amove/src/main/feature.ts                (42 lines, thin today)
+apps/integrated/Bonded/src/main/feature.ts               (105 lines, ~80% window lifecycle)
+apps/integrated/Exithibition/src/main/controller.ts     (createView in a 149-line file)
+apps/integrated/Exithibition/src/main/feature.ts        (33 lines, thin today)
+apps/integrated/Orbis/src/main/feature.ts               (155 lines; createWindow/loadRenderer/installWindowGuards helpers)
+packages/desktop-shell/src/feature.ts                   (contracts + validateFeatureResources)
+packages/desktop-shell/src/main.ts                       (desktopWindowChromeOptions, neutralWindowBackground, registerProductAppearance, DEFAULTS)
+packages/desktop-shell/src/feature-catalog.ts            (pure-data single owner of feature facts)
 ```
 
-The YN360 lock-ordering bug, verified in source: the lock is requested **before** `runLoginItemControl` re-points `userData` to its isolated per-pid directory. A `--moirasia-control` process launched while the real app runs is refused the lock on the default `userData` path and calls `app.quit()` **without answering the control protocol** — the caller hangs waiting for the JSON response. The comment justifying the order ("a second launch can never race the first through the login-item control") protects against a race that control-first ordering also prevents; control-first is strictly safer.
+Deletion test: delete a shared module and the window lifecycle reappears in four callers, with the drift above re-seeded. Test coverage today: only Bonded (`tests/feature.test.ts`) and Orbis (`tests/orbis-feature.test.ts`) have feature-level lifecycle tests; Amove and Exithibition lifecycles have none; every existing test must re-mock `electron` and re-state the window double. The lifecycle is tested nowhere once, as one interface.
 
 ---
 
@@ -41,42 +44,57 @@ The YN360 lock-ordering bug, verified in source: the lock is requested **before*
 
 ### Round 1 — shape of the deep module
 
-**Q1 Where does the module live?**
-➡️ `packages/desktop-shell/src/standalone-launch.ts`, re-exported through the existing `'./main'` export. All five apps already depend on the package (`link:../../../packages/desktop-shell`, except YN360's `file:../../../packages/desktop-shell` — same local-workspace resolution); no dependency changes.
+**Q1 What does the module own — the standalone window, or the whole host-mode surface?**
+➡️ The whole host-mode surface. The suite/standalone discrimination (`surface.webContents` vs a private window, and the mode-branched `activate()`/`dispose()` bodies) is half the duplication; owning only the window would leave four callers still branching. The module resolves a feature's *primary surface* in either mode: suite → the shell surface, standalone → a host-owned window. Suite mode never creates, loads, shows, or destroys anything — the shell window belongs to `EmbeddedFeatureHost`, untouched.
 
-**Q2 What does it return?**
-➡️ `Promise<StandaloneLaunchOutcome>` — resolves when the launch attempt settles (`'started'`, `'start-failed'`, or a terminal pre-launch state); production callers `void` it at module scope, tests `await` it for determinism. The process keeps running after `'started'` until the app quits.
+**Q2 Where does the seam live?**
+➡️ New file `packages/desktop-shell/src/feature-surface-host.ts`, new export `@moirasia/desktop-shell/feature-surface-host` (one `package.json` `exports` entry). Not folded into `./feature` (it stays type-only and renderer-bundlable; the host imports the `BrowserWindow` runtime value) and not re-exported through `./main` (the host imports `./main`'s appearance helpers — re-exporting through `./main` would make a cycle). No existing export changes.
 
-**Q3 How does the module call the product?**
-➡️ Three function fields: `register`, `dispose`, `activate`. `register` is a closure that builds its own `FeatureContext` inside (e.g. `() => feature.register(standaloneContext())`) — laziness is natural, no type parameters, no separate context field, YN360-style controllers fit with a three-line closure. The `MoirasiaFeature` contract stays untouched.
+**Q3 One-shot acquire, a hook bag, or a staged interface?**
+➡️ Staged: `acquireFeatureSurface(ctx)` returns a handle with a live `webContents` and an **unloaded, hidden** standalone window; the feature then wires its own controllers/IPC; then `await handle.ready()` loads the renderer and shows. The feature's own code between acquire and ready *is* the wire step — no `beforeLoad`/`wire`/`onDispose` callbacks, no LIFO disposer stack, no template-method inversion. This preserves the strongest ordering invariant (Bonded/Orbis/Exithibition register IPC **before** the renderer loads) while leaving each feature's exact sequence visible in the feature. A one-shot acquire would load before wiring (IPC race, or a hook parameter to work around it); a hook bag would make the interface as complex as the implementation with the logic moved behind it — the shallow-module trap, inverted.
 
-**Q4 Canonical ordering of guard / control / lock?**
-➡️ Control check **first**, then platform/arch guard, then `userData` override, then single-instance lock. Kills the YN360 control hang; the protocol always answers, even on an unsupported platform (Amove's guard-before-control is superseded — strictly more robust). No listeners are registered in control mode — kills the Orbis bug structurally.
+**Q4 What's in the handle — is `window` exposed?**
+➡️ Six members: `mode`, `webContents`, `window`, `ready()`, `activate()`, `dispose()`. `window` is exposed read-only, standalone-only (`undefined` in suite): Orbis parents `dialog.showOpenDialog` to it and Amove attaches its presence listeners to it. The host owns the lifecycle (creation, load, show, appearance, destroy); products may observe and act on the window, never create or destroy it. No `state`/`subscribe` on the standalone handle — Amove's hotkey policy is the only consumer and it already reads `ctx.surface` in suite mode and window focus events in standalone; mirroring surface state onto the window would be implementation without a second caller.
 
-**Q5 Identity facts required?**
-➡️ `productName` required (module scope, fixes Exithibition's deferred `setName`); `appUserModelId` optional (Exithibition gains `com.local.Exithibition`). `appId: string`, not `ProductId` — future adopters (LiteMaptica…) are not product ids.
+### Round 2 — facts and policies
 
-### Round 2 — variation, as data
+**Q5 Who owns the window facts (title, geometry, fullscreenable, navigation policy)?**
+➡️ The feature catalog — `standaloneWindow` facts per entry, still pure data (numbers and strings, no Electron import, renderer-bundlable). The title comes from the existing `label`. `buildCatalog` validates them at import time. This keeps the catalog the single owner of shared feature facts, as its charter already claims. Amove's icon stays product wiring (`options.icon`) because Amove's tray and dock reuse the same computed path.
 
-**Q6 Menus and CSP?** ➡️ App-owned data: `menu?: () => MenuItemConstructorOptions[]` (module installs via `Menu.buildFromTemplate`/`setApplicationMenu`) and `contentSecurityPolicy?: (rendererUrl) => string` (module reads `ELECTRON_RENDERER_URL`, wires `session.defaultSession.webRequest.onHeadersReceived`). Apps keep their policy strings and templates; the module owns only the wiring.
+**Q6 Who owns the default appearance (Exithibition's 'dark' background)?**
+➡️ `main.ts` `DEFAULTS` already owns it. Export `defaultProductAppearance(productId)` from `main.ts`; the host backgrounds the window with `neutralWindowBackground(defaultProductAppearance(id))`. Exithibition keeps its dark window; no new fact owner.
 
-**Q7 Quit policy?** ➡️ `quitOnLastWindow?: boolean | (() => boolean)`, default `true`. Four of five apps are the data value `true`; Amove passes its platform+presence predicate as a closure. The module holds no quit-policy opinion.
+**Q7 Who validates the context?**
+➡️ The host calls `validateFeatureResources(ctx)` first, in both modes, before any side effect. All four features call it today; the fifth feature cannot forget it. Orbis's manual "resources are incomplete" re-check dies (the catalog's per-mode requirement tables already cover `workers.scan` and `dataDirectory`).
 
-**Q8 Register-failure UX?** ➡️ The module always `console.error`s, then awaits `onRegisterError?` (Bonded/YN360 pass their dialog closures, Bonded special-cases `BondedRuntimeInUseError`), then `app.quit()`. A throwing hook is logged; quit still proceeds.
+**Q8 Appearance registration policy?**
+➡️ Verified uniform in all four sources: standalone-only, `registerProductAppearance(productId, window, undefined, { applyNativeTheme: true })`, disposer paired with destroy. The host owns it entirely; features stop importing `registerProductAppearance`. Suite mode registers nothing (the shell owns suite appearance).
 
-**Q9 YN360's about panel?** ➡️ No `aboutPanel` field (one app, zero hidden behavior — hatch discipline: named fields only for variations shared by ≥2 apps). It folds into YN360's `register` closure, which is the app's whenReady body.
+**Q9 Guard policy?**
+➡️ `setWindowOpenHandler` deny for every standalone window; `will-navigate` policy from the catalog fact `navigation` — `'deny'` (default: prevent everything) or `'allow-same-url'` (Amove: also permits reload/same-URL navigation). This closes the live drift: Bonded and Exithibition standalone windows are unguarded today.
 
-**Q10 Generic escape hatches (`wire`, `configure`)?** ➡️ Rejected. `register` is the extension point for ready-time product extras; unforeseen events stay in the entry or justify a named field once a pattern appears in ≥3 apps.
+**Q10 Show timing?**
+➡️ One policy: show once after the renderer load resolves (`ready()`). Bonded's `did-finish-load`, Exithibition's `ready-to-show`, and Orbis/Amove's post-`await` show all encode "show when the renderer is ready"; one deterministic policy replaces three. `spellcheck: false` becomes uniform (Bonded's precedent; product UIs).
 
-### Round 3 — testing and rollout
+**Q11 External window close / recreate-on-demand (Amove)?**
+➡️ The host listens for the window's `closed` event and marks itself disposed (appearance cleaned up); `dispose()` is idempotent after that. Amove's recreate-on-demand calls `acquireFeatureSurface` again for a fresh handle — its `showMainWindow` keeps exactly today's semantics.
 
-**Q11 Test seam?** ➡️ Mock category: the module imports `app`/`Menu`/`session` directly; tests cross the module's interface with a `vi.mock('electron')` double plus `vi.mock` of the sibling `login-item-control` module. One new root test file; the interface is the test surface. Per-app unit tests of app-owned facts (CSP helper, ipc authorization) survive unchanged.
+### Round 3 — product wiring, testing, rollout
 
-**Q12 File split?** ➡️ Extract `runLoginItemControl` to `packages/desktop-shell/src/login-item-control.ts`; `main.ts` re-exports it (specifier `'@moirasia/desktop-shell/main'` unchanged) and also re-exports the launcher. Avoids a circular import (`standalone-launch` → `main` → `standalone-launch`).
+**Q12 What stays product-owned (honest leaks through the interface)?**
+➡️ Controllers, `registerIpc`, Bonded's runtime lease, Amove's presence policy (close-to-hide, tray, dock icon, taskbar quit), Orbis's dialog parenting and worker factory, Exithibition's space handler and powerMonitor hooks, the `ctx.id` guard, and each feature's exact wiring order. The host hands over `webContents` and `window`; it never learns what a controller is.
 
-**Q13 Migration order?** ➡️ Exithibition first (simplest, fixes the worst drift) → Orbis → Bonded → Amove → YN360 (optional final step, fixes the latent control hang). One commit per step; each app migrates independently; the module is additive until its callers adopt it.
+**Q13 Are the per-feature wiring orders preserved?**
+➡️ Yes, each feature keeps its sequence using the handle: Bonded — lease → controller → IPC → `start()` → `ready()` → `excludeProcess(pid)` (was `did-finish-load` in standalone, pre-`start` in suite; both collapse to post-ready, equivalent per the standalone precedent). Orbis — controller + `initialize()` → IPC → `ready()`. Exithibition — IPC + space handler → `ready()` → native start (load-before-native preserved). Amove — settings → `ready()` (at `createMainWindow`'s position) → presence → hotkeys; IPC after `start()`, as today.
 
-**Q14 Docs?** ➡️ `CONTEXT.md` term **Standalone launcher** added (done). `docs/architecture/standalone-applications.md` paragraph about thin entries rewritten in the final step (see §7 step 10).
+**Q14 Test seam?**
+➡️ Electron is true-external (mock category): the host's own tests live at the root (`tests/feature-surface-host.test.ts`) and cross its interface with a `vi.mock('electron')` double plus a `vi.mock` of the sibling `./main` appearance helpers; every assertion is an observable outcome (created options, load calls, show/destroy/restore calls, appearance registration and disposal). Per-feature composition tests keep the **real host** behind their existing electron doubles — replace, don't layer: the window-lifecycle assertions that mattered move to the host's matrix; feature tests shrink to product wiring. `ExithibitionController`'s test passes a five-field fake handle — the second adapter (real host in production, fake in tests) that makes the handle's seam real. A new minimal Amove wiring test closes the coverage gap.
+
+**Q15 Migration order?**
+➡️ Host + tests first (additive, no callers), then Exithibition (simplest, worst guard drift) → Orbis → Bonded → Amove (heaviest restructure) → docs. One commit per step; each app migrates independently.
+
+**Q16 Docs?**
+➡️ `CONTEXT.md` term **Feature surface host** added with this plan (done). `docs/architecture/standalone-applications.md` paragraphs about feature-owned standalone windows updated in the final step (see §7 step 9).
 
 ---
 
@@ -84,363 +102,307 @@ The YN360 lock-ordering bug, verified in source: the lock is requested **before*
 
 | | A — minimize | B — maximise flexibility | C — optimise common caller |
 |---|---|---|---|
-| Shape | one function, 13-field spec, `void` | generic `TApp`/`TContext`, `Promise<LaunchOutcome>`, `wire` registrar + `configure` hooks | one function, 4 required fields + 6 optional hatches, `void` |
-| Ordering | lock **before** control (wrong — rests on the isolated-userData assumption, which is falsified by YN360's source: the re-point happens inside `runLoginItemControl`, after the lock check) | control first, guard, userData, lock — correct, with the sharpest deadlock analysis | control first — correct |
-| Depth | high, but `aboutPanel` field for one app | depth eroded by two type params + dumping-ground hatches (acknowledged) | highest for the common caller; trivial 5-line default |
-| Verdict | basis for the lean field set | adopted the outcome union | **basis of the winner** |
+| Shape | `launchStandaloneSurface(ctx, attach?)` → standalone-only surface; suite mode untouched (features keep `ctx.surface`) | `createFeatureSurfaceHost(ctx)` → `{ launch(spec), onDispose(fn), dispose() }`; full `FeatureSurface` with `state`/`subscribe` in both modes | `defineFeatureSurface(id, wire)` returns a whole `MoirasiaFeature`; plus a parts door `createFeatureWindow` for Amove |
+| Facts | catalog `standaloneWindow` (sizes, navigation, `iconAsset`) | spec param per call site (geometry, background, show strategy, `beforeLoad`) | catalog facts + `defaultProductAppearance` |
+| Depth | high for the standalone window; the suite/standalone discrimination and mode-branched `activate()` stay in four callers | deepest unification (state/subscribe/relaunch in both modes) | highest collapse for the 3-of-4 shape (Bonded becomes a wire function) |
+| Cost | half the duplication left behind; `attach` is an escape hatch doing Amove's work | machinery with one user each: show strategies (1), LIFO disposer stack (0 needed — features have their own `dispose`), spec-carried geometry re-stating facts per call site | two doors; `wiring()` accessor for Orbis's menu; rewrites feature classes as factories (touches the most product code); Amove's suite half still hand-written |
+| Verdict | right facts, wrong scope | right unification, too much interface | right leverage, wrong ownership shift |
 
-**Chosen: hybrid, C-dominant.** C's shape and ordering, B's `Promise<Outcome>` for deterministic tests, A's lean three-field lifecycle (no `context` field, no type params). Rejected: A's ordering, B's `wire`/`configure` hatches and generics, a hypothetical `aboutPanel` field.
+**Chosen: hybrid, A/C-facts with a B-shaped handle, staged.** One entry point (`acquireFeatureSurface`) like A; catalog-owned facts and zero per-call configuration like C; a handle that covers **both** host modes like B, but without `state`/`subscribe`/`onDispose`/show strategies (each has at most one caller — hypothetical seams). The staged `acquire → wire → ready` replaces both A's `attach` callback and B's `beforeLoad` hook: the feature's own code is the wire step, so Bonded/Orbis/Exithibition keep IPC-before-load and Amove keeps IPC-after-show with the same interface. Features keep their classes (Orbis keeps public `addLocation`/`rescan`; Bonded keeps its lease error path; Amove keeps `shouldQuitWhenWindowAllClosed`).
 
 ---
 
 ## 4. The interface
 
-New file `packages/desktop-shell/src/standalone-launch.ts`:
+New file `packages/desktop-shell/src/feature-surface-host.ts`:
 
 ```ts
-import { app, Menu, session } from 'electron'
-import type { MenuItemConstructorOptions } from 'electron'
-import { runLoginItemControl } from './login-item-control'
+import { BrowserWindow, type WebContents } from 'electron'
+import { defaultProductAppearance, desktopWindowChromeOptions, neutralWindowBackground, registerProductAppearance } from './main'
+import { featureCatalog, validateFeatureResources, type FeatureContext, type FeatureHostMode } from './feature'
 
-/** Terminal state of a launch attempt. The promise resolves when the attempt settles;
- *  the process keeps running after 'started' until the app quits. Production callers void it. */
-export type StandaloneLaunchOutcome =
-  | 'controlled'                // the login-item control protocol claimed the process; it self-exits
-  | 'unsupported-platform'      // platform/arch guard failed; app.exit(1) already dispatched
-  | 'single-instance-refused'   // lock lost; app.quit() already dispatched
-  | 'started'                   // register() resolved
-  | 'start-failed'              // register() rejected; failure hook ran; app.quit() dispatched
-  | 'launch-failed'             // the control/launch chain itself rejected; app.exit(1) dispatched
-
-export interface StandaloneLaunchOptions {
-  /** Login-item control id, also names diagnostics ('amove', 'orbis', 'yn360', …). */
-  readonly appId: string
-  /** app.setName — applied synchronously at module scope. */
-  readonly productName: string
-  /** app.setAppUserModelId — applied synchronously; Windows identity. */
-  readonly appUserModelId?: string
-  /** The whenReady body. Build the FeatureContext inside: it runs after the userData
-   *  override, so getPath('userData') sees the overridden path. Also the place for
-   *  product extras (about panel, …). */
-  readonly register: () => Promise<void> | void
-  /** Teardown. May be called before register() settles (quit during startup); features
-   *  already tolerate that. Awaited exactly once, before the final quit. */
-  readonly dispose: () => Promise<void> | void
-  /** Re-focus hook, wired to both 'activate' and 'second-instance'. Optional. */
-  readonly activate?: () => void
-  /** Allowed platforms; omitted = no guard. Checked after the control check. */
-  readonly platforms?: readonly NodeJS.Platform[]
-  /** Allowed architectures; omitted = no guard. */
-  readonly archs?: readonly NodeJS.Architecture[]
-  /** Env var that overrides app.setPath('userData') before the lock (e.g. 'BONDED_USER_DATA'). */
-  readonly userDataEnv?: string
-  /** CSP policy for the default session; the module reads ELECTRON_RENDERER_URL and wires the header. */
-  readonly contentSecurityPolicy?: (rendererUrl: string | undefined) => string
-  /** Application menu template; the module builds and installs it inside whenReady. */
-  readonly menu?: () => MenuItemConstructorOptions[]
-  /** Quit when the last window closes. Default true; Amove passes a predicate. */
-  readonly quitOnLastWindow?: boolean | (() => boolean)
-  /** Additive failure UX after a register() rejection (dialogs). The module always logs. */
-  readonly onRegisterError?: (error: unknown) => void | Promise<void>
+export interface FeatureSurfaceOptions {
+  /** Standalone window icon (Amove's app icon; the tray/dock reuse the same path). */
+  readonly icon?: string
+  /** webPreferences.devTools override (Amove disables under CI). Default: Electron's true. */
+  readonly devTools?: boolean
 }
 
-export function runStandaloneLaunch(options: StandaloneLaunchOptions): Promise<StandaloneLaunchOutcome>
+/**
+ * The feature's primary surface, in either host mode. Suite: the shell surface
+ * (this handle never creates, loads, shows, or destroys anything). Standalone:
+ * a host-owned window — hidden until ready(), guarded, appearance-managed,
+ * destroyed on dispose() (never close()).
+ */
+export interface FeatureSurfaceHandle {
+  readonly mode: FeatureHostMode
+  /** The IPC target: the shell webContents in suite mode, the standalone window's otherwise. */
+  readonly webContents: WebContents
+  /** The standalone window when the host owns it; undefined in suite mode. Observe and act on it (dialogs, listeners); never create or destroy it. */
+  readonly window: BrowserWindow | undefined
+  /** Load the standalone renderer and show the window. No-op in suite mode. Awaits the load; rejects after cleaning up. */
+  ready(): Promise<void>
+  /** Suite: surface.activate() + focus(). Standalone: restore-if-minimized → show → focus. */
+  activate(): void
+  /** Standalone: dispose product appearance, then destroy the window. Idempotent; no-op in suite mode. */
+  dispose(): void
+}
+
+/** Validate the context against the catalog's per-mode requirements, then acquire
+ *  the feature's primary surface. Window facts come from the catalog entry;
+ *  the initial background from the shared appearance defaults. */
+export async function acquireFeatureSurface(
+  context: FeatureContext,
+  options: FeatureSurfaceOptions = {}
+): Promise<FeatureSurfaceHandle>
 ```
 
 `packages/desktop-shell/src/main.ts` gains:
 
 ```ts
-export { runStandaloneLaunch } from './standalone-launch'
-export type { StandaloneLaunchOptions, StandaloneLaunchOutcome } from './standalone-launch'
+/** The product's default appearance — DEFAULTS stays the single owner of the seed table. */
+export function defaultProductAppearance(product: ProductId): Appearance { return DEFAULTS[product] }
 ```
 
-## 5. Canonical sequence, invariants, error modes
+`packages/desktop-shell/src/feature-catalog.ts` gains (pure data, still no Electron import):
 
-The implementation — the whole point is that this exists **once**:
+```ts
+export interface StandaloneWindowFacts {
+  readonly width: number
+  readonly height: number
+  readonly minWidth: number
+  readonly minHeight: number
+  /** Whether the standalone window may go fullscreen (Bonded: false). Default true. */
+  readonly fullscreenable?: boolean
+  /** will-navigate policy: 'deny' prevents all navigations; 'allow-same-url' additionally
+   *  permits reload/same-URL navigation (Amove). Default 'deny'. window-open is always denied. */
+  readonly navigation?: 'deny' | 'allow-same-url'
+}
+// FeatureCatalogEntry +=  readonly standaloneWindow: StandaloneWindowFacts
+```
+
+Seeds (verified against today's four creation sites; titles are the existing `label`):
+
+```ts
+amove:        { width: 1180, height: 760, minWidth: 980,  minHeight: 700, navigation: 'allow-same-url' }
+exithibition: { width: 1180, height: 760, minWidth: 1080, minHeight: 690 }
+bonded:       { width: 430,  height: 600, minWidth: 390,  minHeight: 500, fullscreenable: false }
+orbis:        { width: 1280, height: 820, minWidth: 860,  minHeight: 600 }
+```
+
+`buildCatalog` validation for the new facts: positive integers, `minWidth ≤ width`, `minHeight ≤ height`, known `navigation` value, `fullscreenable` if present must be `false` (the default is true). `package.json` `exports` gains `"./feature-surface-host": "./src/feature-surface-host.ts"`.
+
+---
+
+## 5. Canonical lifecycle, invariants, error modes
+
+The implementation — the point is that this exists **once**:
 
 ```
-runStandaloneLaunch(options):
-  1  app.setName(options.productName)
-  2  if (options.appUserModelId) app.setAppUserModelId(options.appUserModelId)
-  3  try:
-  4    controlled = await runLoginItemControl(options.appId)
-  5    if controlled: return 'controlled'              # zero listeners registered — Orbis bug dead
-  6    if (options.platforms && !platforms.includes(process.platform)): app.exit(1); return 'unsupported-platform'
-  7    if (options.archs && !archs.includes(process.arch)):            app.exit(1); return 'unsupported-platform'
-  8    if (options.userDataEnv && env[options.userDataEnv]) app.setPath('userData', env[options.userDataEnv])
-  9    if (!app.requestSingleInstanceLock()): app.quit(); return 'single-instance-refused'
- 10    app.on('second-instance', () => options.activate?.())
- 11    app.on('activate',         () => options.activate?.())
- 12    app.on('window-all-closed', () => { quit = resolveQuitPolicy(); if (quit) app.quit() })
- 13    quitting = false; stopped = false
- 14    app.on('before-quit', (event) => {
- 15      if (stopped) return                            # second pass-through quits
- 16      event.preventDefault()
- 17      if (quitting) return
- 18      quitting = true
- 19      void Promise.resolve(options.dispose()).catch(log).finally(() => { stopped = true; app.quit() })
- 20    })
- 21    try:
- 22      await app.whenReady()
- 23      if (options.contentSecurityPolicy) installCsp(options.contentSecurityPolicy(process.env.ELECTRON_RENDERER_URL))
- 24      if (options.menu) Menu.setApplicationMenu(Menu.buildFromTemplate(options.menu()))
- 25      await options.register()
- 26      return 'started'
- 27    catch (error):
- 28      console.error(error)
- 29      await Promise.resolve(options.onRegisterError?.(error)).catch(log)   # failure UX is additive
- 30      app.quit()
- 31      return 'start-failed'
- 32  catch (error):                                    # the control/launch chain itself failed
- 33    console.error(error)
- 34    app.exit(1)
- 35    return 'launch-failed'
+acquireFeatureSurface(context, options):
+ 1  validateFeatureResources(context)          # catalog per-mode table; throws before any side effect
+ 2  if (context.mode === 'suite') return suiteHandle(context.surface)
+    # suiteHandle: webContents = surface.webContents; ready() = resolved no-op;
+    # activate() = surface.activate() + surface.focus(); dispose() = no-op; window = undefined
+ 3  entry  = featureCatalog.get(context.id)
+ 4  preload = context.paths.preloads?.main     # guaranteed by validation; a missing value throws here
+ 5  window = new BrowserWindow({
+      title: entry.label, width, height, minWidth, minHeight, show: false,
+      ...desktopWindowChromeOptions(),
+      fullscreenable: entry.standaloneWindow.fullscreenable ?? true,
+      backgroundColor: neutralWindowBackground(defaultProductAppearance(context.productId)),
+      ...(options.icon ? { icon: options.icon } : {}),
+      webPreferences: { preload, contextIsolation: true, nodeIntegration: false, sandbox: true, spellcheck: false,
+                        ...(options.devTools !== undefined ? { devTools: options.devTools } : {}) }
+    })
+ 6  window.webContents.setWindowOpenHandler(() => ({ action: 'deny' }))
+ 7  installNavigationGuard(window, entry.standaloneWindow.navigation ?? 'deny')
+    # 'deny': preventDefault always. 'allow-same-url': preventDefault only when url !== webContents.getURL()
+ 8  disposeAppearance = await registerProductAppearance(context.productId, window, undefined, { applyNativeTheme: true })
+    # on rejection: window.destroy(); rethrow
+ 9  window.on('closed', () => markDisposed())   # external close cleans the appearance; handle goes inert
+10  return standaloneHandle(window, disposeAppearance)
 
-installCsp(policy):
-  session.defaultSession.webRequest.onHeadersReceived((details, callback) =>
-    callback({ responseHeaders: { ...details.responseHeaders, 'Content-Security-Policy': [policy] } }))
+handle.ready():                                   # standalone only
+    if (disposed || loaded) return resolved       # idempotent
+    renderer = context.paths.renderers?.main      # guaranteed by validation
+    try: await (isHttpUrl(renderer) ? window.loadURL(renderer) : window.loadFile(renderer))
+    catch: dispose(); throw                        # appearance disposed, window destroyed, error propagates
+    if (!window.isDestroyed()) window.show()
 
-resolveQuitPolicy(): undefined → true; boolean → itself; function → call it
+handle.activate():                                # standalone
+    if (!window.isDestroyed()) { if (window.isMinimized()) window.restore(); window.show(); window.focus() }
+handle.activate():                                 # suite
+    surface.activate(); surface.focus()
+
+handle.dispose():                                  # standalone; idempotent
+    if (disposed) return; markDisposed()
+    disposeAppearance?.(); disposeAppearance = undefined
+    if (!window.isDestroyed()) window.destroy()
 ```
 
 **Invariants (the interface, beyond the types):**
 
-- Call exactly once, at module scope, before `whenReady`.
-- Identity (`setName`/`setAppUserModelId`) is applied synchronously — before any `await`.
-- `register` runs inside `whenReady`, **after** the `userData` override — build the `FeatureContext` inside the closure.
-- No listeners are ever registered in control mode.
-- `dispose` is awaited at most once; a rejecting `dispose`/`onRegisterError` is logged and the quit still proceeds.
-- The module owns every `app.quit()`/`app.exit(1)` decision; entries never call them.
+- `acquireFeatureSurface` runs validation first; failures throw before any window exists.
+- Suite mode never touches the shell window: no creation, no load, no show, no destroy, no appearance registration. `EmbeddedFeatureHost` keeps sole ownership.
+- The standalone window is created hidden and stays unloaded until `ready()`; show happens exactly once, after the first successful load.
+- Features wire IPC/controllers between `acquire` and `ready`; the host imposes no wiring order beyond that window.
+- Appearance is registered only when the host owns the window, with `applyNativeTheme: true`, and is disposed exactly once — on `dispose()`, on `ready()` failure, or on external `closed`.
+- `dispose()` uses `destroy()`, never `close()` — Amove's close-to-hide listeners never fire during teardown (today's discipline, now guaranteed).
+- A closed/destroyed window marks the handle disposed; later `dispose()` is a no-op; a replacement surface requires a fresh `acquireFeatureSurface`.
+- The host reads only named resource maps (`preloads.main`, `renderers.main`); it never uses the deprecated `preload`/`rendererUrl`/`rendererFile` spellings.
 
-**Error modes:** the six `StandaloneLaunchOutcome` states — each is side-effect-complete (exit/quit already dispatched).
+**Error modes:** validation failure (before side effects); window-constructor or appearance failure (window destroyed, error rethrown); `ready()` load failure (appearance disposed, window destroyed, error rethrown — the feature's `catch` cleans only its own controller/lease/IPC). `FeatureRuntime`'s existing register-rollback (`try { dispose() } catch {}`) hits an idempotent handle and is harmless.
 
-## 6. What the implementation hides vs. what stays app-owned
+---
 
-**Hidden behind the seam (locality):** the canonical ordering and its rationale; the control-mode gate; the `before-quit` preventDefault/re-entry/await protocol (the subtlest logic, previously five divergent copies including one bug); CSP wiring mechanics; menu installation; lock arbitration and `second-instance` wiring; the `ELECTRON_RENDERER_URL` read; error routing and exit-code conventions.
+## 6. What the implementation hides vs. what stays product-owned
 
-**App-owned, passed as data (honest leaks):** menu templates (Orbis's call `feature.addLocation()`); CSP policy strings; identity strings; failure-dialog copy (Bonded's lease special case); Amove's quit predicate; YN360's about-panel one-liner inside its `register`.
+**Hidden behind the seam (locality):** the suite/standalone discrimination; `BrowserWindow` construction with chrome options, sandbox posture, and catalog geometry; the initial background join with the shared appearance defaults; guard installation and the navigation policies; standalone-only appearance registration and disposal; URL-vs-file renderer resolution (today four divergent spellings); show-after-load choreography; activation re-focus with restore-if-minimized; destroy-not-close teardown; idempotency, external-close tolerance, and rollback ordering.
+
+**Product-owned, passed as data or wired against the handle (honest leaks):** controllers and their start/stop; `registerIpc`; Bonded's runtime lease and its `excludeProcess` timing; Amove's presence policy (close-to-hide, `closed`→taskbar quit, tray, dock icon), hotkey policy, and window focus/blur listeners; Orbis's dialog parenting and worker factory; Exithibition's space handler and powerMonitor hooks; the `ctx.id` guard; each feature's wiring order; the Amove icon path and CI devTools policy (`options`).
+
+---
 
 ## 7. Implementation steps
 
 Each step is one commit. Verify after every step.
 
-### Step 1 — extract `login-item-control.ts` (no behavior change)
+### Step 1 — catalog facts (pure data)
 
-- Move `runLoginItemControl` from `packages/desktop-shell/src/main.ts` to new `packages/desktop-shell/src/login-item-control.ts` (imports: `app` from `electron`; `join`/`tmpdir`; `writeSync`/`rm`; the `LoginItemControlResult` type stays in `index.ts`, import it).
-- `main.ts`: `export { runLoginItemControl } from './login-item-control'` — the `'@moirasia/desktop-shell/main'` specifier keeps working for all five entries.
-- Verify: `pnpm typecheck && pnpm test` (root).
-
-### Step 2 — add `standalone-launch.ts` (no callers yet)
-
-- New file with the interface from §4 and the implementation from §5, doc comments carrying the invariants.
-- `main.ts` re-exports it (see §4).
+- `feature-catalog.ts`: add `StandaloneWindowFacts`, the `standaloneWindow` field on `FeatureCatalogEntry`, the four seeds above, and `buildCatalog` validation.
+- `tests/feature-catalog.test.ts`: pin the four fact sets; assert validation rejects non-positive sizes, `min > size`, and unknown `navigation`.
 - Verify: `pnpm typecheck && pnpm test`.
 
-### Step 3 — the test surface
+### Step 2 — `defaultProductAppearance` (single owner stays single)
 
-New `tests/standalone-launch.test.ts` (root suite; `vitest.config.ts` coverage already includes `packages/desktop-shell/src/**/*.ts`):
+- `main.ts`: export `defaultProductAppearance` (one line over `DEFAULTS`); keep `DEFAULTS` private.
+- `tests/appearance-registry.test.ts`: one case — `defaultProductAppearance('exithibition') === 'dark'`, `'bonded' === 'system'`.
+- Verify: `pnpm typecheck && pnpm test`.
 
-- Double: `vi.hoisted` electron double — an `EventEmitter`-based `app` with spy methods `setName`, `setAppUserModelId`, `setPath`, `requestSingleInstanceLock` (toggleable), `whenReady` (returns a controllable deferred), `quit`, `exit`; `Menu.buildFromTemplate`/`setApplicationMenu` spies; `session.defaultSession.webRequest.onHeadersReceived` spy. `vi.mock('electron', ...)`.
-- `vi.mock` the sibling `../packages/desktop-shell/src/login-item-control` module to resolve `true`/`false`/reject on demand. (Its own control-branch behavior is a separate module with its own interface; each seam is tested at its interface.)
-- Drive everything through `runStandaloneLaunch` + `await outcome` + emitting events on the double; assert observable outcomes, never internals.
+### Step 3 — the host and its test surface (additive, no callers yet)
 
-Test matrix:
+- New `packages/desktop-shell/src/feature-surface-host.ts` implementing §5; `package.json` gains the export entry.
+- New `tests/feature-surface-host.test.ts` — the §8 matrix. Double: `vi.hoisted` `FakeWindow` (records constructor options; `loadURL`/`loadFile` toggleable-resolvable; `show`/`focus`/`restore`/`isMinimized`/`setFullScreenable`/`destroy`/`isDestroyed` spies; `webContents` with `setWindowOpenHandler`/`on`/`getURL`/`getOSProcessId`), `vi.mock('electron')`, and `vi.mock('../packages/desktop-shell/src/main')` for `registerProductAppearance` (returns a dispose spy), `neutralWindowBackground`, `desktopWindowChromeOptions`, `defaultProductAppearance`. Real catalog and real `validateFeatureResources` — the fact joins are pinned against actual catalog data.
+- Verify: `pnpm typecheck && pnpm test`.
 
-| # | Scenario | Asserts |
-|---|---|---|
-| 1 | Happy path | identity sync before anything (`invocationCallOrder`); whenReady → CSP wired with the `ELECTRON_RENDERER_URL` policy value → menu installed → `register` once; `'started'` |
-| 2 | Control mode | `runLoginItemControl` → true: `'controlled'`; **zero** `app.on` registrations; `register` never called; `setName` was called |
-| 3 | Platform guard | platform outside list → `exit(1)`, `'unsupported-platform'`, lock never requested; arch variant ditto |
-| 4 | Lock refused | `quit()`, `'single-instance-refused'`, no listeners |
-| 5 | Register rejects | `console.error`; `onRegisterError` awaited before `quit`; `'start-failed'`; hook itself rejecting → still logs and quits |
-| 6 | before-quit protocol | `preventDefault` once; `dispose` awaited before final `quit`; second `before-quit` passes through; throwing `dispose` logged, quit proceeds |
-| 7 | Quit policy | default → quit on `window-all-closed`; boolean `false` → no quit; Amove-shaped predicate → honored |
-| 8 | userData override | env set → `setPath('userData', value)` **before** the lock; `register`'s closure observes it; env unset → no `setPath` |
-| 9 | Control chain rejects | `console.error` + `exit(1)`, `'launch-failed'` |
-| 10 | No activate hook | `second-instance`/`activate` tolerated |
-| 11 | Optional wiring | no `contentSecurityPolicy` → no header wiring; no `menu` → `setApplicationMenu` never called |
+### Step 4 — migrate Exithibition (worst guard drift dies)
 
-- Verify: `pnpm test` — all green.
-
-### Step 4 — migrate Exithibition (fixes the worst drift)
-
-New `apps/integrated/Exithibition/src/main/index.ts` in full:
+New `apps/integrated/Exithibition/src/main/feature.ts` in full:
 
 ```ts
-import { runStandaloneLaunch } from '@moirasia/desktop-shell/main'
-import { feature } from './feature'
-import { standaloneContext } from './standalone'
+import { acquireFeatureSurface, type FeatureSurfaceHandle } from '@moirasia/desktop-shell/feature-surface-host'
+import type { FeatureContext, MoirasiaFeature } from '@moirasia/desktop-shell/feature'
+import { ExithibitionController } from './controller'
 
-void runStandaloneLaunch({
-  appId: 'exithibition',
-  productName: 'Exithibition',
-  appUserModelId: 'com.local.Exithibition',
-  register: () => feature.register(standaloneContext()),
-  activate: () => feature.activate(),
-  dispose: () => feature.dispose()
-})
+class ExithibitionFeature implements MoirasiaFeature {
+  readonly id = 'exithibition'
+  #controller: ExithibitionController | undefined
+  #surface: FeatureSurfaceHandle | undefined
+
+  async register(ctx: FeatureContext): Promise<void> {
+    if (this.#controller) return
+    if (ctx.id !== this.id || ctx.productId !== 'exithibition') throw new Error('Invalid Exithibition feature context')
+    const surface = await acquireFeatureSurface(ctx)
+    const controller = new ExithibitionController(ctx, surface)
+    try {
+      this.#controller = controller
+      this.#surface = surface
+      await controller.start()
+    } catch (error) {
+      this.#controller = undefined
+      this.#surface = undefined
+      await controller.stop().catch(() => undefined)
+      surface.dispose()
+      throw error
+    }
+  }
+
+  async dispose(): Promise<void> {
+    const controller = this.#controller
+    const surface = this.#surface
+    this.#controller = undefined
+    this.#surface = undefined
+    try { await controller?.stop() } finally { surface?.dispose() }
+  }
+
+  activate(): void { this.#controller?.activate() }
+  setActive(active: boolean): void { this.#controller?.setActive(active) }
+}
+
+export const feature: MoirasiaFeature = new ExithibitionFeature()
 ```
 
-Gained by this step alone: teardown awaited on quit (the bug), `setName` at module scope, Windows identity set, activation wired inside the control branch.
-Verify: `pnpm -C apps/integrated/Exithibition typecheck && pnpm -C apps/integrated/Exithibition test` and root `pnpm typecheck && pnpm test`.
+`ExithibitionController` changes: constructor takes `(ctx, surface: FeatureSurfaceHandle)`; `start()` becomes `registerIPC()` → `installSpaceHandler(surface.webContents)` → `await surface.ready()` (was `createView`'s load+show) → native client + powerMonitor; `stop()` drops the appearance disposal and `view.destroy()` (the feature's `surface.dispose()` owns both); `authorize`/`broadcast` read `surface.webContents`; `activate()` delegates to `surface.activate()`. Delete `createView` and `isRendererUrl`.
+
+`exithibition-controller.test.ts`: pass a fake handle (`{ mode, webContents, window: FakeWindow, ready: vi.fn(async () => {}), activate, dispose }`) — the second adapter that makes the controller's seam real. Verify: `pnpm -C apps/integrated/Exithibition typecheck && pnpm -C apps/integrated/Exithibition test` + root gates.
 
 ### Step 5 — migrate Orbis
 
-New `apps/integrated/Orbis/src/main/index.ts`:
+`OrbisFeature` changes: `acquireFeatureSurface(ctx)` replaces `createWindow`/`installWindowGuards`; `registerIpc({ webContents: surface.webContents, … })` before `await surface.ready()`; the dialog adapter binds to `surface.window`; `createOrbisSystemShell(() => surface.webContents)` replaces the `let target` union dance; `activate()` becomes `surface.activate()`; `dispose()` keeps its order (IPC → `controller.close()` → `surface.dispose()`); the register-catch keeps its rollback (IPC → `controller.close()` → `surface.dispose()` → field reset). Delete `createWindow`, `loadRenderer`, `installWindowGuards`, `isRendererUrl`. Keep the worker-factory env logic and the `initialize()`-before-IPC ordering (controller published before initialization so a host shutdown can close a loading index).
 
-```ts
-import type { MenuItemConstructorOptions } from 'electron'
-import { runStandaloneLaunch } from '@moirasia/desktop-shell/main'
-import { feature } from './feature'
-import { standaloneContext } from './standalone'
+`orbis-feature.test.ts`: add `isMinimized`/`restore` spies to `FakeWindow`; keep the real host behind the existing electron and `./main` mocks; assertions stand (suite: zero windows; standalone: one window, `loadFile('/tmp/orbis-renderer.html')`, worker only on demand, dispose terminates worker and clears handlers).
 
-void runStandaloneLaunch({
-  appId: 'orbis',
-  productName: 'Orbis',
-  appUserModelId: 'com.opense.Orbis',
-  userDataEnv: 'ORBIS_USER_DATA',
-  contentSecurityPolicy: orbisContentSecurityPolicy,
-  menu: orbisMenu,
-  register: () => feature.register(standaloneContext()),
-  activate: () => feature.activate(),
-  dispose: () => feature.dispose()
-})
-
-function orbisContentSecurityPolicy(rendererUrl: string | undefined): string {
-  // same string as today's installContentSecurityPolicy
-}
-
-function orbisMenu(): MenuItemConstructorOptions[] {
-  // same template as today's installApplicationMenu (File → Choose Folder… / Rescan call feature)
-}
-```
-
-Delete `installContentSecurityPolicy`/`installApplicationMenu`/the module-scope listener block; the `activate`-in-control-mode bug dies.
 Verify: `pnpm -C apps/integrated/Orbis typecheck && pnpm -C apps/integrated/Orbis test` + root gates.
 
 ### Step 6 — migrate Bonded
 
-New `apps/integrated/Bonded/src/main/index.ts`:
+`BondedFeature.#register` becomes: guard → `acquireFeatureSurface(ctx)` → lease → controller → `registerIpc({ webContents: surface.webContents, controller })` → `await controller.start()` → `await surface.ready()` → `controller.excludeProcess(surface.webContents.getOSProcessId())`. Catch: `disposeIpc` → `controller.stop()` → `lease.release()` → `surface.dispose()` → rethrow. `activate()` → `surface.activate()`. `dispose()` keeps today's order (IPC → `controller.stop()` → `surface.dispose()` → `lease.release()`), replacing the appearance/window/appearance-field block. The `#registration` coalescing stays.
+
+`feature.test.ts`: the double's `webContents` gains `on`/`off` spies (the host installs the navigation guard); `excludeProcess` is now asserted after `ready()` resolves in both modes. Verify: `pnpm -C apps/integrated/Bonded typecheck && pnpm -C apps/integrated/Bonded test && pnpm -C apps/integrated/Bonded build:renderer` + root gates.
+
+### Step 7 — migrate Amove (heaviest: the presence policy stays, the boilerplate goes)
+
+`apps/integrated/Amove/src/main/feature.ts`:
 
 ```ts
-import { dialog } from 'electron'
-import { runStandaloneLaunch } from '@moirasia/desktop-shell/main'
-import { feature } from './feature'
-import { BondedRuntimeInUseError } from './runtime-lease'
-import { standaloneContext } from './standalone'
-
-void runStandaloneLaunch({
-  appId: 'bonded',
-  productName: 'Bonded',
-  appUserModelId: 'com.opense.Bonded',
-  platforms: ['darwin'],
-  archs: ['arm64'],
-  userDataEnv: 'BONDED_USER_DATA',
-  contentSecurityPolicy: bondedContentSecurityPolicy,
-  menu: bondedMenu,
-  register: () => feature.register(standaloneContext()),
-  activate: () => feature.activate(),
-  dispose: () => feature.dispose(),
-  onRegisterError: async (error) => {
-    if (error instanceof BondedRuntimeInUseError) {
-      await dialog.showMessageBox({ type: 'info', title: 'Bonded is already running', message: error.message, detail: 'Close the other host before opening standalone Bonded.' })
-      return
-    }
-    await dialog.showMessageBox({ type: 'error', title: 'Bonded could not start', message: error instanceof Error ? error.message : 'An unknown startup error occurred.' })
+async register(ctx: FeatureContext): Promise<void> {
+  if (this.#controller) return
+  if (ctx.id !== this.id || ctx.productId !== 'amove') throw new Error('Invalid Amove feature context')
+  const surface = await acquireFeatureSurface(ctx, {
+    icon: join(ctx.paths.assetsDirectory ?? '', 'app', 'icon.png'),   // assetsDirectory is validation-guaranteed
+    devTools: !process.env.CI
+  })
+  const controller = new AppController(ctx, surface)
+  try {
+    await controller.start()
+    this.#disposeIpc = registerIpc(controller)     // after start(), as today
+    this.#controller = controller
+  } catch (error) {
+    this.#disposeIpc?.(); this.#disposeIpc = undefined
+    controller.dispose()
+    surface.dispose()
+    throw error
   }
-})
-
-function bondedContentSecurityPolicy(rendererUrl: string | undefined): string {
-  // same policy string as today (scriptPolicy dev/packaged split)
-}
-
-function bondedMenu(): MenuItemConstructorOptions[] {
-  // same template as today
 }
 ```
 
-The dialogs now run after the module's own `console.error` (additive UX, matching today's visible behavior).
-Verify: `pnpm -C apps/integrated/Bonded typecheck && pnpm -C apps/integrated/Bonded test` + `pnpm -C apps/integrated/Bonded build:renderer` + root gates.
+`app-controller.ts` restructure (presence untouched):
 
-### Step 7 — migrate Amove
+- Constructor takes `(ctx, surface: FeatureSurfaceHandle)`; keeps `assetsRoot`/`appIconPath` (tray/dock reuse them), settings, shelf, native.
+- `createMainWindow` is deleted. Its window listeners move to `private bindStandaloneWindowPolicy(window: BrowserWindow)` — the focus/blur hotkey policy, the close-to-hide branch, and the `closed` bookkeeping (`this.#surface = undefined` + taskbar-quit check) — called from `start()` in standalone mode against `surface.window`.
+- `start()` sequence: `setDockIcon()` (standalone) → `await settings.load(…)` → `bindStandaloneWindowPolicy(surface.window)` → `await surface.ready()` (createMainWindow's position) → `applyPresence()` → hotkeys/polling → `broadcast()`.
+- `getMainWebContents()` → `this.surface?.webContents`; `getMainWindow()` → `this.surface?.window`; `focusMainSurface()` keeps its suite/standalone branch via `ctx.surface` / `surface.window` (shelf policy, product-owned).
+- `showMainWindow()`: suite → `this.ctx.surface!.activate()`; standalone → recreate via `acquireFeatureSurface(this.ctx, this.#surfaceOptions)` if the handle went away, then `surface.activate()`; both → `applyPresence()` + `updateHotkeyPolicy()`.
+- `dispose()`: the `disposeAppearance`/`mainWindow.destroy()` tail becomes `this.surface?.dispose()`; everything else (hotkeys, native, shelf, tray, dock timers) is untouched.
+- `updateHotkeyPolicy()` keeps its suite (`ctx.surface.state`/subscribe) and standalone (`surface.window.isFocused()`) reads — honest product policy, no handle state mirroring.
 
-New `apps/integrated/Amove/src/main/index.ts`:
+New `apps/integrated/Amove/tests/feature.test.ts` (Bonded's shape): mock `AppController` + electron `FakeWindow`, run the real host; assert suite → no window, standalone → window created with catalog geometry, IPC registered after `controller.start`, `ready()` loaded and showed, dispose → `controller.dispose()` + window destroyed.
 
-```ts
-import type { MenuItemConstructorOptions } from 'electron'
-import { runStandaloneLaunch } from '@moirasia/desktop-shell/main'
-import { feature } from './feature'
-import { standaloneContext } from './standalone'
-import { contentSecurityPolicy } from './content-security-policy'
-
-void runStandaloneLaunch({
-  appId: 'amove',
-  productName: 'Amove',
-  appUserModelId: 'com.opense.Amove',
-  platforms: ['darwin', 'win32', 'linux'],
-  contentSecurityPolicy,
-  menu: amoveMenu,
-  register: () => feature.register(standaloneContext()),
-  activate: () => feature.activate(),
-  dispose: () => feature.dispose(),
-  quitOnLastWindow: () => process.platform !== 'darwin' && feature.shouldQuitWhenWindowAllClosed()
-})
-
-function amoveMenu(): MenuItemConstructorOptions[] {
-  // same platform-conditional template as today's installStandaloneMenu
-}
-```
-
-`content-security-policy.ts` and its test are untouched. Behavior change: the platform guard now runs after the control check — a control command on an unsupported platform answers the protocol (more robust, unreachable in practice).
 Verify: `pnpm -C apps/integrated/Amove typecheck && pnpm -C apps/integrated/Amove test` + root gates.
 
-### Step 8 — migrate YN360 (fixes the latent control hang)
+### Step 8 — grep for completion
 
-New `apps/standalone/YN360/src/main/index.ts`:
-
-```ts
-import { app, dialog } from 'electron'
-import { runStandaloneLaunch } from '@moirasia/desktop-shell/main'
-import { Yn360Controller } from './controller'
-import { standaloneContext } from './standalone'
-
-const controller = new Yn360Controller()
-void runStandaloneLaunch({
-  appId: 'yn360',
-  productName: 'YN360 Controller',
-  appUserModelId: 'com.yn360.controller',
-  platforms: ['darwin'],
-  archs: ['arm64'],
-  contentSecurityPolicy: yn360ContentSecurityPolicy,
-  menu: yn360Menu,
-  register: () => {
-    app.setAboutPanelOptions({ applicationName: 'YN360 Controller', applicationVersion: app.getVersion(), copyright: 'Copyright 2026 YN360 Controller contributors' })
-    return controller.start(standaloneContext())
-  },
-  activate: () => controller.activate(),
-  dispose: () => controller.dispose(),
-  onRegisterError: async (error) => {
-    await dialog.showMessageBox({ type: 'error', title: 'YN360 Controller could not start', message: error instanceof Error ? error.message : 'An unknown startup error occurred.' })
-  }
-})
-
-function yn360ContentSecurityPolicy(rendererUrl: string | undefined): string {
-  // same policy string as today
-}
-
-function yn360Menu(): MenuItemConstructorOptions[] {
-  // same template as today
-}
+```
+rg "registerProductAppearance|desktopWindowChromeOptions|neutralWindowBackground" apps/integrated \
+  -> only Amove's shelf/tray/dock sites may remain (product-owned), none in feature window code
+rg "new BrowserWindow" apps/integrated/*/src/main -> only Amove's shelf-controller (utility surface)
 ```
 
-The lock moves after the control check: control commands while the app runs now answer instead of hanging.
-Verify: `pnpm -C apps/standalone/YN360 typecheck && pnpm -C apps/standalone/YN360 test` + root gates.
+### Step 9 — docs
 
-### Step 9 — architecture doc
-
-Update the paragraph in `docs/architecture/standalone-applications.md` that says the standalone entries "stay thin and keep only identity and platform scoping: `app.setName`, the bundle id, the single-instance lock, login-item control, host-specific menus, and quitting when all windows close" to:
-
-> The standalone launcher (`runStandaloneLaunch`, `@moirasia/desktop-shell/main`) owns the standalone launch sequence: the login-item control branch, the single-instance lock, ready-time registration, activation re-focus, quit policy, and awaited teardown. Entry files keep only app facts — identity, platform scope, the `userData` override env, the menu template, the CSP policy, failure-dialog copy, and Amove's quit predicate. The control check precedes the platform guard and the lock, so a control command always answers. Product behavior still lives in each app repository; the suite host is untouched.
+- `CONTEXT.md`: the **Feature surface host** term (added with this plan).
+- `docs/architecture/standalone-applications.md`, §"embedded feature" paragraph: replace "only standalone mode receives a feature-owned primary `BrowserWindow`" with the host owning that window, and "Window dimensions remain controller-owned" with "standalone window facts (geometry, fullscreenable, navigation policy) are catalog-owned and resolved by the feature surface host."
 
 ### Step 10 — final gates
 
@@ -450,52 +412,76 @@ pnpm -C apps/integrated/Amove typecheck && pnpm -C apps/integrated/Amove test
 pnpm -C apps/integrated/Exithibition typecheck && pnpm -C apps/integrated/Exithibition test
 pnpm -C apps/integrated/Bonded typecheck && pnpm -C apps/integrated/Bonded test
 pnpm -C apps/integrated/Orbis typecheck && pnpm -C apps/integrated/Orbis test
-pnpm -C apps/standalone/YN360 typecheck && pnpm -C apps/standalone/YN360 test
 ```
 
 Then the repo's full gate `pnpm ui:verify` (baseline it before starting; pre-existing unrelated failures don't block this change).
 
-### Manual smoke checklist (per migrated app)
+### Manual smoke checklist
 
-- `pnpm -C apps/integrated/<App> dev`: app launches; Dock/menu product name correct.
-- Second launch focuses the first instance (`second-instance`).
-- Quit fully tears down: process exits promptly, no orphaned native helpers (Exithibition especially).
-- Login-item toggle from the Moirasia General page answers the protocol (family apps).
-- `ORBIS_USER_DATA` / `BONDED_USER_DATA` override honored (data lands in the override dir).
-- CSP header present in devtools (network panel) in dev; locked down when packaged (`package:dir`).
-- Amove: `presenceMode: 'taskbar'` on darwin keeps the app running with all windows closed.
-- YN360: `--moirasia-control=login-item:get` while the app is running **answers** (the fixed hang).
+- Each app standalone dev run: geometry/title correct; appearance toggle works; dark-mode background correct (Exithibition dark); window-open denied everywhere; `will-navigate` denied (Bonded/Orbis/Exithibition) but reload works in Amove; activate re-focuses (restore-from-minimized included); quit tears down promptly (no orphaned helpers — Exithibition especially).
+- Suite run: all four features load with zero extra windows; switching tabs activates/focuses; uninstall/reinstall from the Features page disposes cleanly.
+- Amove: menu-bar presence close-to-hide; tray Quit; dock icon; shelf focus restore; `presenceMode: 'taskbar'` on Windows quits on last-window close.
+- Orbis: Choose Folder dialog parents to the standalone window; scan works in both modes.
+- Exithibition: space-bar sampling toggle in both modes; window shows after load.
 
-## 8. Behavior-change ledger (intended)
+---
 
-| App | Change | Why |
+## 8. Test matrix (`tests/feature-surface-host.test.ts`)
+
+| # | Scenario | Asserts |
 |---|---|---|
-| Exithibition | `before-quit` awaits `dispose()`; `setName` at module scope; `setAppUserModelId('com.local.Exithibition')`; activation inside control branch | teardown-on-quit bug + drift |
-| Orbis | `activate`/`window-all-closed`/`before-quit` no longer fire in control mode | drift bug |
-| YN360 | lock after control check | control hang |
-| Amove | platform guard after control check | protocol always answers; unreachable in practice |
-| Bonded, YN360 | failure dialogs run after the module's own `console.error` | additive UX, same visible behavior |
-| All | control-chain rejection → `console.error` + `exit(1)` (Amove, Exithibition lacked it — unhandled rejection today; Bonded, Orbis, YN360 already had it) | one error funnel |
+| 1 | Suite mode | zero windows constructed; `webContents === ctx.surface.webContents`; `ready()` resolves without loading; `activate()` → `surface.activate()` + `focus()`; `dispose()` leaves the surface untouched |
+| 2 | Standalone creation facts (Bonded seed) | constructor options: title `label`, catalog sizes, `fullscreenable: false`, chrome options, `backgroundColor = neutralWindowBackground(defaultProductAppearance('bonded'))`, `webPreferences { preload, contextIsolation, nodeIntegration: false, sandbox: true, spellcheck: false }` |
+| 3 | Options (Amove seed) | `icon` and `devTools` land in the constructor options; navigation `'allow-same-url'` from the catalog |
+| 4 | Validation | standalone ctx missing `renderers.main` (Orbis table) → throws before any window exists (`FakeWindow.instances` empty) |
+| 5 | Wire-before-load | after acquire, `loadURL`/`loadFile` not called; after `ready()` → `loadFile(file)` / `loadURL(http)` by scheme; second `ready()` does not reload |
+| 6 | Guards | `setWindowOpenHandler` deny installed; `will-navigate` prevented under `'deny'`; under `'allow-same-url'`: same-URL event allowed, different URL prevented |
+| 7 | Appearance | `registerProductAppearance(productId, window, undefined, { applyNativeTheme: true })` in standalone, never in suite; `dispose()` runs the disposer exactly once; double-dispose is a no-op |
+| 8 | `ready()` failure | `loadFile` rejects → disposer ran, window destroyed, error propagates; handle inert afterwards |
+| 9 | activate (standalone) | minimized → `restore()` then `show()` then `focus()`; destroyed window tolerated without throwing |
+| 10 | External close | window emits `closed` → disposer ran; subsequent `dispose()` no-op; `ready()` on the dead handle does not load |
+| 11 | Acquire failure | appearance registration rejects → window destroyed, error propagates |
 
-## 9. Risks and mitigations
+Per-feature composition tests (§7 steps 4–7) assert product wiring only: controller start/stop counts, IPC registration order, lease release, dialog parenting, excludeProcess timing, IPC-after-start for Amove. Window-lifecycle assertions live in the matrix above, once.
 
-1. **`vi.mock` double fidelity** (it fakes event semantics, not real Electron): mitigated by the manual smoke checklist + per-app Playwright e2e suites.
-2. **Exithibition's deferred `setName` might have been deliberate**: module-scope is Electron-standard; smoke-verify the Dock name; if ever needed, add a named field only when a second app needs it.
-3. **Bundler cycles after the split**: `login-item-control.ts` imports nothing from `main.ts`; `standalone-launch.ts` imports only from it — verified acyclic by typecheck + each app's `build:app`.
-4. **Quit during startup** (dispose before register settles): parity with today — features already tolerate (`controller?.dispose()`); documented as an invariant.
-5. **Rollback**: every step is an independent commit; each app can revert independently; the module is additive until adopted.
+---
 
-## 10. Out of scope
+## 9. Behavior-change ledger (intended)
 
-- Vox (Bun workflow, tray/overlay/lease lifecycle — different shape).
-- LiteMaptica, Mini-NSW, Semiquaver (not audited; the launcher is available to them when they want it).
-- Review candidates 2–6 (durable JSON store, artifact join, legacy field deletion, appearance defaults, authorize helper).
-- The suite host, the `MoirasiaFeature` contract, `runLoginItemControl` behavior itself.
+| App / mode | Change | Why |
+|---|---|---|
+| Bonded, Exithibition standalone | window-open denied + will-navigate prevented (were unguarded) | drift fix; guard policy centralized |
+| Exithibition standalone | window shows after the load resolves (was `ready-to-show`) | one show policy |
+| Bonded standalone | show after load resolves (was `did-finish-load`) | one show policy |
+| Amove, Orbis, Exithibition standalone | `spellcheck: false` (was on) | Bonded's precedent, uniform posture |
+| Bonded suite | `excludeProcess` runs after `controller.start()` (was before) | matches standalone's existing order; equivalent exclusion list |
+| Bonded standalone | `fullscreenable` via constructor option (the extra `setFullScreenable` call is dropped) | same effect, one mechanism |
+| Orbis, Exithibition standalone `activate` | restore-if-minimized added | Bonded parity; uniform activation |
+| Orbis, Amove suite `activate` | `surface.focus()` added after `activate()` | uniform activation; strictly better focus |
+| All standalone | appearance registered with `applyNativeTheme: true` explicitly | was already the effective value everywhere |
 
-## 11. Success criteria
+## 10. Risks and mitigations
 
-- Five entry files are data specs; the `runStandaloneLaunch` call itself is ≈10–20 lines in every case, and the launch sequence exists exactly once. Total file length still varies with how much app-owned template code stays inline: Exithibition ~12 lines and Amove ~25 (its CSP already lives in a separate file), but Orbis, Bonded, and YN360 keep non-trivial CSP-string and menu-template functions in the entry file (carried over verbatim) and land around 40–45 lines — still well down from today's 57/47/51, just not uniformly ≤30.
-- The drift bugs are dead: Exithibition teardown-on-quit, Orbis control-mode activation, YN360 control hang.
-- The §3 test matrix is green through the module's interface; root and per-app typecheck/test/build green.
-- Deletion test holds: removing the module would scatter the sequence back across five callers.
-- Adding the next family app requires only a spec object — leverage: one interface, five adapters, N future apps.
+1. **Electron double fidelity** (`FakeWindow` fakes events, not Electron): mitigated by the manual smoke checklist, the per-app Playwright e2e suites, and the composition tests running the real host behind the doubles.
+2. **Show-timing change for Exithibition** (post-load vs first-paint): smoke-verify no visible flash; if it matters, `ready()` can await `ready-to-show` internally — an implementation detail behind the same interface.
+3. **Guard tightening on Bonded/Exithibition**: both renderers are trusted local builds with no intentional navigation; e2e suites cover them.
+4. **Amove recreate-on-demand + external close**: the host's `closed` listener plus the fresh-acquire path are covered by matrix #10 and the new Amove wiring test.
+5. **Bundling**: the host is main-process-only and imported by feature chunks; electron-vite's per-feature splitting and `runtime.ts`'s literal `import()`s are untouched; the catalog addition is four number tuples (renderer-bundled, negligible).
+6. **Import cycles**: `feature-surface-host` → `./main` + `./feature` (+ catalog re-exports); nothing imports back — verified by typecheck and each app's `build:renderer`.
+7. **Rollback**: every step is an independent commit; the host is additive until each app adopts it; each app can revert independently.
+
+## 11. Out of scope
+
+- Architecture-review candidates 2–6 (standalone context builder, product-identity single owner, control-protocol contract, Vox onto the launcher, legacy alias deletion — the host reads named maps only, which nudges 6 but does not complete it).
+- The suite shell window in `src/main/index.ts` (its own guards and appearance stay shell-owned).
+- Amove's ShelfController (a utility window with a show/hide lifecycle, deliberately feature-owned).
+- Vox and YN360 (standalone controllers, not `MoirasiaFeature` hosts — they don't build a `FeatureContext`).
+- `FeatureRuntime`, `EmbeddedFeatureHost`, `suite-context.ts`, and the `MoirasiaFeature` contract.
+
+## 12. Success criteria
+
+- The standalone window lifecycle exists exactly once; the four features contain no window construction, chrome options, appearance registration, background computation, URL-vs-file detection, or window guards (§7 step 8's greps come back clean; Amove's shelf is the only remaining `new BrowserWindow`).
+- The interface is one function, one handle (six members), one options type (two fields), one catalog fact group, one appearance helper — and every feature uses it with zero configuration except Amove's two options.
+- The §8 matrix is green through the host's interface; root and per-app typecheck/test/build gates green; composition tests assert wiring, not window mechanics.
+- Deletion test holds: removing the host would scatter the lifecycle — with today's drift — back across four callers.
+- Leverage: the fifth embedded feature gets a guarded, themed, validated, teardown-correct standalone window for one catalog entry. Locality: every window bug lands in one module with one test surface.

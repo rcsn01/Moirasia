@@ -15,15 +15,9 @@
     "apps/integrated/Amove/src/main/**/*.ts",
     "apps/integrated/Amove/src/preload/**/*.ts",
     "apps/integrated/Amove/src/shared/**/*.ts",
-    "apps/integrated/Exithibition/src/main/**/*.ts",
-    "apps/integrated/Exithibition/src/preload/**/*.ts",
-    "apps/integrated/Exithibition/src/shared/**/*.ts",
     "apps/integrated/Bonded/src/main/**/*.ts",
     "apps/integrated/Bonded/src/preload/**/*.ts",
     "apps/integrated/Bonded/src/shared/**/*.ts",
-    "apps/integrated/Orbis/src/main/**/*.ts",
-    "apps/integrated/Orbis/src/preload/**/*.ts",
-    "apps/integrated/Orbis/src/shared/**/*.ts",
     "tests/**/*.ts"
   ],
   "exclude": ["apps/**/*.test.ts", "apps/**/*.test.tsx"]

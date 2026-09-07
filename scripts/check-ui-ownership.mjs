@@ -5,9 +5,9 @@ const workspace = resolve(import.meta.dirname, "..")
 const rendererRoots = [
   "src/renderer",
   "apps/integrated/Amove/src/renderer",
-  "apps/integrated/Exithibition/src/renderer",
+  "apps/standalone/Exithibition/src/renderer",
   "apps/integrated/Bonded/src/renderer",
-  "apps/integrated/Orbis/src/renderer"
+  "apps/standalone/Orbis/src/renderer"
 ]
 const coreVariables = ["background", "foreground", "card", "card-foreground", "popover", "popover-foreground", "primary", "primary-foreground", "secondary", "secondary-foreground", "muted", "muted-foreground", "accent", "accent-foreground", "destructive", "border", "input", "ring", "radius", "chart-1", "chart-2", "chart-3", "chart-4", "chart-5"]
 const coreDefinition = new RegExp(`--(?:${coreVariables.join("|")}):\\s*`)
@@ -57,8 +57,8 @@ for (const root of rendererRoots) {
 const requiredImports = new Map([
   ["apps/integrated/Amove/src/renderer/main/main.css", "@moirasia/ui-react/products/amove.css"],
   ["apps/integrated/Amove/src/renderer/shelf/shelf.css", "@moirasia/ui-react/products/amove.css"],
-  ["apps/integrated/Exithibition/src/renderer/styles.css", "@moirasia/ui-react/products/exithibition.css"],
-  ["apps/integrated/Orbis/src/renderer/styles.css", "@moirasia/desktop-shell/styles.css"],
+  ["apps/standalone/Exithibition/src/renderer/styles.css", "@moirasia/ui-react/products/exithibition.css"],
+  ["apps/standalone/Orbis/src/renderer/styles.css", "@moirasia/desktop-shell/styles.css"],
   ["apps/integrated/Bonded/src/renderer/styles.css", "@moirasia/ui-react/products/bonded.css"]
 ])
 for (const [relativePath, expected] of requiredImports) {
@@ -69,9 +69,9 @@ for (const [relativePath, expected] of requiredImports) {
 
 const primaryWindows = [
   { product: "Amove", styles: "apps/integrated/Amove/src/renderer/main/main.css", entry: "apps/integrated/Amove/src/renderer/main/MainApp.tsx" },
-  { product: "Exithibition", styles: "apps/integrated/Exithibition/src/renderer/styles.css", entry: "apps/integrated/Exithibition/src/renderer/App.tsx" },
+  { product: "Exithibition", styles: "apps/standalone/Exithibition/src/renderer/styles.css", entry: "apps/standalone/Exithibition/src/renderer/App.tsx" },
   { product: "Bonded", styles: "apps/integrated/Bonded/src/renderer/standalone.css", entry: "apps/integrated/Bonded/src/renderer/App.tsx" },
-  { product: "Orbis", styles: "apps/integrated/Orbis/src/renderer/styles.css", entry: "apps/integrated/Orbis/src/renderer/App.tsx" }
+  { product: "Orbis", styles: "apps/standalone/Orbis/src/renderer/styles.css", entry: "apps/standalone/Orbis/src/renderer/App.tsx" }
 ]
 for (const primary of primaryWindows) {
   const styles = await readFile(resolve(workspace, primary.styles), "utf8")
@@ -85,9 +85,7 @@ checkDocumentViewportOwnership(shellRendererStylesPath, await readFile(resolve(w
 
 const embeddedStyleEntrypoints = [
   ["apps/integrated/Amove/src/renderer/main/main.css", ".amove-feature-panel"],
-  ["apps/integrated/Exithibition/src/renderer/styles.css", ".exithibition-feature-panel"],
-  ["apps/integrated/Bonded/src/renderer/styles.css", ".bonded-feature-panel"],
-  ["apps/integrated/Orbis/src/renderer/styles.css", ".orbis-feature-panel"]
+  ["apps/integrated/Bonded/src/renderer/styles.css", ".bonded-feature-panel"]
 ]
 for (const [relativePath, prefix] of embeddedStyleEntrypoints) {
   const content = await readFile(resolve(workspace, relativePath), "utf8")
@@ -105,11 +103,11 @@ for (const [relativePath, prefix] of embeddedStyleEntrypoints) {
   }
 }
 const shellStyles = await readFile(resolve(workspace, "src/renderer/shell/styles.css"), "utf8")
-for (const entry of ["../../../apps/integrated/Amove/src/renderer/main/main.css", "../../../apps/integrated/Exithibition/src/renderer/styles.css", "../../../apps/integrated/Bonded/src/renderer/styles.css", "../../../apps/integrated/Orbis/src/renderer/styles.css"]) {
+for (const entry of ["../../../apps/integrated/Amove/src/renderer/main/main.css", "../../../apps/integrated/Bonded/src/renderer/styles.css"]) {
   if (!shellStyles.includes(entry)) failures.push(`src/renderer/shell/styles.css: missing scoped feature import ${entry}`)
 }
 
-for (const relativePath of ["apps/integrated/Exithibition/src/renderer/styles.css", "apps/integrated/Exithibition/src/renderer/App.tsx"]) {
+for (const relativePath of ["apps/standalone/Exithibition/src/renderer/styles.css", "apps/standalone/Exithibition/src/renderer/App.tsx"]) {
   const content = await readFile(resolve(workspace, relativePath), "utf8")
   for (const [index, line] of content.split("\n").entries()) {
     if (line.includes("--exithibition-color-") && !/legend|hardware-component|kind-|chartConfig/.test(line)) {

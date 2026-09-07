@@ -3,7 +3,7 @@ import { applicationCatalog, isApplicationId, type ApplicationId } from '../pack
 
 describe('application catalog', () => {
   it('pins the catalog order that menu accelerators and index-dependent consumers rely on', () => {
-    expect(applicationCatalog.ids).toEqual(['amove', 'vox', 'exithibition', 'bonded', 'orbis'])
+    expect(applicationCatalog.ids).toEqual(['amove', 'vox', 'bonded'])
     expect(applicationCatalog.entries.map((entry) => entry.id)).toEqual(applicationCatalog.ids)
   })
 
@@ -26,10 +26,8 @@ describe('application catalog', () => {
   it('matches bundle ids and executable names to the standalone bundles', () => {
     expect(applicationCatalog.get('amove').bundleId).toBe('com.opense.Amove')
     expect(applicationCatalog.get('vox').bundleId).toBe('com.moirasia.vox')
-    expect(applicationCatalog.get('exithibition').bundleId).toBe('com.local.Exithibition')
     expect(applicationCatalog.get('bonded').bundleId).toBe('com.opense.Bonded')
-    expect(applicationCatalog.get('orbis').bundleId).toBe('com.opense.Orbis')
-    expect(applicationCatalog.entries.map((entry) => entry.executableName)).toEqual(['Amove', 'Vox', 'Exithibition', 'Bonded', 'Orbis'])
+    expect(applicationCatalog.entries.map((entry) => entry.executableName)).toEqual(['Amove', 'Vox', 'Bonded'])
   })
 
   it('throws on unknown ids and freezes the catalog against mutation', () => {

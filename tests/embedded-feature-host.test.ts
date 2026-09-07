@@ -44,7 +44,7 @@ describe('EmbeddedFeatureHost', () => {
     const host = new EmbeddedFeatureHost(window as never)
     const navigate = vi.fn(() => { if (window.destroyed) throw new TypeError('Object has been destroyed') })
     host.subscribeNavigation(navigate)
-    host.setActive('orbis')
+    host.setActive('bonded')
     navigate.mockClear()
     window.destroyed = true
 
@@ -55,18 +55,18 @@ describe('EmbeddedFeatureHost', () => {
   it('does not deliver navigation or state callbacks after disposal', () => {
     const window = new FakeWindow()
     const host = new EmbeddedFeatureHost(window as never)
-    const surface = host.surface('exithibition')
+    const surface = host.surface('amove')
     const listener = vi.fn()
     surface.subscribe(listener)
     const navigate = vi.fn()
     host.subscribeNavigation(navigate)
     host.dispose()
 
-    host.setActive('exithibition')
+    host.setActive('amove')
     window.emit('focus')
 
     expect(navigate).not.toHaveBeenCalled()
     expect(listener).toHaveBeenCalledTimes(1)
-    expect(() => host.surface('exithibition')).toThrow('disposed')
+    expect(() => host.surface('amove')).toThrow('disposed')
   })
 })

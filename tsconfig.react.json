@@ -15,9 +15,7 @@
   "include": [
     "src/renderer/shell/**/*",
     "apps/integrated/Amove/src/renderer/**/*",
-    "apps/integrated/Exithibition/src/renderer/**/*",
-    "apps/integrated/Bonded/src/renderer/**/*",
-    "apps/integrated/Orbis/src/renderer/**/*"
+    "apps/integrated/Bonded/src/renderer/**/*"
   ],
   "exclude": ["apps/**/*.test.ts", "apps/**/*.test.tsx"]
 }

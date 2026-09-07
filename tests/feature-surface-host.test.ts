@@ -64,7 +64,7 @@ vi.mock('electron', () => ({ BrowserWindow: fakes.FakeWindow }))
 vi.mock('../packages/desktop-shell/src/main', () => ({
   desktopWindowChromeOptions: vi.fn(() => ({ titleBarStyle: 'hiddenInset', trafficLightPosition: { x: 16, y: 11 } })),
   neutralWindowBackground: vi.fn((appearance: string): string => `neutral-${appearance}`),
-  defaultProductAppearance: vi.fn((product: string): string => (product === 'exithibition' ? 'dark' : 'system')),
+  defaultProductAppearance: vi.fn((product: string): string => (product === 'bonded' ? 'dark' : 'system')),
   registerProductAppearance: fakes.appearanceRegister
 }))
 
@@ -82,18 +82,11 @@ const standaloneContexts = {
       dataDirectory: '/tmp/amove-data'
     }
   },
-  exithibition: {
-    id: 'exithibition', mode: 'standalone', productId: 'exithibition',
-    paths: { preloads: { main: '/tmp/exithibition-preload.cjs' }, renderers: { main: '/tmp/exithibition.html' }, native: { executable: '/tmp/ExithibitionNative' }, dataDirectory: '/tmp/exithibition-data' }
-  },
   bonded: {
     id: 'bonded', mode: 'standalone', productId: 'bonded',
     paths: { preloads: { main: '/tmp/bonded-preload.cjs' }, renderers: { main: '/tmp/bonded.html' }, native: { helper: '/tmp/BondedFirewallHelper' }, dataDirectory: '/tmp/bonded-data' }
   },
-  orbis: {
-    id: 'orbis', mode: 'standalone', productId: 'orbis',
-    paths: { preloads: { main: '/tmp/orbis-preload.cjs' }, renderers: { main: '/tmp/orbis.html' }, workers: { scan: '/tmp/scan-worker.mjs' }, dataDirectory: '/tmp/orbis-data' }
-  }
+
 } as const
 
 interface SuiteSurfaceDouble {
@@ -177,8 +170,8 @@ describe('feature surface host', () => {
   })
 
   it('validates the context before any window exists', async () => {
-    const { renderers: _missing, ...paths } = standaloneContexts.orbis.paths
-    const broken = { ...standaloneContexts.orbis, paths }
+    const { renderers: _missing, ...paths } = standaloneContexts.amove.paths
+    const broken = { ...standaloneContexts.amove, paths }
     await expect(acquireFeatureSurface(broken)).rejects.toThrow(/renderers\.main/)
     expect(fakes.FakeWindow.instances).toHaveLength(0)
   })
@@ -211,7 +204,7 @@ describe('feature surface host', () => {
   })
 
   it('loads http renderers by URL and file renderers by file', async () => {
-    const context = { ...standaloneContexts.orbis, paths: { ...standaloneContexts.orbis.paths, renderers: { main: 'http://localhost:5173/index.html' } } }
+    const context = { ...standaloneContexts.bonded, paths: { ...standaloneContexts.bonded.paths, renderers: { main: 'http://localhost:5173/index.html' } } }
     const handle = await acquireFeatureSurface(context)
     await handle.ready()
     const window = fakes.FakeWindow.instances[0]!
@@ -235,9 +228,9 @@ describe('feature surface host', () => {
   })
 
   it('registers and disposes the product appearance exactly once', async () => {
-    const handle = await acquireFeatureSurface(standaloneContexts.orbis)
+    const handle = await acquireFeatureSurface(standaloneContexts.amove)
     const window = fakes.FakeWindow.instances[0]!
-    expect(fakes.appearanceRegister).toHaveBeenCalledWith('orbis', window, undefined, { applyNativeTheme: true })
+    expect(fakes.appearanceRegister).toHaveBeenCalledWith('amove', window, undefined, { applyNativeTheme: true })
 
     handle.dispose()
     handle.dispose()
@@ -260,7 +253,7 @@ describe('feature surface host', () => {
   })
 
   it('restores a minimized standalone window on activate and tolerates a destroyed one', async () => {
-    const handle = await acquireFeatureSurface(standaloneContexts.orbis)
+    const handle = await acquireFeatureSurface(standaloneContexts.amove)
     const window = fakes.FakeWindow.instances[0]!
     window.minimized = true
     handle.activate()
@@ -276,7 +269,7 @@ describe('feature surface host', () => {
   })
 
   it('marks the handle disposed on an external close', async () => {
-    const handle = await acquireFeatureSurface(standaloneContexts.orbis)
+    const handle = await acquireFeatureSurface(standaloneContexts.amove)
     const window = fakes.FakeWindow.instances[0]!
     window.simulateClose()
 
@@ -290,7 +283,7 @@ describe('feature surface host', () => {
 
   it('destroys the window and rethrows when appearance registration fails', async () => {
     fakes.appearanceRegister.mockRejectedValueOnce(new Error('appearance registry locked'))
-    await expect(acquireFeatureSurface(standaloneContexts.exithibition)).rejects.toThrow('appearance registry locked')
+    await expect(acquireFeatureSurface(standaloneContexts.bonded)).rejects.toThrow('appearance registry locked')
     const window = fakes.FakeWindow.instances[0]!
     expect(window.destroyed).toBe(true)
     expect(fakes.appearanceDispose).not.toHaveBeenCalled()

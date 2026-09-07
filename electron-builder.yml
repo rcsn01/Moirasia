@@ -9,20 +9,12 @@ files:
 extraResources:
   - from: native/staged/application-agent
     to: application-agent
-  - from: native/staged/features/exithibition/native
-    to: features/exithibition/native
   - from: native/staged/features/amove/native
     to: features/amove/native
   - from: native/staged/features/amove/assets
     to: features/amove/assets
   - from: native/staged/features/bonded/native
     to: features/bonded/native
-  - from: native/staged/features/orbis/worker
-    to: features/orbis/worker
-  - from: native/staged/features/orbis/native
-    to: features/orbis/native
-    filter:
-      - '*.node'
 mac:
   icon: build/icon.icns
   target:

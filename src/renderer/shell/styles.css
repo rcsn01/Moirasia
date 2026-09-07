@@ -1,9 +1,7 @@
 @import "@moirasia/ui-react/styles.css";
 @import "@moirasia/desktop-shell/styles.css";
 @import "../../../apps/integrated/Amove/src/renderer/main/main.css";
-@import "../../../apps/integrated/Exithibition/src/renderer/styles.css";
 @import "../../../apps/integrated/Bonded/src/renderer/styles.css";
-@import "../../../apps/integrated/Orbis/src/renderer/styles.css";
 @source "./**/*.{ts,tsx}";
 * { box-sizing: border-box; } html, body, #root { width:100%; margin:0; background:var(--background); }
 .controller-main { height:100%; overflow:auto; }

@@ -22,14 +22,14 @@ class FakeShellWindow extends EventEmitter {
 }
 
 const CONTEXT: FeatureContext = {
-  id: 'exithibition', mode: 'suite', productId: 'exithibition',
+  id: 'amove', mode: 'suite', productId: 'amove',
   surface: { webContents: {} as never, state: { active: false, focused: false }, activate: () => undefined, focus: () => undefined, subscribe: () => () => undefined },
-  paths: { preload: '/tmp/feature.cjs', rendererFile: '/tmp/feature.html', nativeExecutable: '/tmp/ExithibitionNative' }
+  paths: { preload: '/tmp/feature.cjs', rendererFile: '/tmp/feature.html', nativeExecutable: '/tmp/AmoveNative' }
 }
 
 function fakeFeature(): { feature: MoirasiaFeature; register: ReturnType<typeof vi.fn>; dispose: ReturnType<typeof vi.fn>; activate: ReturnType<typeof vi.fn> } {
   const register = vi.fn(async (_ctx: FeatureContext) => {}), dispose = vi.fn(async () => {}), activate = vi.fn()
-  return { feature: { id: 'exithibition', register, dispose, activate }, register, dispose, activate }
+  return { feature: { id: 'amove', register, dispose, activate }, register, dispose, activate }
 }
 
 async function settingsWith(features: Record<string, boolean> | undefined): Promise<ShellSettingsStore> {
@@ -47,38 +47,38 @@ describe('FeatureRuntime', () => {
 
   it('never invokes the loader for a feature uninstalled at launch', async () => {
     const loader = vi.fn(async () => ({ feature: fakeFeature().feature }))
-    const runtime = new FeatureRuntime(await settingsWith({ exithibition: false }), { loaders: { exithibition: loader }, context: () => CONTEXT })
+    const runtime = new FeatureRuntime(await settingsWith({ amove: false }), { loaders: { amove: loader }, context: () => CONTEXT })
 
     await runtime.syncAtLaunch()
 
     expect(loader).not.toHaveBeenCalled()
-    expect(runtime.statuses()).toEqual([{ id: 'exithibition', installed: false, loaded: false, restartPending: false }])
+    expect(runtime.statuses()).toEqual([{ id: 'amove', installed: false, loaded: false, restartPending: false }])
   })
 
   it('registers installed features at launch with the suite context', async () => {
     const fake = fakeFeature()
-    const runtime = new FeatureRuntime(await settingsWith(undefined), { loaders: { exithibition: async () => ({ feature: fake.feature }) }, context: () => CONTEXT })
+    const runtime = new FeatureRuntime(await settingsWith(undefined), { loaders: { amove: async () => ({ feature: fake.feature }) }, context: () => CONTEXT })
 
     await runtime.syncAtLaunch()
 
     expect(fake.register).toHaveBeenCalledTimes(1)
     expect(fake.register).toHaveBeenCalledWith(CONTEXT)
-    expect(runtime.statuses()).toEqual([{ id: 'exithibition', installed: true, loaded: true, restartPending: false }])
+    expect(runtime.statuses()).toEqual([{ id: 'amove', installed: true, loaded: true, restartPending: false }])
   })
 
   it('installs mid-session once and treats repeated installs as no-ops', async () => {
     const fake = fakeFeature()
     const loader = vi.fn(async () => ({ feature: fake.feature }))
-    const settings = await settingsWith({ exithibition: false })
-    const runtime = new FeatureRuntime(settings, { loaders: { exithibition: loader }, context: () => CONTEXT })
+    const settings = await settingsWith({ amove: false })
+    const runtime = new FeatureRuntime(settings, { loaders: { amove: loader }, context: () => CONTEXT })
     await runtime.syncAtLaunch()
 
-    await runtime.setInstalled('exithibition', true)
-    await runtime.setInstalled('exithibition', true)
+    await runtime.setInstalled('amove', true)
+    await runtime.setInstalled('amove', true)
 
     expect(loader).toHaveBeenCalledTimes(1)
     expect(fake.register).toHaveBeenCalledTimes(1)
-    expect(settings.get().features.exithibition).toBe(true)
+    expect(settings.get().features.amove).toBe(true)
   })
 
   it('serializes an uninstall that arrives during registration', async () => {
@@ -90,13 +90,13 @@ describe('FeatureRuntime', () => {
       await new Promise<void>((resolve) => { release = resolve })
     })
     const dispose = vi.fn(async () => {})
-    const feature: MoirasiaFeature = { id: 'exithibition', register, dispose, activate: vi.fn() }
-    const settings = await settingsWith({ exithibition: false })
-    const runtime = new FeatureRuntime(settings, { loaders: { exithibition: async () => ({ feature }) }, context: () => CONTEXT })
+    const feature: MoirasiaFeature = { id: 'amove', register, dispose, activate: vi.fn() }
+    const settings = await settingsWith({ amove: false })
+    const runtime = new FeatureRuntime(settings, { loaders: { amove: async () => ({ feature }) }, context: () => CONTEXT })
 
-    const installing = runtime.setInstalled('exithibition', true)
+    const installing = runtime.setInstalled('amove', true)
     await started
-    const uninstalling = runtime.setInstalled('exithibition', false)
+    const uninstalling = runtime.setInstalled('amove', false)
     release()
     await Promise.all([installing, uninstalling])
 
@@ -107,39 +107,39 @@ describe('FeatureRuntime', () => {
   it('disposes exactly once on mid-session uninstall and flags the restart', async () => {
     const fake = fakeFeature()
     const settings = await settingsWith(undefined)
-    const runtime = new FeatureRuntime(settings, { loaders: { exithibition: async () => ({ feature: fake.feature }) }, context: () => CONTEXT })
+    const runtime = new FeatureRuntime(settings, { loaders: { amove: async () => ({ feature: fake.feature }) }, context: () => CONTEXT })
     await runtime.syncAtLaunch()
 
-    await runtime.setInstalled('exithibition', false)
-    await runtime.setInstalled('exithibition', false)
+    await runtime.setInstalled('amove', false)
+    await runtime.setInstalled('amove', false)
 
     expect(fake.dispose).toHaveBeenCalledTimes(1)
-    expect(settings.get().features.exithibition).toBe(false)
-    expect(runtime.statuses()).toEqual([{ id: 'exithibition', installed: false, loaded: true, restartPending: true }])
+    expect(settings.get().features.amove).toBe(false)
+    expect(runtime.statuses()).toEqual([{ id: 'amove', installed: false, loaded: true, restartPending: true }])
   })
 
   it('keeps a failed disposal installed so uninstall can be retried', async () => {
     const fake = fakeFeature()
     fake.dispose.mockRejectedValueOnce(new Error('native process did not stop'))
     const settings = await settingsWith(undefined)
-    const runtime = new FeatureRuntime(settings, { loaders: { exithibition: async () => ({ feature: fake.feature }) }, context: () => CONTEXT })
+    const runtime = new FeatureRuntime(settings, { loaders: { amove: async () => ({ feature: fake.feature }) }, context: () => CONTEXT })
     await runtime.syncAtLaunch()
 
-    await expect(runtime.setInstalled('exithibition', false)).rejects.toThrow('native process did not stop')
-    expect(settings.get().features.exithibition).toBe(true)
-    expect(runtime.isLoaded('exithibition')).toBe(true)
+    await expect(runtime.setInstalled('amove', false)).rejects.toThrow('native process did not stop')
+    expect(settings.get().features.amove).toBe(true)
+    expect(runtime.isLoaded('amove')).toBe(true)
 
-    await runtime.setInstalled('exithibition', false)
+    await runtime.setInstalled('amove', false)
     expect(fake.dispose).toHaveBeenCalledTimes(2)
-    expect(settings.get().features.exithibition).toBe(false)
+    expect(settings.get().features.amove).toBe(false)
   })
 
   it('does not flag a restart when the feature was never loaded this session', async () => {
     const fake = fakeFeature()
-    const runtime = new FeatureRuntime(await settingsWith({ exithibition: false }), { loaders: { exithibition: async () => ({ feature: fake.feature }) }, context: () => CONTEXT })
+    const runtime = new FeatureRuntime(await settingsWith({ amove: false }), { loaders: { amove: async () => ({ feature: fake.feature }) }, context: () => CONTEXT })
     await runtime.syncAtLaunch()
 
-    await runtime.setInstalled('exithibition', false)
+    await runtime.setInstalled('amove', false)
 
     expect(fake.dispose).not.toHaveBeenCalled()
     expect(runtime.statuses()[0]).toMatchObject({ installed: false, loaded: false, restartPending: false })
@@ -147,11 +147,11 @@ describe('FeatureRuntime', () => {
 
   it('re-registers a fresh controller when reinstalled after teardown', async () => {
     const fake = fakeFeature()
-    const runtime = new FeatureRuntime(await settingsWith(undefined), { loaders: { exithibition: async () => ({ feature: fake.feature }) }, context: () => CONTEXT })
+    const runtime = new FeatureRuntime(await settingsWith(undefined), { loaders: { amove: async () => ({ feature: fake.feature }) }, context: () => CONTEXT })
     await runtime.syncAtLaunch()
-    await runtime.setInstalled('exithibition', false)
+    await runtime.setInstalled('amove', false)
 
-    await runtime.setInstalled('exithibition', true)
+    await runtime.setInstalled('amove', true)
 
     expect(fake.register).toHaveBeenCalledTimes(2)
     expect(runtime.statuses()[0]).toMatchObject({ installed: true, loaded: true, restartPending: false })
@@ -159,7 +159,7 @@ describe('FeatureRuntime', () => {
 
   it('disposes every loaded feature exactly once and is idempotent', async () => {
     const fake = fakeFeature()
-    const runtime = new FeatureRuntime(await settingsWith(undefined), { loaders: { exithibition: async () => ({ feature: fake.feature }) }, context: () => CONTEXT })
+    const runtime = new FeatureRuntime(await settingsWith(undefined), { loaders: { amove: async () => ({ feature: fake.feature }) }, context: () => CONTEXT })
     await runtime.syncAtLaunch()
 
     await runtime.disposeAll()
@@ -171,24 +171,24 @@ describe('FeatureRuntime', () => {
   it('cleans up and stays unloaded when register fails', async () => {
     const fake = fakeFeature()
     fake.register.mockRejectedValueOnce(new Error('native helper missing'))
-    const runtime = new FeatureRuntime(await settingsWith(undefined), { loaders: { exithibition: async () => ({ feature: fake.feature }) }, context: () => CONTEXT })
+    const runtime = new FeatureRuntime(await settingsWith(undefined), { loaders: { amove: async () => ({ feature: fake.feature }) }, context: () => CONTEXT })
 
     await runtime.syncAtLaunch()
 
     expect(fake.dispose).toHaveBeenCalledTimes(1)
     expect(runtime.statuses()[0]).toMatchObject({ installed: true, loaded: false, loadError: 'native helper missing' })
-    expect(() => runtime.activate('exithibition')).toThrow(/not running/)
+    expect(() => runtime.activate('amove')).toThrow(/not running/)
   })
 
   it('rolls back a newly enabled feature when registration fails', async () => {
     const fake = fakeFeature()
     fake.register.mockRejectedValueOnce(new Error('Vox is already using Vox.'))
-    const settings = await settingsWith({ exithibition: false })
-    const runtime = new FeatureRuntime(settings, { loaders: { exithibition: async () => ({ feature: fake.feature }) }, context: () => CONTEXT })
+    const settings = await settingsWith({ amove: false })
+    const runtime = new FeatureRuntime(settings, { loaders: { amove: async () => ({ feature: fake.feature }) }, context: () => CONTEXT })
 
-    await runtime.setInstalled('exithibition', true)
+    await runtime.setInstalled('amove', true)
 
-    expect(settings.get().features.exithibition).toBe(false)
+    expect(settings.get().features.amove).toBe(false)
     expect(runtime.statuses()[0]).toMatchObject({ installed: false, loaded: false, loadError: 'Vox is already using Vox.' })
   })
 
@@ -210,10 +210,10 @@ describe('FeatureRuntime', () => {
 
   it('activates a running feature and rejects foreign application ids', async () => {
     const fake = fakeFeature()
-    const runtime = new FeatureRuntime(await settingsWith(undefined), { loaders: { exithibition: async () => ({ feature: fake.feature }) }, context: () => CONTEXT })
+    const runtime = new FeatureRuntime(await settingsWith(undefined), { loaders: { amove: async () => ({ feature: fake.feature }) }, context: () => CONTEXT })
     await runtime.syncAtLaunch()
 
-    runtime.activate('exithibition')
+    runtime.activate('amove')
 
     expect(fake.activate).toHaveBeenCalledTimes(1)
     expect(() => runtime.activate('not-a-feature' as never)).toThrow(TypeError)
@@ -229,7 +229,7 @@ describe('FeatureRuntime', () => {
       context: () => CONTEXT,
       loaders: {
         amove: async () => ({ feature: { id: 'amove', register: vi.fn(), dispose: firstDispose } }),
-        exithibition: async () => ({ feature: { id: 'exithibition', register: vi.fn(), dispose: secondDispose } })
+        bonded: async () => ({ feature: { id: 'bonded', register: vi.fn(), dispose: secondDispose } })
       }
     })
     await runtime.syncAtLaunch()
@@ -248,7 +248,7 @@ describe('FeatureRuntime', () => {
     const runtime = new FeatureRuntime(await settingsWith(undefined), {
       loaders: {
         amove: async () => ({ feature: { id: 'amove', register: vi.fn(), dispose: firstDispose, activate: vi.fn() } }),
-        exithibition: async () => ({ feature: { id: 'exithibition', register: vi.fn(), dispose: secondDispose, activate: vi.fn() } })
+        bonded: async () => ({ feature: { id: 'bonded', register: vi.fn(), dispose: secondDispose, activate: vi.fn() } })
       },
       context: () => CONTEXT
     })

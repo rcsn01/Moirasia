@@ -13,9 +13,7 @@ type FeatureLoader = () => Promise<{ feature: MoirasiaFeature }>
 // a separate chunk, and an uninstalled feature is never evaluated.
 const LOADERS: Record<FeatureId, FeatureLoader> = {
   amove: () => import('../../../apps/integrated/Amove/src/main/feature'),
-  exithibition: () => import('../../../apps/integrated/Exithibition/src/main/feature'),
-  bonded: () => import('../../../apps/integrated/Bonded/src/main/feature'),
-  orbis: () => import('../../../apps/integrated/Orbis/src/main/feature')
+  bonded: () => import('../../../apps/integrated/Bonded/src/main/feature')
 }
 
 export class FeatureRuntime {

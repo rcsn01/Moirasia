@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import { validateFeatureResources, type FeatureContext } from '../packages/desktop-shell/src/feature'
 
-const context = (paths: FeatureContext['paths'], id: 'amove' | 'orbis' = 'amove', mode: 'suite' | 'standalone' = 'suite'): FeatureContext => (mode === 'suite' ? {
+const context = (paths: FeatureContext['paths'], id: 'amove' | 'bonded' = 'amove', mode: 'suite' | 'standalone' = 'suite'): FeatureContext => (mode === 'suite' ? {
   id, mode, productId: id, paths,
   surface: { webContents: {} as never, state: { active: false, focused: false }, activate: () => undefined, focus: () => undefined, subscribe: () => () => undefined }
 } : {
@@ -20,9 +20,9 @@ describe('feature resource contract', () => {
     }), { preloads: ['main', 'shelf'], renderers: ['main', 'shelf'], native: ['addon'], assetsDirectory: true, dataDirectory: true })).not.toThrow()
   })
 
-  it('validates Orbis workers without requiring a native resource', () => {
-    expect(() => validateFeatureResources(context({ workers: { scan: '/tmp/scan-worker.mjs' }, dataDirectory: '/tmp/orbis-data' }, 'orbis'), { workers: ['scan'], dataDirectory: true })).not.toThrow()
-    expect(() => validateFeatureResources(context({ dataDirectory: '/tmp/orbis-data' }, 'orbis'), { workers: ['scan'], dataDirectory: true })).toThrow(/workers\.scan/)
+  it('validates worker resources without requiring a native resource', () => {
+    expect(() => validateFeatureResources(context({ workers: { scan: '/tmp/scan-worker.mjs' }, dataDirectory: '/tmp/amove-data' }, 'amove'), { workers: ['scan'], dataDirectory: true })).not.toThrow()
+    expect(() => validateFeatureResources(context({ dataDirectory: '/tmp/amove-data' }, 'amove'), { workers: ['scan'], dataDirectory: true })).toThrow(/workers\.scan/)
   })
 
   it('keeps the legacy main resource fields usable during migration', () => {

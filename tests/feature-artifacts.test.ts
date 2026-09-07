@@ -27,14 +27,6 @@ describe('artifact facet table', () => {
     ])
   })
 
-  it('pins the Exithibition executable', () => {
-    const entry = featureCatalog.get('exithibition')
-    expect(entry.directory).toBe('Exithibition')
-    expect(entry.artifacts).toEqual([
-      { name: 'executable', kind: 'executable', file: 'ExithibitionNative', buildOutput: '.build/arm64-apple-macosx/{configuration}', staged: 'native/staged/features/exithibition/native', suiteResource: 'features/exithibition/native', suiteDevSource: 'buildOutput', standaloneResource: 'native' }
-    ])
-  })
-
   it('pins the Bonded firewall helper', () => {
     const entry = featureCatalog.get('bonded')
     expect(entry.directory).toBe('Bonded')
@@ -43,29 +35,17 @@ describe('artifact facet table', () => {
     ])
   })
 
-  it('pins the Orbis metadata addon and scan worker, both staged in suite development', () => {
-    const entry = featureCatalog.get('orbis')
-    expect(entry.directory).toBe('Orbis')
-    expect(entry.artifacts).toEqual([
-      { name: 'metadata', kind: 'native', file: 'orbis-metadata', buildOutput: 'native', staged: 'native/staged/features/orbis/native', suiteResource: 'features/orbis/native', suiteDevSource: 'staged', standaloneResource: 'features/orbis/native' },
-      { name: 'scan', kind: 'worker', file: 'scan-worker.mjs', buildOutput: 'worker-dist', staged: 'native/staged/features/orbis/worker', suiteResource: 'features/orbis/worker', suiteDevSource: 'staged', standaloneResource: 'features/orbis/worker' }
-    ])
-  })
 })
 
 describe('nativeAddonFileName', () => {
   it('names darwin addons after the arch', () => {
     expect(nativeAddonFileName('amove-native', 'darwin', 'arm64')).toBe('amove-native.darwin-arm64.node')
     expect(nativeAddonFileName('amove-native', 'darwin', 'x64')).toBe('amove-native.darwin-x64.node')
-    expect(nativeAddonFileName('orbis-metadata', 'darwin', 'arm64')).toBe('orbis-metadata.darwin-arm64.node')
-    expect(nativeAddonFileName('orbis-metadata', 'darwin', 'x64')).toBe('orbis-metadata.darwin-x64.node')
   })
 
   it('pins the win32 and linux filenames byte-exact and arch-independent', () => {
     expect(nativeAddonFileName('amove-native', 'win32', 'arm64')).toBe('amove-native.win32-x64-msvc.node')
     expect(nativeAddonFileName('amove-native', 'win32', 'x64')).toBe('amove-native.win32-x64-msvc.node')
-    expect(nativeAddonFileName('orbis-metadata', 'linux', 'arm64')).toBe('orbis-metadata.linux-x64-gnu.node')
-    expect(nativeAddonFileName('orbis-metadata', 'linux', 'x64')).toBe('orbis-metadata.linux-x64-gnu.node')
   })
 
   it('defaults to the running platform and arch', () => {
@@ -76,12 +56,10 @@ describe('nativeAddonFileName', () => {
 describe('artifactPath', () => {
   const ADDON = artifact('amove', 'addon')
   const ASSETS = artifact('amove', 'assets')
-  const EXECUTABLE = artifact('exithibition', 'executable')
-  const SCAN = artifact('orbis', 'scan')
+  const EXECUTABLE = artifact('bonded', 'helper')
 
   it('appends the exact filename for exact-filename kinds', () => {
-    expect(artifactPath('/Resources/features/exithibition/native', EXECUTABLE)).toBe('/Resources/features/exithibition/native/ExithibitionNative')
-    expect(artifactPath('/Resources/features/orbis/worker', SCAN)).toBe('/Resources/features/orbis/worker/scan-worker.mjs')
+    expect(artifactPath('/Resources/features/bonded/native', EXECUTABLE)).toBe('/Resources/features/bonded/native/BondedFirewallHelper')
   })
 
   it('appends the platform-resolved filename for napi addons', () => {
@@ -93,7 +71,7 @@ describe('artifactPath', () => {
   })
 
   it('tolerates a trailing separator on the directory', () => {
-    expect(artifactPath('/Resources/features/orbis/worker/', SCAN)).toBe('/Resources/features/orbis/worker/scan-worker.mjs')
+    expect(artifactPath('/Resources/features/bonded/native/', EXECUTABLE)).toBe('/Resources/features/bonded/native/BondedFirewallHelper')
   })
 })
 
@@ -139,11 +117,6 @@ describe('contract pins — hand-written files agree with the catalog', () => {
   it('pins the staging script to every staged path and release source layout', () => {
     for (const entry of featureCatalog.entries) {
       for (const candidate of entry.artifacts) {
-        if (entry.id === 'orbis' && candidate.name === 'scan') {
-          // The worker is staged by the features:worker script, not the stage script.
-          expect(rootPackageJson.scripts['features:worker'], 'orbis/scan staged path').toContain(candidate.staged)
-          continue
-        }
         expect(stageScript, `${entry.id}/${candidate.name} staged path`).toContain(candidate.staged)
         expect(stageScript, `${entry.id}/${candidate.name} release source`).toContain(candidate.buildOutput.replace('{configuration}', 'release'))
       }

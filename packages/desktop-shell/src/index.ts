@@ -3,7 +3,9 @@ import { FEATURE_IDS } from './feature-catalog'
 export { applicationCatalog, APPLICATION_IDS, isApplicationId } from './application-catalog'
 export type { ApplicationId, ApplicationCatalog, ApplicationCatalogEntry } from './application-catalog'
 
-export const PRODUCT_IDS = ['moirasia', ...FEATURE_IDS, 'vox', 'yn360'] as const
+// Visual product identities include standalone-only apps. Application and
+// feature catalogs separately define what Moirasia controls and embeds.
+export const PRODUCT_IDS = ['moirasia', ...FEATURE_IDS, 'vox', 'exithibition', 'orbis', 'yn360'] as const
 export type ProductId = (typeof PRODUCT_IDS)[number]
 export const APPEARANCES = ['system', 'light', 'dark'] as const
 export type Appearance = (typeof APPEARANCES)[number]

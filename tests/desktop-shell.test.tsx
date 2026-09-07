@@ -130,9 +130,9 @@ describe('DesktopAppShell', () => {
     const read = (path: string) => readFile(resolve(process.cwd(), path), 'utf8')
     const hub = await read('src/renderer/shell/styles.css')
     const amove = await read('apps/integrated/Amove/src/renderer/main/main.css')
-    const exithibition = await read('apps/integrated/Exithibition/src/renderer/styles.css')
+    const exithibition = await read('apps/standalone/Exithibition/src/renderer/styles.css')
     const bonded = await read('apps/integrated/Bonded/src/renderer/styles.css')
-    const orbis = await read('apps/integrated/Orbis/src/renderer/styles.css')
+    const orbis = await read('apps/standalone/Orbis/src/renderer/styles.css')
 
     // Each app's exact page selector must leave the frame margin to the shell's
     // DesktopPage rules; anchored \s*\{ keeps sibling rules (e.g.

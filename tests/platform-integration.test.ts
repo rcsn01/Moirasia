@@ -15,7 +15,7 @@ describe('Bonded platform integration', () => {
     installApplicationMenu({ webContents: { send } } as never, open)
     const template = electron.buildFromTemplate.mock.calls[0]![0] as Array<{ label?: string; submenu?: Array<{ label?: string; accelerator?: string; click?: () => void }> }>
     const bonded = template.find((item) => item.label === 'Applications')!.submenu!.find((item) => item.label === 'Bonded')!
-    expect(bonded.accelerator).toBe('CommandOrControl+4')
+    expect(bonded.accelerator).toBe('CommandOrControl+3')
     bonded.click?.()
     expect(open).toHaveBeenCalledWith('bonded')
   })
@@ -31,16 +31,6 @@ describe('Bonded platform integration', () => {
     expect(open).toHaveBeenCalledWith('vox')
   })
 
-  it('assigns Orbis Command+5 in the application menu', async () => {
-    const { installApplicationMenu } = await import('../src/main/menu')
-    const open = vi.fn()
-    installApplicationMenu({ webContents: { send: vi.fn() } } as never, open)
-    const template = electron.buildFromTemplate.mock.calls.at(-1)![0] as Array<{ label?: string; submenu?: Array<{ label?: string; accelerator?: string; click?: () => void }> }>
-    const orbis = template.find((item) => item.label === 'Applications')!.submenu!.find((item) => item.label === 'Orbis')!
-    expect(orbis.accelerator).toBe('CommandOrControl+5')
-    orbis.click?.()
-    expect(open).toHaveBeenCalledWith('orbis')
-  })
 
   it('routes Settings and File > Features to the new controller pages', async () => {
     const { installApplicationMenu } = await import('../src/main/menu')
@@ -73,9 +63,8 @@ describe('Bonded platform integration', () => {
     expect(applicationAgentPath('/tmp/electron-resources-without-moirasia-agent')).toMatch(/native\/staged\/application-agent$/)
   })
 
-  it('registers Bonded and Orbis with the native application agent', async () => {
+  it('registers Bonded with the native application agent', async () => {
     const source = await readFile(new URL('../native/application-agent/main.swift', import.meta.url), 'utf8')
     expect(source).toContain('Product(id: "bonded", name: "Bonded", bundleIdentifier: "com.opense.Bonded")')
-    expect(source).toContain('Product(id: "orbis", name: "Orbis", bundleIdentifier: "com.opense.Orbis")')
   })
 })

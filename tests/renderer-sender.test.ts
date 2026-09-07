@@ -54,7 +54,7 @@ describe('renderer sender', () => {
 
   it('keeps Electron send races best-effort after the readiness check', () => {
     const contents = new FakeWebContents()
-    contents.url = 'file:///orbis.html'
+    contents.url = 'file:///bonded.html'
     contents.loading = false
     contents.emit('did-finish-load')
     contents.send.mockImplementation(() => { throw new Error('Render frame was disposed before WebFrameMain could be accessed') })

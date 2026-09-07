@@ -128,10 +128,12 @@ export function applyWindowAppearance(theme: NativeTheme, window: BrowserWindow,
 export interface ProductAppearanceOptions {
   /** Suite windows use per-window document themes; standalone hosts may own nativeTheme. */
   readonly applyNativeTheme?: boolean
+  /** Override the shared Moirasia registry for an application-owned appearance file. */
+  readonly registryPath?: string
 }
 
 export async function registerProductAppearance(product: ProductId, window: BrowserWindow, legacy?: Appearance, options: ProductAppearanceOptions = {}): Promise<() => void> {
-  const registry = new AppearanceRegistry(); await registry.load(legacy ? { [product]: legacy } : {})
+  const registry = new AppearanceRegistry(options.registryPath); await registry.load(legacy ? { [product]: legacy } : {})
   const applyNativeTheme = options.applyNativeTheme ?? true
   const getChannel = `desktop-shell:${product}:appearance:get`, setChannel = `desktop-shell:${product}:appearance:set`, changedChannel = `desktop-shell:${product}:appearance:changed`
   const authorize = (event: { sender: unknown }) => {

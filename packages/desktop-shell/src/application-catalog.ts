@@ -1,6 +1,6 @@
 /**
- * The application catalog: the single owner of every shared fact about the five
- * family applications — identity, labels, bundle and executable names, and
+ * The application catalog: the single owner of every shared fact about the
+ * controlled family applications — identity, labels, bundle and executable names, and
  * order. Pure data: no Electron, React, filesystem, or product-package imports.
  * Host-specific code (menu accelerators, agent commands, login-item control)
  * stays with its host.
@@ -13,20 +13,18 @@ export interface ApplicationCatalogEntry {
   readonly bundleId: string       // standalone bundle identifier
 }
 
-/** The five family applications. The catalog seeds below and this union must stay in sync;
+/** The controlled family applications. The catalog seeds below and this union must stay in sync;
  * tests pin the exact list and every array-index-dependent consumer relies on the order. */
-export type ApplicationId = 'amove' | 'vox' | 'exithibition' | 'bonded' | 'orbis'
+export type ApplicationId = 'amove' | 'vox' | 'bonded'
 
 const APPLICATION_SEEDS = [
   { id: 'amove', label: 'Amove', executableName: 'Amove', bundleId: 'com.opense.Amove' },
   { id: 'vox', label: 'Vox', executableName: 'Vox', bundleId: 'com.moirasia.vox' },
-  { id: 'exithibition', label: 'Exithibition', executableName: 'Exithibition', bundleId: 'com.local.Exithibition' },
-  { id: 'bonded', label: 'Bonded', executableName: 'Bonded', bundleId: 'com.opense.Bonded' },
-  { id: 'orbis', label: 'Orbis', executableName: 'Orbis', bundleId: 'com.opense.Orbis' }
+  { id: 'bonded', label: 'Bonded', executableName: 'Bonded', bundleId: 'com.opense.Bonded' }
 ] as const satisfies readonly ApplicationCatalogEntry[]
 
 export interface ApplicationCatalog {
-  /** Catalog order is the menu order: Command+1..5 and every array-index-dependent consumer. */
+  /** Catalog order is the menu order: Command+1..3 and every array-index-dependent consumer. */
   readonly ids: readonly ApplicationId[]
   readonly entries: readonly ApplicationCatalogEntry[]
   isId(value: unknown): value is ApplicationId

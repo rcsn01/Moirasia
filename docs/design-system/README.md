@@ -83,23 +83,17 @@ shared typography, spacing, radius, motion, focus, disabled, and status roles.
 This demonstrates family resemblance without turning Amove and LiteMaptica
 into identical skins.
 
-## Exithibition native adopter
+## Exithibition adopter
 
-Exithibition is the first native adopter. Its Xcode project links the local
-`packages/ui-swift` package and maps the generated `MoiraExithibition` palette,
-shared four-point spacing, radii, and motion values through an app-local
-`ExithibitionTheme` facade. The dashboard and inspector consume those roles
-while the schematic retains its monochrome and heat-driven visualization
-colors. Native settings form controls remain native SwiftUI controls.
+Exithibition is a standalone Electron and React application. It consumes
+`@moirasia/ui-react`, `@moirasia/desktop-shell`, and the generated Exithibition
+product palette. The dashboard and inspector use shared roles while the
+schematic retains its monochrome and heat-driven visualization colors.
 
-Verify the adapter and application with:
+Verify it with:
 
 ```sh
-cd packages/ui-swift
-swift test
-
-cd ../../apps/integrated/Exithibition
-npm test
+pnpm -C apps/standalone/Exithibition test
 ```
 
 ## OpenAgent adopter
@@ -164,7 +158,7 @@ workflow, and reverse-migrates the former Moirasia suite data on first launch.
 | --- | --- | --- |
 | Amove | CSS / React | Neutral-blue desktop controls and floating shelf |
 | LiteMaptica | CSS / React | Always-dark green reconstruction workspace |
-| Exithibition | SwiftUI package | Monochrome telemetry schematic |
+| Exithibition | React packages | Monochrome telemetry schematic |
 | OpenAgent | CSS / SolidJS | Extensible theme, syntax, diff, and agent palettes |
 | Mini NSW | CSS / vanilla TypeScript | Light rail-map workspace and scene rendering |
 | YN360 | React / ui-react product tokens | Light-control RGB/white workspace with channel data colors |

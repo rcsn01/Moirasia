@@ -1,6 +1,6 @@
 /**
- * The feature catalog: the single owner of every shared fact about the four
- * embedded features — identity, labels, bundle and executable names,
+ * The feature catalog: the single owner of every shared fact about the embedded
+ * features — identity, labels, bundle and executable names,
  * descriptions, display groups, icon keys, order, per-host-mode resource
  * requirements, standalone window facts, and artifact facts: every binary, worker, and asset bundle a
  * feature ships, its filename, the dev build layout it comes from, where
@@ -16,9 +16,7 @@ export type FeatureHostMode = 'suite' | 'standalone'
 
 export type FeatureIconKey =
   | 'app-window'   // Amove
-  | 'activity'     // Exithibition
   | 'shield-check' // Bonded
-  | 'bar-chart-3'  // Orbis
 
 export interface FeatureResourceRequirements {
   readonly preloads?: readonly string[]
@@ -97,9 +95,9 @@ export function artifactPath(directory: string, artifact: FeatureArtifact): stri
   return `${directory}${separator}${file}`
 }
 
-/** The four embedded features. The catalog seeds below and this union must stay in sync;
+/** The embedded features. The catalog seeds below and this union must stay in sync;
  * tests pin the exact list and every Record<FeatureId, …> consumer enforces exhaustiveness. */
-export type FeatureId = 'amove' | 'exithibition' | 'bonded' | 'orbis'
+export type FeatureId = 'amove' | 'bonded'
 
 export interface FeatureCatalogEntry {
   readonly id: FeatureId
@@ -145,24 +143,6 @@ const FEATURE_SEEDS = [
     ]
   },
   {
-    id: 'exithibition',
-    label: 'Exithibition',
-    executableName: 'Exithibition',
-    bundleId: 'com.local.Exithibition',
-    description: 'Live Apple-silicon telemetry rendered as an interactive hardware schematic.',
-    iconKey: 'activity',
-    groupId: 'monitoring',
-    directory: 'Exithibition',
-    requirements: {
-      standalone: { preloads: ['main'], renderers: ['main'], native: ['executable'], dataDirectory: true },
-      suite: { native: ['executable'], dataDirectory: true }
-    },
-    standaloneWindow: { width: 1180, height: 760, minWidth: 1080, minHeight: 690 },
-    artifacts: [
-      { name: 'executable', kind: 'executable', file: 'ExithibitionNative', buildOutput: '.build/arm64-apple-macosx/{configuration}', staged: 'native/staged/features/exithibition/native', suiteResource: 'features/exithibition/native', suiteDevSource: 'buildOutput', standaloneResource: 'native' }
-    ]
-  },
-  {
     id: 'bonded',
     label: 'Bonded',
     executableName: 'Bonded',
@@ -179,26 +159,6 @@ const FEATURE_SEEDS = [
     artifacts: [
       // A SwiftPM executable like Exithibition's: exact filename, not a napi base name.
       { name: 'helper', kind: 'executable', file: 'BondedFirewallHelper', buildOutput: 'native/.build/arm64-apple-macosx/{configuration}', staged: 'native/staged/features/bonded/native', suiteResource: 'features/bonded/native', suiteDevSource: 'buildOutput', standaloneResource: 'native' }
-    ]
-  },
-  {
-    id: 'orbis',
-    label: 'Orbis',
-    executableName: 'Orbis',
-    bundleId: 'com.opense.Orbis',
-    description: 'Read-only disk usage scanning with a sunburst view of the folders taking space.',
-    iconKey: 'bar-chart-3',
-    groupId: 'monitoring',
-    directory: 'Orbis',
-    requirements: {
-      standalone: { preloads: ['main'], renderers: ['main'], workers: ['scan'], dataDirectory: true },
-      suite: { workers: ['scan'], dataDirectory: true }
-    },
-    standaloneWindow: { width: 1280, height: 820, minWidth: 860, minHeight: 600 },
-    artifacts: [
-      // The suite trusts the staged copies: features:worker/features:native place them there in predev.
-      { name: 'metadata', kind: 'native', file: 'orbis-metadata', buildOutput: 'native', staged: 'native/staged/features/orbis/native', suiteResource: 'features/orbis/native', suiteDevSource: 'staged', standaloneResource: 'features/orbis/native' },
-      { name: 'scan', kind: 'worker', file: 'scan-worker.mjs', buildOutput: 'worker-dist', staged: 'native/staged/features/orbis/worker', suiteResource: 'features/orbis/worker', suiteDevSource: 'staged', standaloneResource: 'features/orbis/worker' }
     ]
   }
 ] as const satisfies readonly FeatureCatalogEntry[]

@@ -111,12 +111,20 @@ describe('runStandaloneLaunch', () => {
   it('control mode: claims the process without registering a single listener', async () => {
     mocks.runLoginItemControl.mockResolvedValueOnce(true)
     const register = vi.fn()
-    await expect(runStandaloneLaunch(launchOptions({ appId: 'orbis-like', productName: 'Orbis', register, dispose: () => undefined }))).resolves.toBe('controlled')
-    expect(app.setName).toHaveBeenCalledWith('Orbis')
+    await expect(runStandaloneLaunch(launchOptions({ appId: 'amove-like', productName: 'Amove', register, dispose: () => undefined }))).resolves.toBe('controlled')
+    expect(app.setName).toHaveBeenCalledWith('Amove')
     expect(app.on).not.toHaveBeenCalled()
     expect(register).not.toHaveBeenCalled()
     expect(app.quit).not.toHaveBeenCalled()
     expect(app.exit).not.toHaveBeenCalled()
+  })
+
+  it('standalone-only mode skips Moirasia control and starts normally', async () => {
+    const register = vi.fn()
+    await expect(runStandaloneLaunch(launchOptions({ controlProtocol: 'none', register, dispose: () => undefined }))).resolves.toBe('started')
+    expect(mocks.runLoginItemControl).not.toHaveBeenCalled()
+    expect(app.requestSingleInstanceLock).toHaveBeenCalledTimes(1)
+    expect(register).toHaveBeenCalledTimes(1)
   })
 
   it('platform guard: exits before the lock when the platform is out of scope', async () => {

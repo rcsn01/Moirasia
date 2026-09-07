@@ -33,20 +33,7 @@ describe('suite feature paths', () => {
     })
   })
 
-  describe('Exithibition', () => {
-    it('uses the debug SwiftPM binary and isolated settings in development', () => {
-      const context = suiteFeatureContext('exithibition', surface as never)
-      expect(context.paths.native?.executable).toBe('/workspace/apps/integrated/Exithibition/.build/arm64-apple-macosx/debug/ExithibitionNative')
-      expect(context.paths.dataDirectory).toBe('/Users/test/Library/Application Support/Moirasia/features/exithibition')
-    })
 
-    it('uses the namespaced packaged executable', () => {
-      electron.app.isPackaged = true
-      Object.defineProperty(process, 'resourcesPath', { value: RESOURCES, configurable: true })
-      const context = suiteFeatureContext('exithibition', surface as never)
-      expect(context.paths.native?.executable).toBe(`${RESOURCES}/features/exithibition/native/ExithibitionNative`)
-    })
-  })
 
   describe('Bonded', () => {
     it('uses the debug helper and isolated settings in development', () => {
@@ -64,20 +51,5 @@ describe('suite feature paths', () => {
     })
   })
 
-  describe('Orbis', () => {
-    it('uses the staged worker and metadata addon in development', () => {
-      const context = suiteFeatureContext('orbis', surface as never)
-      expect(context.paths.workers?.scan).toBe('/workspace/native/staged/features/orbis/worker/scan-worker.mjs')
-      expect(context.paths.native?.metadata).toBe('/workspace/native/staged/features/orbis/native/orbis-metadata.darwin-arm64.node')
-      expect(context.paths.dataDirectory).toBe('/Users/test/Library/Application Support/Moirasia/features/orbis')
-    })
 
-    it('uses the namespaced packaged worker and metadata addon', () => {
-      electron.app.isPackaged = true
-      Object.defineProperty(process, 'resourcesPath', { value: RESOURCES, configurable: true })
-      const context = suiteFeatureContext('orbis', surface as never)
-      expect(context.paths.workers?.scan).toBe(`${RESOURCES}/features/orbis/worker/scan-worker.mjs`)
-      expect(context.paths.native?.metadata).toBe(`${RESOURCES}/features/orbis/native/orbis-metadata.darwin-arm64.node`)
-    })
-  })
 })

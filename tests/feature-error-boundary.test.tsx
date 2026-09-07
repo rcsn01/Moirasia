@@ -16,7 +16,7 @@ function Harness({ shouldThrow }: { shouldThrow: boolean }): React.JSX.Element {
   return (
     <div>
       <button onClick={() => setAttempt((value) => value + 1)}>remount</button>
-      <FeatureErrorBoundary key={attempt} name="Exithibition">
+      <FeatureErrorBoundary key={attempt} name="Bonded">
         <Boom shouldThrow={shouldThrow} />
       </FeatureErrorBoundary>
     </div>
@@ -38,8 +38,8 @@ describe('FeatureErrorBoundary', () => {
   })
 
   it('renders the inline fallback instead of crashing the tree', () => {
-    render(<FeatureErrorBoundary name="Exithibition"><Boom shouldThrow /></FeatureErrorBoundary>)
-    expect(screen.getByText('Exithibition failed to load')).toBeInTheDocument()
+    render(<FeatureErrorBoundary name="Bonded"><Boom shouldThrow /></FeatureErrorBoundary>)
+    expect(screen.getByText('Bonded failed to load')).toBeInTheDocument()
     expect(screen.getByText(/boom: module graph exploded/)).toBeInTheDocument()
     expect(screen.queryByText('panel rendered')).not.toBeInTheDocument()
   })
@@ -48,21 +48,21 @@ describe('FeatureErrorBoundary', () => {
     render(
       <div>
         <p>sidebar stands</p>
-        <FeatureErrorBoundary name="Exithibition"><Boom shouldThrow /></FeatureErrorBoundary>
+        <FeatureErrorBoundary name="Bonded"><Boom shouldThrow /></FeatureErrorBoundary>
       </div>
     )
     expect(screen.getByText('sidebar stands')).toBeInTheDocument()
-    expect(screen.getByText('Exithibition failed to load')).toBeInTheDocument()
+    expect(screen.getByText('Bonded failed to load')).toBeInTheDocument()
   })
 
   it('logs the caught error with the feature name', () => {
-    render(<FeatureErrorBoundary name="Exithibition"><Boom shouldThrow /></FeatureErrorBoundary>)
-    expect(consoleError).toHaveBeenCalledWith('[shell] Exithibition failed to render:', expect.any(Error), expect.anything())
+    render(<FeatureErrorBoundary name="Bonded"><Boom shouldThrow /></FeatureErrorBoundary>)
+    expect(consoleError).toHaveBeenCalledWith('[shell] Bonded failed to render:', expect.any(Error), expect.anything())
   })
 
   it('reloads the window from the fallback action', async () => {
     const user = userEvent.setup()
-    render(<FeatureErrorBoundary name="Exithibition"><Boom shouldThrow /></FeatureErrorBoundary>)
+    render(<FeatureErrorBoundary name="Bonded"><Boom shouldThrow /></FeatureErrorBoundary>)
     await user.click(screen.getByRole('button', { name: /Reload Moirasia/ }))
     expect(window.location.reload).toHaveBeenCalledTimes(1)
   })
@@ -70,10 +70,10 @@ describe('FeatureErrorBoundary', () => {
   it('renders children again after a remount with fresh state', async () => {
     const user = userEvent.setup()
     const { rerender } = render(<Harness shouldThrow />)
-    expect(screen.getByText('Exithibition failed to load')).toBeInTheDocument()
+    expect(screen.getByText('Bonded failed to load')).toBeInTheDocument()
     rerender(<Harness shouldThrow={false} />)
     await user.click(screen.getByRole('button', { name: 'remount' }))
     expect(screen.getByText('panel rendered')).toBeInTheDocument()
-    expect(screen.queryByText('Exithibition failed to load')).not.toBeInTheDocument()
+    expect(screen.queryByText('Bonded failed to load')).not.toBeInTheDocument()
   })
 })

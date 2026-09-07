@@ -46,9 +46,9 @@ function migrate(value: unknown): ShellSettings {
   const object = value as Record<string, unknown>
   const launchAtLogin = object.launchAtLogin === true
   if (object.version === 3) return { version: 3, launchAtLogin, pendingLoginItems: validPending(object.pendingLoginItems), features: validFeatures(object.features) }
-  if (object.version === 2) return { version: 3, launchAtLogin, pendingLoginItems: validPending(object.pendingLoginItems), features: { exithibition: true } }
+  if (object.version === 2) return { version: 3, launchAtLogin, pendingLoginItems: validPending(object.pendingLoginItems), features: {} }
   const legacy = object.autoStart && typeof object.autoStart === 'object' ? object.autoStart as Record<string, unknown> : {}
-  return { version: 3, launchAtLogin, pendingLoginItems: Object.fromEntries(APPLICATION_IDS.filter((id) => legacy[id] === true).map((id) => [id, true])), features: { exithibition: true } }
+  return { version: 3, launchAtLogin, pendingLoginItems: Object.fromEntries(APPLICATION_IDS.filter((id) => legacy[id] === true).map((id) => [id, true])), features: {} }
 }
 
 function validPending(value: unknown): Readonly<Partial<Record<ApplicationId, true>>> {
@@ -59,7 +59,8 @@ function validPending(value: unknown): Readonly<Partial<Record<ApplicationId, tr
 // Unknown feature ids round-trip: a newer build's feature flags must survive this build's writes.
 function validFeatures(value: unknown): Readonly<Partial<Record<ApplicationId, boolean>>> {
   const features = value && typeof value === 'object' ? value as Record<string, unknown> : {}
-  return Object.fromEntries(Object.entries(features).filter(([, flag]) => typeof flag === 'boolean')) as Partial<Record<ApplicationId, boolean>>
+  const retired = new Set(['exithibition', 'orbis'])
+  return Object.fromEntries(Object.entries(features).filter(([id, flag]) => !retired.has(id) && typeof flag === 'boolean')) as Partial<Record<ApplicationId, boolean>>
 }
 
 function isShellSettingsDocument(value: unknown): boolean {

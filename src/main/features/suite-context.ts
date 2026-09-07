@@ -47,14 +47,6 @@ export function suiteFeatureContext(id: FeatureId, surface: EmbeddedFeatureSurfa
         }
       }
     }
-    case 'exithibition':
-      return {
-        id, mode: 'suite', productId: id, surface,
-        paths: {
-          native: { executable: resource(artifact(entry, 'executable')) },
-          dataDirectory
-        }
-      }
     case 'bonded':
       return {
         id, mode: 'suite', productId: id, surface,
@@ -62,15 +54,6 @@ export function suiteFeatureContext(id: FeatureId, surface: EmbeddedFeatureSurfa
           native: { helper: resource(artifact(entry, 'helper')) },
           dataDirectory,
           legacyDataDirectories: [join(app.getPath('appData'), 'Bonded')]
-        }
-      }
-    case 'orbis':
-      return {
-        id, mode: 'suite', productId: id, surface,
-        paths: {
-          workers: { scan: resource(artifact(entry, 'scan')) },
-          native: { metadata: resource(artifact(entry, 'metadata')) },
-          dataDirectory
         }
       }
     default:

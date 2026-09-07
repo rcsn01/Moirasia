@@ -12,17 +12,13 @@ import { FeatureErrorBoundary } from './components/feature-error-boundary'
 import { useController } from './controller'
 
 const AmovePanel = lazy(async () => ({ default: (await import('../../../apps/integrated/Amove/src/renderer/main/AmovePanel')).AmovePanel }))
-const ExithibitionPanel = lazy(async () => ({ default: (await import('../../../apps/integrated/Exithibition/src/renderer/App')).ExithibitionPanel }))
 const BondedPanel = lazy(async () => ({ default: (await import('../../../apps/integrated/Bonded/src/renderer/App')).BondedPanel }))
-const OrbisPanel = lazy(async () => ({ default: (await import('../../../apps/integrated/Orbis/src/renderer/App')).OrbisPanel }))
 
 // Literal imports stay in this map so rollup code-splits each panel chunk; a
 // feature without a primary panel is a compile error instead of a ternary.
 const PRIMARY_PANELS: Record<FeatureId, (appearance: Appearance) => React.JSX.Element> = {
   amove: (appearance) => <AmovePanel bridge={window.amove} appearance={appearance} />,
-  exithibition: (appearance) => <ExithibitionPanel bridge={window.exithibition} appearance={appearance} />,
-  bonded: (appearance) => <BondedPanel bridge={window.bonded} appearance={appearance} />,
-  orbis: (appearance) => <OrbisPanel bridge={window.orbis} appearance={appearance} />
+  bonded: (appearance) => <BondedPanel bridge={window.bonded} appearance={appearance} />
 }
 
 export function App(): React.JSX.Element {
