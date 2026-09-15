@@ -28,6 +28,8 @@ Suite artifacts are staged under `native/staged/features/<id>` and packaged unde
 
 Exithibition and Orbis store appearance in their own Electron `userData` directory. They still render `DesktopAppShell` and use the same shared components, tokens, page spacing, and product styling as Moirasia.
 
+The runtime leases shared by Vox, Bonded, and Shout are implemented at `@moirasia/desktop-shell/runtime-lease`; their lock names and legacy owner-record compatibility remain unchanged, while each adapter preserves its app-specific in-use error class. Recovery uses the legacy-compatible `recovery.json` marker.
+
 ## Exithibition
 
 `apps/standalone/Exithibition` owns its Electron lifecycle, context-isolated preload, React renderer, and Swift telemetry process. Samples and chart history remain memory-only. The experimental-sensor preference remains in the `com.local.Exithibition` defaults domain. Packaging copies both `ExithibitionNative` and its SwiftPM `Exithibition_Exithibition.bundle` into the standalone app.

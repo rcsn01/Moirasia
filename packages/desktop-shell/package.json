@@ -8,6 +8,7 @@
     "./feature": "./src/feature.ts",
     "./feature-surface-host": "./src/feature-surface-host.ts",
     "./main": "./src/main.ts",
+    "./runtime-lease": "./src/runtime-lease.ts",
     "./standalone-surface": "./src/standalone-surface.ts",
     "./react": "./src/react.tsx",
     "./styles.css": "./src/styles.css"
