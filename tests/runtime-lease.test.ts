@@ -58,6 +58,7 @@ describe('runtime lease', () => {
     const lease = await acquireRuntimeLease(root, leaseOptions('Moirasia', { pid: 4_242, probe: dead }))
     const owner = JSON.parse(await readFile(join(lock(root), 'owner.json'), 'utf8')) as Record<string, unknown>
     expect(owner).toMatchObject({ version: 1, pid: 4_242, host: 'Moirasia' })
+    expect((await stat(lock(root))).mode & 0o777).toBe(0o700)
     expect(await readFile(join(lock(root), 'recovery.json'), 'utf8').catch(() => undefined)).toBeUndefined()
     expect((await readdir(join(root, 'Moirasia'))).filter((name) => name.startsWith(`${lockName}.recovery-`))).toEqual([])
     await lease.release()

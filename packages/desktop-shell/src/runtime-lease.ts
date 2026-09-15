@@ -111,6 +111,14 @@ export async function acquireRuntimeLease(appDataDirectory: string, options: Run
       throw new RuntimeLeaseInUseError(observed, options.hosts[0])
     }
 
+    try {
+      await chmod(lockPath, 0o700)
+    } catch (error) {
+      await releaseRecovery(lockPath, token)
+      if (hasCode(error, 'ENOENT')) continue
+      throw error
+    }
+
     const installation = await installOwner(lockPath, owner, options.hosts, dependencies)
     if (installation.kind === 'gone') {
       await releaseRecovery(lockPath, token)
