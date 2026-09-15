@@ -28,7 +28,7 @@ export function suiteFeatureContext(id: FeatureId, surface: EmbeddedFeatureSurfa
   const resource = (artifact: FeatureArtifact): string => {
     if (app.isPackaged) return artifactPath(join(process.resourcesPath, artifact.suiteResource), artifact)
     return artifact.suiteDevSource === 'buildOutput'
-      ? artifactPath(join(appRoot, artifact.buildOutput.replace('{configuration}', 'debug')), artifact)
+      ? artifactPath(join(appRoot, artifact.buildOutput.replace('{configuration}', 'debug').replace('{Configuration}', 'Debug')), artifact)
       : artifactPath(join(app.getAppPath(), artifact.staged), artifact)
   }
 
@@ -54,6 +54,15 @@ export function suiteFeatureContext(id: FeatureId, surface: EmbeddedFeatureSurfa
           native: { helper: resource(artifact(entry, 'helper')) },
           dataDirectory,
           legacyDataDirectories: [join(app.getPath('appData'), 'Bonded')]
+        }
+      }
+    case 'shout':
+      return {
+        id, mode: 'suite', productId: id, surface,
+        paths: {
+          native: { helper: resource(artifact(entry, 'helper')), driver: resource(artifact(entry, 'driver')) },
+          dataDirectory,
+          legacyDataDirectories: [join(app.getPath('appData'), 'Shout')]
         }
       }
     default:

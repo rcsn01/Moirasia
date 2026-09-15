@@ -17,6 +17,7 @@ export type FeatureHostMode = 'suite' | 'standalone'
 export type FeatureIconKey =
   | 'app-window'   // Amove
   | 'shield-check' // Bonded
+  | 'mic'          // Shout
 
 export interface FeatureResourceRequirements {
   readonly preloads?: readonly string[]
@@ -47,7 +48,7 @@ export interface StandaloneWindowFacts {
 
 /** Artifact roles mirror the requirement tables: a host validates 'native.addon',
  *  the catalog says what that file is and where it lives. */
-export type ArtifactKind = 'native' | 'executable' | 'worker' | 'assets'
+export type ArtifactKind = 'native' | 'executable' | 'worker' | 'assets' | 'bundle'
 
 export interface FeatureArtifact {
   /** Symbolic name matching the per-mode requirements tables ('addon', 'helper', 'executable', 'scan', …). */
@@ -58,7 +59,7 @@ export interface FeatureArtifact {
    * other kinds: exact filename ('ExithibitionNative', 'scan-worker.mjs'); kind 'assets' carries none.
    */
   readonly file?: string
-  /** Where the build output lands inside the app repo, relative to the app root. `{configuration}` → 'debug' | 'release'. */
+  /** Where the build output lands inside the app repo, relative to the app root. `{configuration}` → 'debug' | 'release'; `{Configuration}` → 'Debug' | 'Release' (SwiftPM 6.4 layout). */
   readonly buildOutput: string
   /** Suite-repo-relative path the staging script places the artifact at (directory for multi-file kinds). */
   readonly staged: string
@@ -97,7 +98,7 @@ export function artifactPath(directory: string, artifact: FeatureArtifact): stri
 
 /** The embedded features. The catalog seeds below and this union must stay in sync;
  * tests pin the exact list and every Record<FeatureId, …> consumer enforces exhaustiveness. */
-export type FeatureId = 'amove' | 'bonded'
+export type FeatureId = 'amove' | 'bonded' | 'shout'
 
 export interface FeatureCatalogEntry {
   readonly id: FeatureId
@@ -115,7 +116,8 @@ export interface FeatureCatalogEntry {
 
 const GROUPS = [
   { id: 'window-management', label: 'Window management' },
-  { id: 'monitoring', label: 'Monitoring' }
+  { id: 'monitoring', label: 'Monitoring' },
+  { id: 'audio', label: 'Audio' }
 ] as const
 
 const NAVIGATION_POLICIES: ReadonlySet<string> = new Set(['deny', 'allow-same-url'])
@@ -159,6 +161,27 @@ const FEATURE_SEEDS = [
     artifacts: [
       // A SwiftPM executable like Exithibition's: exact filename, not a napi base name.
       { name: 'helper', kind: 'executable', file: 'BondedFirewallHelper', buildOutput: 'native/.build/arm64-apple-macosx/{configuration}', staged: 'native/staged/features/bonded/native', suiteResource: 'features/bonded/native', suiteDevSource: 'buildOutput', standaloneResource: 'native' }
+    ]
+  },
+  {
+    id: 'shout',
+    label: 'Shout',
+    executableName: 'Shout',
+    bundleId: 'com.opense.Shout',
+    description: 'Boost every app’s microphone through a virtual Shout Mic input with clean gain and a soft limiter.',
+    iconKey: 'mic',
+    groupId: 'audio',
+    directory: 'Shout',
+    requirements: {
+      standalone: { preloads: ['main'], renderers: ['main'], native: ['helper', 'driver'], dataDirectory: true },
+      suite: { native: ['helper', 'driver'], dataDirectory: true }
+    },
+    standaloneWindow: { width: 430, height: 640, minWidth: 390, minHeight: 500, fullscreenable: false },
+    artifacts: [
+      { name: 'helper', kind: 'executable', file: 'ShoutAudioHelper', buildOutput: 'native/.build/out/Products/{Configuration}', staged: 'native/staged/features/shout/native', suiteResource: 'features/shout/native', suiteDevSource: 'buildOutput', standaloneResource: 'native' },
+      // The AudioServerPlugIn is a .driver bundle directory; 'file' is the bundle name
+      // the host joins under its own root (like every non-assets kind).
+      { name: 'driver', kind: 'bundle', file: 'ShoutMic.driver', buildOutput: 'native/driver/dist', staged: 'native/staged/features/shout/driver', suiteResource: 'features/shout/driver', suiteDevSource: 'staged', standaloneResource: 'native' }
     ]
   }
 ] as const satisfies readonly FeatureCatalogEntry[]
@@ -208,9 +231,10 @@ export function buildCatalog(seeds: readonly FeatureCatalogEntry[] = FEATURE_SEE
   const groupIds = new Set<string>(GROUPS.map((group) => group.id))
   const ids = new Set<string>()
   const bundleIds = new Set<string>()
-  // A native: requirement may name a napi addon ('native') or a plain native binary ('executable') —
-  // both land in the paths.native map, so requirement-bucket and ArtifactKind names are not the same check.
-  const nativeRequirementKinds: ReadonlySet<ArtifactKind> = new Set(['native', 'executable'])
+  // A native: requirement may name a napi addon ('native'), a plain native binary ('executable'),
+  // or a bundle directory ('bundle') — all land in the paths.native map, so requirement-bucket
+  // and ArtifactKind names are not the same check.
+  const nativeRequirementKinds: ReadonlySet<ArtifactKind> = new Set(['native', 'executable', 'bundle'])
   for (const seed of seeds) {
     if (ids.has(seed.id)) throw new Error(`Feature catalog has a duplicate id '${seed.id}'.`)
     if (bundleIds.has(seed.bundleId)) throw new Error(`Feature catalog has a duplicate bundle id '${seed.bundleId}'.`)

@@ -5,7 +5,7 @@ import { applicationCatalog } from '@moirasia/desktop-shell'
 import type { Appearance } from '@moirasia/desktop-shell'
 import type { ApplicationId, ControllerPage, ControllerSnapshot, ShellSettings } from '../../shared/contracts'
 
-const EMPTY: ControllerSnapshot = { applications: applicationCatalog.entries.map(({ id, label }) => ({ id, label, bundleId: '', installed: false, running: false })), appearances: { version: 1, revision: 0, values: { moirasia: 'system', amove: 'system', vox: 'system', exithibition: 'dark', bonded: 'system', orbis: 'system', yn360: 'system' } }, features: [] }
+const EMPTY: ControllerSnapshot = { applications: applicationCatalog.entries.map(({ id, label }) => ({ id, label, bundleId: '', installed: false, running: false })), appearances: { version: 1, revision: 0, values: { moirasia: 'system', amove: 'system', vox: 'system', exithibition: 'dark', bonded: 'system', shout: 'system', orbis: 'system', yn360: 'system' } }, features: [] }
 const DEFAULT_SETTINGS: ShellSettings = { version: 3, launchAtLogin: false, pendingLoginItems: {}, features: {} }
 export function useController() {
   const [snapshot, setSnapshot] = useState(EMPTY), [settings, setSettings] = useState(DEFAULT_SETTINGS), [page, setPage] = useState<ControllerPage>('general'), [loading, setLoading] = useState(true), [error, setError] = useState<string>()

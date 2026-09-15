@@ -15,6 +15,10 @@ extraResources:
     to: features/amove/assets
   - from: native/staged/features/bonded/native
     to: features/bonded/native
+  - from: native/staged/features/shout/native
+    to: features/shout/native
+  - from: native/staged/features/shout/driver
+    to: features/shout/driver
 mac:
   icon: build/icon.icns
   target:
@@ -28,4 +32,5 @@ mac:
   gatekeeperAssess: false
   extendInfo:
     LSMinimumSystemVersion: "14.0"
+    NSMicrophoneUsageDescription: "Moirasia's Shout feature boosts your microphone. It needs microphone access to feed the amplified signal into the Shout Mic input device."
 asar: true

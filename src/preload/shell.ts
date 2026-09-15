@@ -1,6 +1,7 @@
 import { contextBridge, ipcRenderer } from 'electron'
 import { createAmoveBridge } from '../../apps/integrated/Amove/src/preload/bridge'
 import { createBondedBridge } from '../../apps/integrated/Bonded/src/preload/bridge'
+import { createShoutBridge } from '../../apps/integrated/Shout/src/preload/bridge'
 import type { Appearance } from '@moirasia/desktop-shell'
 import { IPC, type ApplicationId, type ControllerApi, type ControllerPage, type ControllerSnapshot, type ShellSettings } from '../shared/contracts'
 const api: ControllerApi = {
@@ -22,3 +23,4 @@ const api: ControllerApi = {
 contextBridge.exposeInMainWorld('moirasia', Object.freeze(api))
 contextBridge.exposeInMainWorld('amove', Object.freeze(createAmoveBridge(ipcRenderer)))
 contextBridge.exposeInMainWorld('bonded', Object.freeze(createBondedBridge(ipcRenderer)))
+contextBridge.exposeInMainWorld('shout', Object.freeze(createShoutBridge(ipcRenderer)))

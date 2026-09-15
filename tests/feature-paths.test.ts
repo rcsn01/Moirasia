@@ -51,5 +51,23 @@ describe('suite feature paths', () => {
     })
   })
 
+  describe('Shout', () => {
+    it('uses the debug helper and staged driver in development', () => {
+      const context = suiteFeatureContext('shout', surface as never)
+      expect(context.paths.native?.helper).toBe('/workspace/apps/integrated/Shout/native/.build/out/Products/Debug/ShoutAudioHelper')
+      expect(context.paths.native?.driver).toBe('/workspace/native/staged/features/shout/driver/ShoutMic.driver')
+      expect(context.paths.dataDirectory).toBe('/Users/test/Library/Application Support/Moirasia/features/shout')
+      expect(context.paths.legacyDataDirectories).toEqual(['/Users/test/Library/Application Support/Shout'])
+    })
+
+    it('uses the namespaced packaged helper and driver', () => {
+      electron.app.isPackaged = true
+      Object.defineProperty(process, 'resourcesPath', { value: RESOURCES, configurable: true })
+      const context = suiteFeatureContext('shout', surface as never)
+      expect(context.paths.native?.helper).toBe('/Applications/Moirasia.app/Contents/Resources/features/shout/native/ShoutAudioHelper')
+      expect(context.paths.native?.driver).toBe('/Applications/Moirasia.app/Contents/Resources/features/shout/driver/ShoutMic.driver')
+    })
+  })
+
 
 })

@@ -7,7 +7,7 @@ export { runLoginItemControl } from './login-item-control'
 export { runStandaloneLaunch } from './standalone-launch'
 export type { StandaloneLaunchOptions, StandaloneLaunchOutcome } from './standalone-launch'
 
-const DEFAULTS: Record<ProductId, Appearance> = { moirasia: 'system', amove: 'system', vox: 'system', exithibition: 'dark', bonded: 'system', orbis: 'system', yn360: 'system' }
+const DEFAULTS: Record<ProductId, Appearance> = { moirasia: 'system', amove: 'system', vox: 'system', exithibition: 'dark', bonded: 'system', shout: 'system', orbis: 'system', yn360: 'system' }
 const EMPTY: AppearanceSnapshot = { version: 1, revision: 0, values: DEFAULTS }
 
 /** The product's default appearance — DEFAULTS stays the single owner of the seed table. */

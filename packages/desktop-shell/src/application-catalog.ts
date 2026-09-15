@@ -15,12 +15,13 @@ export interface ApplicationCatalogEntry {
 
 /** The controlled family applications. The catalog seeds below and this union must stay in sync;
  * tests pin the exact list and every array-index-dependent consumer relies on the order. */
-export type ApplicationId = 'amove' | 'vox' | 'bonded'
+export type ApplicationId = 'amove' | 'vox' | 'bonded' | 'shout'
 
 const APPLICATION_SEEDS = [
   { id: 'amove', label: 'Amove', executableName: 'Amove', bundleId: 'com.opense.Amove' },
   { id: 'vox', label: 'Vox', executableName: 'Vox', bundleId: 'com.moirasia.vox' },
-  { id: 'bonded', label: 'Bonded', executableName: 'Bonded', bundleId: 'com.opense.Bonded' }
+  { id: 'bonded', label: 'Bonded', executableName: 'Bonded', bundleId: 'com.opense.Bonded' },
+  { id: 'shout', label: 'Shout', executableName: 'Shout', bundleId: 'com.opense.Shout' }
 ] as const satisfies readonly ApplicationCatalogEntry[]
 
 export interface ApplicationCatalog {

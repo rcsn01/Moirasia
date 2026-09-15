@@ -13,12 +13,14 @@ import { useController } from './controller'
 
 const AmovePanel = lazy(async () => ({ default: (await import('../../../apps/integrated/Amove/src/renderer/main/AmovePanel')).AmovePanel }))
 const BondedPanel = lazy(async () => ({ default: (await import('../../../apps/integrated/Bonded/src/renderer/App')).BondedPanel }))
+const ShoutPanel = lazy(async () => ({ default: (await import('../../../apps/integrated/Shout/src/renderer/App')).ShoutPanel }))
 
 // Literal imports stay in this map so rollup code-splits each panel chunk; a
 // feature without a primary panel is a compile error instead of a ternary.
 const PRIMARY_PANELS: Record<FeatureId, (appearance: Appearance) => React.JSX.Element> = {
   amove: (appearance) => <AmovePanel bridge={window.amove} appearance={appearance} />,
-  bonded: (appearance) => <BondedPanel bridge={window.bonded} appearance={appearance} />
+  bonded: (appearance) => <BondedPanel bridge={window.bonded} appearance={appearance} />,
+  shout: (appearance) => <ShoutPanel bridge={window.shout} appearance={appearance} />
 }
 
 export function App(): React.JSX.Element {

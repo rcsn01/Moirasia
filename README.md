@@ -1,6 +1,6 @@
 # Moirasia
 
-Moirasia is a macOS controller for Amove, Vox, and Bonded, and an embedded feature host for Amove and Bonded. Its Applications menu discovers those three standalone bundles and opens or focuses them. Exithibition and Orbis are standalone-only repositories under `apps/standalone`; they share Moirasia's UI packages but have no controller or embedded runtime integration.
+Moirasia is a macOS controller for Amove, Vox, Bonded, and Shout, and an embedded feature host for Amove, Bonded, and Shout. Its Applications menu discovers those four standalone bundles and opens or focuses them. Exithibition and Orbis are standalone-only repositories under `apps/standalone`; they share Moirasia's UI packages but have no controller or embedded runtime integration.
 
 ## Development
 
@@ -12,18 +12,19 @@ pnpm test
 pnpm build
 ```
 
-`pnpm dev` also builds the local application agent, so the Applications menu can discover installed controlled bundles during development. The suite build compiles and stages the Amove native addon and Bonded firewall helper before packaging Moirasia. Standalone product repositories keep their own locks.
+`pnpm dev` also builds the local application agent, so the Applications menu can discover installed controlled bundles during development. The suite build compiles and stages the Amove native addon, the Bonded firewall helper, and the Shout audio helper plus Shout Mic driver before packaging Moirasia. Standalone product repositories keep their own locks.
 
 ```sh
 pnpm -C apps/integrated/Amove install --ignore-workspace
 pnpm -C apps/integrated/Bonded install --ignore-workspace
+pnpm -C apps/integrated/Shout install --ignore-workspace
 bun --cwd apps/standalone/Vox install --frozen-lockfile
 ```
 
 Then package the suite:
 
 ```sh
-pnpm dist:mac
+pnpm package:mac
 ```
 
 Amove and Bonded remain buildable in standalone mode as well as embedded mode. Run Amove's commands from its app directory:
@@ -62,6 +63,18 @@ pnpm -C apps/integrated/Bonded package:dir
 
 The suite build stages its release helper at `Resources/features/bonded/native/BondedFirewallHelper`. Installing that helper still requires administrator approval from Bonded's panel. Standalone packaging keeps the original `Resources/native/BondedFirewallHelper` location.
 
+Shout's standalone commands are:
+
+```sh
+pnpm -C apps/integrated/Shout install --ignore-workspace
+pnpm -C apps/integrated/Shout native:build
+pnpm -C apps/integrated/Shout dev
+pnpm -C apps/integrated/Shout verify
+pnpm -C apps/integrated/Shout package:dir
+```
+
+Shout requires macOS 27 or later. Its suite build stages the release helper at `Resources/features/shout/native/ShoutAudioHelper` and the driver at `Resources/features/shout/driver/ShoutMic.driver`; standalone packaging keeps both under `Resources/native/`. Installing the Shout Mic driver still requires administrator approval from Shout's panel.
+
 Orbis's commands are:
 
 ```sh
@@ -85,7 +98,7 @@ Independent product repositories are split by suite support: Amove and Bonded li
 
 ## Application control
 
-The packaged AppKit helper uses Launch Services and `NSWorkspace` to resolve fixed bundle identifiers, inspect running applications, launch or activate them, request normal termination, and open Login Items settings. Command+1 through Command+3 open or focus Amove, Vox, and Bonded respectively. Vox has no embedded panel. Bonded remains available both as an embedded feature and a standalone bundle, and only one host can own its monitor and PF helper at a time.
+The packaged AppKit helper uses Launch Services and `NSWorkspace` to resolve fixed bundle identifiers, inspect running applications, launch or activate them, request normal termination, and open Login Items settings. Command+1 through Command+4 open or focus Amove, Vox, Bonded, and Shout respectively. Vox has no embedded panel. Bonded and Shout remain available both as embedded features and standalone bundles, and each runtime lease ensures only one host owns its sensitive session at a time (Bonded's network monitor and PF helper; Shout's audio helper and default-input ownership).
 
 Each controlled standalone bundle accepts one headless command without creating product windows or starting its runtime:
 
@@ -101,4 +114,4 @@ In-suite features use the Moirasia bundle's macOS permissions. Standalone apps k
 
 Vox no longer runs inside Moirasia. On first standalone launch after leaving the suite, Vox reverse-migrates the suite's data: it snapshots `Application Support/Moirasia/features/vox/vox.sqlite`, merges it into `Application Support/Vox/vox.sqlite` (entity rows union by id with the suite row winning the rare collision, daily aggregate counters taking the per-day maximum, settings resolving per key in the suite's favor except launch-at-login), backs up the standalone store first, records the outcome in a marker, and removes the suite copy. A failed merge retries on the next launch and leaves both stores untouched. Downloaded models under `Application Support/Vox/Models` and provider credentials in the `com.moirasia.vox.providers` Keychain service stay shared. A transitional lease keeps the microphone, global shortcuts, and shared model store owned by one Vox host at a time while stale pre-move Moirasia builds that still embed Vox may exist.
 
-Moirasia stores Bonded settings under its own `features/bonded` directory. On first use it can copy valid standalone settings from `Application Support/Bonded`, but the two stores never share later writes.
+Moirasia stores Bonded settings under its own `features/bonded` directory. On first use it can copy valid standalone settings from `Application Support/Bonded`, but the two stores never share later writes. Shout keeps the same isolation for its settings under `features/shout`.

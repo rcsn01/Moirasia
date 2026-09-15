@@ -21,3 +21,10 @@ const bondedRoot = 'apps/integrated/Bonded'
 run('pnpm', ['native:release'], bondedRoot)
 mkdirSync('native/staged/features/bonded/native', { recursive: true })
 copyFileSync(`${bondedRoot}/native/.build/arm64-apple-macosx/release/BondedFirewallHelper`, 'native/staged/features/bonded/native/BondedFirewallHelper')
+
+const shoutRoot = 'apps/integrated/Shout'
+run('pnpm', ['native:release'], shoutRoot)
+run('pnpm', ['native:driver:release'], shoutRoot)
+mkdirSync('native/staged/features/shout/native', { recursive: true })
+copyFileSync(`${shoutRoot}/native/.build/out/Products/Release/ShoutAudioHelper`, 'native/staged/features/shout/native/ShoutAudioHelper')
+cpSync(`${shoutRoot}/native/driver/dist`, 'native/staged/features/shout/driver', { recursive: true })

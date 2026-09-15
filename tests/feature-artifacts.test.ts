@@ -35,6 +35,16 @@ describe('artifact facet table', () => {
     ])
   })
 
+  it('pins the Shout audio helper and virtual-mic driver bundle', () => {
+    const entry = featureCatalog.get('shout')
+    expect(entry.directory).toBe('Shout')
+    expect(entry.artifacts).toEqual([
+      { name: 'helper', kind: 'executable', file: 'ShoutAudioHelper', buildOutput: 'native/.build/out/Products/{Configuration}', staged: 'native/staged/features/shout/native', suiteResource: 'features/shout/native', suiteDevSource: 'buildOutput', standaloneResource: 'native' },
+      { name: 'driver', kind: 'bundle', file: 'ShoutMic.driver', buildOutput: 'native/driver/dist', staged: 'native/staged/features/shout/driver', suiteResource: 'features/shout/driver', suiteDevSource: 'staged', standaloneResource: 'native' }
+    ])
+    expect(appRepoFile('Shout', 'native/driver/dist/ShoutMic.driver/Contents/Info.plist')).toBeTruthy()
+  })
+
 })
 
 describe('nativeAddonFileName', () => {
@@ -57,9 +67,14 @@ describe('artifactPath', () => {
   const ADDON = artifact('amove', 'addon')
   const ASSETS = artifact('amove', 'assets')
   const EXECUTABLE = artifact('bonded', 'helper')
+  const BUNDLE = artifact('shout', 'driver')
 
   it('appends the exact filename for exact-filename kinds', () => {
     expect(artifactPath('/Resources/features/bonded/native', EXECUTABLE)).toBe('/Resources/features/bonded/native/BondedFirewallHelper')
+  })
+
+  it('appends the bundle directory name for bundle kinds', () => {
+    expect(artifactPath('/Resources/features/shout/driver', BUNDLE)).toBe('/Resources/features/shout/driver/ShoutMic.driver')
   })
 
   it('appends the platform-resolved filename for napi addons', () => {
@@ -82,7 +97,7 @@ describe('catalog artifact invariants', () => {
         for (const name of entry.requirements[mode].native ?? []) {
           const found = entry.artifacts.find((candidate) => candidate.name === name)
           expect(found, `${entry.id} ${mode} native requirement '${name}'`).toBeDefined()
-          expect(['native', 'executable']).toContain(found!.kind)
+          expect(['native', 'executable', 'bundle']).toContain(found!.kind)
         }
         for (const name of entry.requirements[mode].workers ?? []) {
           const found = entry.artifacts.find((candidate) => candidate.name === name)
@@ -115,10 +130,13 @@ describe('contract pins — hand-written files agree with the catalog', () => {
   const rootPackageJson = JSON.parse(repoFile('package.json')) as { scripts: Record<string, string> }
 
   it('pins the staging script to every staged path and release source layout', () => {
+    const releaseSource = (buildOutput: string): string => buildOutput.includes('{Configuration}')
+      ? buildOutput.replace('{Configuration}', 'Release')
+      : buildOutput.replace('{configuration}', 'release')
     for (const entry of featureCatalog.entries) {
       for (const candidate of entry.artifacts) {
         expect(stageScript, `${entry.id}/${candidate.name} staged path`).toContain(candidate.staged)
-        expect(stageScript, `${entry.id}/${candidate.name} release source`).toContain(candidate.buildOutput.replace('{configuration}', 'release'))
+        expect(stageScript, `${entry.id}/${candidate.name} release source`).toContain(releaseSource(candidate.buildOutput))
       }
     }
   })

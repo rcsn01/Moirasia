@@ -18,6 +18,9 @@
     "apps/integrated/Bonded/src/main/**/*.ts",
     "apps/integrated/Bonded/src/preload/**/*.ts",
     "apps/integrated/Bonded/src/shared/**/*.ts",
+    "apps/integrated/Shout/src/main/**/*.ts",
+    "apps/integrated/Shout/src/preload/**/*.ts",
+    "apps/integrated/Shout/src/shared/**/*.ts",
     "tests/**/*.ts"
   ],
   "exclude": ["apps/**/*.test.ts", "apps/**/*.test.tsx"]

@@ -29,7 +29,11 @@ export default defineConfig({
     }
   },
   preload: {
-    plugins: [externalizeDepsPlugin(), requireSelfContainedPreloads()],
+    // The shell preload re-exports catalog values through src/shared/contracts, so
+    // the shared package must be bundled, not externalized: a sandboxed preload can
+    // only require electron (and the entry would be a raw .ts file regardless).
+    // Same reason main excludes it; requireSelfContainedPreloads enforces no shared chunks.
+    plugins: [externalizeDepsPlugin({ exclude: ['@moirasia/desktop-shell'] }), requireSelfContainedPreloads()],
     build: {
       rollupOptions: {
         input: {

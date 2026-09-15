@@ -32,6 +32,6 @@ describe('AppearanceRegistry migration', () => {
     const registry = new AppearanceRegistry(path)
     const snapshot = await registry.load()
     registry.close()
-    expect(snapshot).toEqual({ version: 1, revision: 7, values: { moirasia: 'dark', amove: 'light', vox: 'system', exithibition: 'dark', bonded: 'system', orbis: 'system', yn360: 'system' } })
+    expect(snapshot).toEqual({ version: 1, revision: 7, values: { moirasia: 'dark', amove: 'light', vox: 'system', exithibition: 'dark', bonded: 'system', shout: 'system', orbis: 'system', yn360: 'system' } })
   })
 })

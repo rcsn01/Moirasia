@@ -3,13 +3,13 @@ import { applicationCatalog, isApplicationId, type ApplicationId } from '../pack
 
 describe('application catalog', () => {
   it('pins the catalog order that menu accelerators and index-dependent consumers rely on', () => {
-    expect(applicationCatalog.ids).toEqual(['amove', 'vox', 'bonded'])
+    expect(applicationCatalog.ids).toEqual(['amove', 'vox', 'bonded', 'shout'])
     expect(applicationCatalog.entries.map((entry) => entry.id)).toEqual(applicationCatalog.ids)
   })
 
-  it('accepts exactly the five application ids and rejects lookalikes', () => {
+  it('accepts exactly the four application ids and rejects lookalikes', () => {
     for (const id of applicationCatalog.ids) expect(isApplicationId(id)).toBe(true)
-    for (const value of ['apps', 'settings', '', null, undefined, 42, 'moirasia', 'yn360', 'amovee']) {
+    for (const value of ['apps', 'settings', '', null, undefined, 42, 'moirasia', 'yn360', 'amovee', 'shou']) {
       expect(applicationCatalog.isId(value)).toBe(false)
     }
   })
@@ -27,7 +27,8 @@ describe('application catalog', () => {
     expect(applicationCatalog.get('amove').bundleId).toBe('com.opense.Amove')
     expect(applicationCatalog.get('vox').bundleId).toBe('com.moirasia.vox')
     expect(applicationCatalog.get('bonded').bundleId).toBe('com.opense.Bonded')
-    expect(applicationCatalog.entries.map((entry) => entry.executableName)).toEqual(['Amove', 'Vox', 'Bonded'])
+    expect(applicationCatalog.get('shout').bundleId).toBe('com.opense.Shout')
+    expect(applicationCatalog.entries.map((entry) => entry.executableName)).toEqual(['Amove', 'Vox', 'Bonded', 'Shout'])
   })
 
   it('throws on unknown ids and freezes the catalog against mutation', () => {

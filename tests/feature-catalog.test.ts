@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest'
 import { FEATURE_IDS, buildCatalog, featureCatalog, isFeatureId, type FeatureCatalogEntry, type FeatureId } from '../packages/desktop-shell/src/feature-catalog'
 
 const amoveEntry = featureCatalog.get('amove')
+const shoutEntry = featureCatalog.get('shout')
 
 /** A complete, valid seed the mutation tests below break in exactly one way. */
 function validSeed(overrides: Partial<FeatureCatalogEntry> = {}): FeatureCatalogEntry {
@@ -11,13 +12,13 @@ function validSeed(overrides: Partial<FeatureCatalogEntry> = {}): FeatureCatalog
 
 describe('feature catalog', () => {
   it('pins the catalog order that menu accelerators and index-dependent consumers rely on', () => {
-    expect(FEATURE_IDS).toEqual(['amove', 'bonded'])
+    expect(FEATURE_IDS).toEqual(['amove', 'bonded', 'shout'])
     expect(featureCatalog.entries.map((entry) => entry.id)).toEqual(FEATURE_IDS)
   })
 
-  it('accepts exactly the two feature ids and rejects lookalikes', () => {
+  it('accepts exactly the three feature ids and rejects lookalikes', () => {
     for (const id of FEATURE_IDS) expect(isFeatureId(id)).toBe(true)
-    for (const value of ['vox', 'apps', 'settings', '', null, undefined, 42, 'moirasia', 'yn360', 'amovee']) {
+    for (const value of ['vox', 'apps', 'settings', '', null, undefined, 42, 'moirasia', 'yn360', 'amovee', 'shou']) {
       expect(featureCatalog.isId(value)).toBe(false)
     }
   })
@@ -39,33 +40,42 @@ describe('feature catalog', () => {
   it('derives display groups in catalog order', () => {
     expect(featureCatalog.groups.map((group) => [group.id, group.features])).toEqual([
       ['window-management', ['amove']],
-      ['monitoring', ['bonded']]
+      ['monitoring', ['bonded']],
+      ['audio', ['shout']]
     ])
   })
 
   it('keeps the requirements transcribed from the former defaultRequirements switch', () => {
     expect(featureCatalog.get('amove').requirements.standalone).toEqual({ preloads: ['main', 'shelf'], renderers: ['main', 'shelf'], native: ['addon'], assetsDirectory: true, dataDirectory: true })
     expect(featureCatalog.get('bonded').requirements.suite).toEqual({ native: ['helper'], dataDirectory: true })
+    expect(shoutEntry.requirements.standalone).toEqual({ preloads: ['main'], renderers: ['main'], native: ['helper', 'driver'], dataDirectory: true })
+    expect(shoutEntry.requirements.suite).toEqual({ native: ['helper', 'driver'], dataDirectory: true })
   })
 
   it('matches bundle ids and executable names to the standalone bundles', () => {
     expect(featureCatalog.get('amove').bundleId).toBe('com.opense.Amove')
     expect(featureCatalog.get('bonded').bundleId).toBe('com.opense.Bonded')
-    expect(featureCatalog.get('bonded').bundleId).toBe('com.opense.Bonded')
-    expect(featureCatalog.entries.map((entry) => entry.executableName)).toEqual(['Amove', 'Bonded'])
+    expect(shoutEntry.bundleId).toBe('com.opense.Shout')
+    expect(featureCatalog.entries.map((entry) => entry.executableName)).toEqual(['Amove', 'Bonded', 'Shout'])
   })
 
   it('owns the artifact facet for every feature', () => {
     expect(featureCatalog.entries.map((entry) => [entry.id, entry.directory, entry.artifacts.length])).toEqual([
       ['amove', 'Amove', 2],
-      ['bonded', 'Bonded', 1]
+      ['bonded', 'Bonded', 1],
+      ['shout', 'Shout', 2]
+    ])
+    expect(shoutEntry.artifacts.map((artifact) => [artifact.name, artifact.kind, artifact.file])).toEqual([
+      ['helper', 'executable', 'ShoutAudioHelper'],
+      ['driver', 'bundle', 'ShoutMic.driver']
     ])
   })
 
   it('pins the standalone window facts the feature surface host joins with its own chrome', () => {
     expect(featureCatalog.entries.map((entry) => [entry.id, entry.standaloneWindow])).toEqual([
       ['amove', { width: 1180, height: 760, minWidth: 980, minHeight: 700, navigation: 'allow-same-url' }],
-      ['bonded', { width: 430, height: 600, minWidth: 390, minHeight: 500, fullscreenable: false }]
+      ['bonded', { width: 430, height: 600, minWidth: 390, minHeight: 500, fullscreenable: false }],
+      ['shout', { width: 430, height: 640, minWidth: 390, minHeight: 500, fullscreenable: false }]
     ])
   })
 
