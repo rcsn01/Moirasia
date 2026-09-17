@@ -176,15 +176,17 @@ describe('feature surface host', () => {
     expect(fakes.FakeWindow.instances).toHaveLength(0)
   })
 
-  it('cleans up if validation passed through a deprecated renderer alias but the named renderer is absent', async () => {
-    const { renderers: _legacy, ...paths } = standaloneContexts.bonded.paths
-    const context = { ...standaloneContexts.bonded, paths: { ...paths, rendererFile: '/tmp/legacy-bonded.html' } } as FeatureContext
-    const handle = await acquireFeatureSurface(context)
-    const window = fakes.FakeWindow.instances[0]!
+  it.each(['rendererUrl', 'rendererFile'] as const)('rejects the removed %s alias before creating a window', async (alias) => {
+    const { renderers: _removed, ...paths } = standaloneContexts.bonded.paths
+    const context = {
+      ...standaloneContexts.bonded,
+      paths: { ...paths, [alias]: alias === 'rendererUrl' ? 'http://localhost:5173/index.html' : '/tmp/legacy-bonded.html' }
+    } as unknown as FeatureContext
 
-    await expect(handle.ready()).rejects.toThrow(/renderers\.main/)
-    expect(fakes.appearanceDispose).toHaveBeenCalledTimes(1)
-    expect(window.destroy).toHaveBeenCalledTimes(1)
+    await expect(acquireFeatureSurface(context)).rejects.toThrow(/renderers\.main/)
+    expect(fakes.FakeWindow.instances).toHaveLength(0)
+    expect(fakes.appearanceRegister).not.toHaveBeenCalled()
+    expect(fakes.appearanceDispose).not.toHaveBeenCalled()
   })
 
   it('leaves the window unloaded after acquire, loads it on ready, and shows it exactly once', async () => {

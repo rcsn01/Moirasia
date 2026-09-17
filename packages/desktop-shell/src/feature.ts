@@ -20,15 +20,6 @@ export interface FeaturePaths {
   assetsDirectory?: string
   dataDirectory?: string
   legacyDataDirectories?: readonly string[]
-
-  /** @deprecated Use the named resource maps above. */
-  preload?: string
-  /** @deprecated Use the named resource maps above. */
-  rendererUrl?: string
-  /** @deprecated Use the named resource maps above. */
-  rendererFile?: string
-  /** @deprecated Use the named resource maps above. */
-  nativeExecutable?: string
 }
 
 export interface EmbeddedFeatureSurfaceState {
@@ -71,14 +62,13 @@ export function validateFeatureResources(context: FeatureContext, requirements?:
   const required = requirements ?? featureCatalog.get(context.id).requirements[context.mode]
   const { paths } = context
   for (const name of required.preloads ?? []) {
-    requireResource(paths.preloads?.[name] ?? (name === 'main' ? paths.preload : undefined), 'preloads', name, false)
+    requireResource(paths.preloads?.[name], 'preloads', name, false)
   }
   for (const name of required.renderers ?? []) {
-    const value = paths.renderers?.[name] ?? (name === 'main' ? paths.rendererUrl ?? paths.rendererFile : undefined)
-    requireResource(value, 'renderers', name, true)
+    requireResource(paths.renderers?.[name], 'renderers', name, true)
   }
   for (const name of required.native ?? []) {
-    requireResource(paths.native?.[name] ?? (name === 'executable' ? paths.nativeExecutable : undefined), 'native', name, false)
+    requireResource(paths.native?.[name], 'native', name, false)
   }
   for (const name of required.workers ?? []) {
     requireResource(paths.workers?.[name], 'workers', name, false)

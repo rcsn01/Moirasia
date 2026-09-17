@@ -24,7 +24,7 @@ class FakeShellWindow extends EventEmitter {
 const CONTEXT: FeatureContext = {
   id: 'amove', mode: 'suite', productId: 'amove',
   surface: { webContents: {} as never, state: { active: false, focused: false }, activate: () => undefined, focus: () => undefined, subscribe: () => () => undefined },
-  paths: { preload: '/tmp/feature.cjs', rendererFile: '/tmp/feature.html', nativeExecutable: '/tmp/AmoveNative' }
+  paths: { preloads: { shelf: '/tmp/feature.cjs' }, renderers: { shelf: '/tmp/feature.html' }, native: { addon: '/tmp/AmoveNative' } }
 }
 
 function fakeFeature(): { feature: MoirasiaFeature; register: ReturnType<typeof vi.fn>; dispose: ReturnType<typeof vi.fn>; activate: ReturnType<typeof vi.fn> } {

@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import { validateFeatureResources, type FeatureContext } from '../packages/desktop-shell/src/feature'
 
-const context = (paths: FeatureContext['paths'], id: 'amove' | 'bonded' = 'amove', mode: 'suite' | 'standalone' = 'suite'): FeatureContext => (mode === 'suite' ? {
+const context = (paths: FeatureContext['paths'], id: FeatureContext['id'] = 'amove', mode: FeatureContext['mode'] = 'suite'): FeatureContext => (mode === 'suite' ? {
   id, mode, productId: id, paths,
   surface: { webContents: {} as never, state: { active: false, focused: false }, activate: () => undefined, focus: () => undefined, subscribe: () => () => undefined }
 } : {
@@ -25,10 +25,24 @@ describe('feature resource contract', () => {
     expect(() => validateFeatureResources(context({ dataDirectory: '/tmp/amove-data' }, 'amove'), { workers: ['scan'], dataDirectory: true })).toThrow(/workers\.scan/)
   })
 
-  it('keeps the legacy main resource fields usable during migration', () => {
+  it.each([
+    { alias: 'preload', value: '/tmp/main.cjs', requirements: { preloads: ['main'] }, expected: /preloads\.main/ },
+    { alias: 'rendererUrl', value: 'http://localhost:5173/index.html', requirements: { renderers: ['main'] }, expected: /renderers\.main/ },
+    { alias: 'rendererFile', value: '/tmp/main.html', requirements: { renderers: ['main'] }, expected: /renderers\.main/ },
+    { alias: 'nativeExecutable', value: '/tmp/helper', requirements: { native: ['executable'] }, expected: /native\.executable/ }
+  ] as const)('rejects the removed $alias runtime alias', ({ alias, value, requirements, expected }) => {
+    // This cast models untyped runtime JavaScript, not supported TypeScript input.
+    const paths = { [alias]: value } as unknown as FeatureContext['paths']
+    expect(() => validateFeatureResources(context(paths), requirements)).toThrow(expected)
+  })
+
+  it('uses the catalog requirements for every Shout standalone native resource', () => {
     expect(() => validateFeatureResources(context({
-      preload: '/tmp/main.cjs', rendererFile: '/tmp/main.html', nativeExecutable: '/tmp/helper'
-    }), { preloads: ['main'], renderers: ['main'], native: ['executable'] })).not.toThrow()
+      preloads: { main: '/tmp/shout-preload.cjs' },
+      renderers: { main: '/tmp/shout.html' },
+      native: { helper: '/tmp/ShoutAudioHelper', driver: '/tmp/ShoutMic.driver' },
+      dataDirectory: '/tmp/shout-data'
+    }, 'shout', 'standalone'))).not.toThrow()
   })
 
   it('rejects missing resources and non-file renderer schemes', () => {
