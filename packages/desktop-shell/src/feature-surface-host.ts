@@ -1,5 +1,6 @@
-import { BrowserWindow, type WebContents } from 'electron'
-import { defaultProductAppearance, desktopWindowChromeOptions, neutralWindowBackground, registerProductAppearance } from './main'
+import type { BrowserWindow, WebContents } from 'electron'
+import { defaultProductAppearance } from './main'
+import { acquireOwnedWindowSurface } from './owned-window-surface'
 import { featureCatalog, validateFeatureResources, type FeatureContext, type FeatureHostMode } from './feature'
 
 export interface FeatureSurfaceOptions {
@@ -60,95 +61,31 @@ async function standaloneHandle(context: Extract<FeatureContext, { mode: 'standa
   const entry = featureCatalog.get(context.id)
   const preload = context.paths.preloads?.main
   if (!preload) throw new Error(`Feature '${context.id}' is missing the standalone preload 'preloads.main'.`)
+  const renderer = context.paths.renderers?.main
+  if (!renderer) throw new Error(`Feature '${context.id}' is missing the standalone renderer 'renderers.main'.`)
   const facts = entry.standaloneWindow
-  const window = new BrowserWindow({
+  const surface = await acquireOwnedWindowSurface({
+    productId: context.productId,
     title: entry.label,
     width: facts.width,
     height: facts.height,
     minWidth: facts.minWidth,
     minHeight: facts.minHeight,
-    show: false,
-    ...desktopWindowChromeOptions(),
-    fullscreenable: facts.fullscreenable ?? true,
-    backgroundColor: neutralWindowBackground(defaultProductAppearance(context.productId)),
+    preload,
+    renderer,
+    appearance: { initial: defaultProductAppearance(context.productId), registry: 'shared' },
+    ...(facts.fullscreenable !== undefined ? { fullscreenable: facts.fullscreenable } : {}),
+    ...(facts.navigation !== undefined ? { navigation: facts.navigation } : {}),
     ...(options.icon ? { icon: options.icon } : {}),
-    webPreferences: {
-      preload,
-      contextIsolation: true,
-      nodeIntegration: false,
-      sandbox: true,
-      spellcheck: false,
-      ...(options.devTools !== undefined ? { devTools: options.devTools } : {})
-    }
+    ...(options.devTools !== undefined ? { devTools: options.devTools } : {})
   })
-  window.webContents.setWindowOpenHandler(() => ({ action: 'deny' }))
-  installNavigationGuard(window, facts.navigation ?? 'deny')
 
-  let disposeAppearance: (() => void) | undefined
-  let disposed = false
-  let loaded = false
-  const markDisposed = (): void => {
-    if (disposed) return
-    disposed = true
-    disposeAppearance?.()
-    disposeAppearance = undefined
-  }
-  try {
-    disposeAppearance = await registerProductAppearance(context.productId, window, undefined, { applyNativeTheme: true })
-  } catch (error) {
-    window.destroy()
-    throw error
-  }
-  window.on('closed', markDisposed)
-
-  const handle: FeatureSurfaceHandle = {
+  return {
     mode: 'standalone',
-    get webContents(): WebContents { return window.webContents },
-    get window(): BrowserWindow { return window },
-    async ready(): Promise<void> {
-      if (disposed || loaded) return
-      const renderer = context.paths.renderers?.main
-      if (!renderer) {
-        handle.dispose()
-        throw new Error(`Feature '${context.id}' is missing the standalone renderer 'renderers.main'.`)
-      }
-      try {
-        await (isHttpUrl(renderer) ? window.loadURL(renderer) : window.loadFile(renderer))
-      } catch (error) {
-        handle.dispose()
-        throw error
-      }
-      loaded = true
-      if (!window.isDestroyed()) window.show()
-    },
-    activate(): void {
-      if (window.isDestroyed()) return
-      if (window.isMinimized()) window.restore()
-      window.show()
-      window.focus()
-    },
-    dispose(): void {
-      markDisposed()
-      if (!window.isDestroyed()) window.destroy()
-    }
-  }
-  return handle
-}
-
-/** window-open is always denied; will-navigate follows the catalog's policy —
- *  'deny' prevents every navigation, 'allow-same-url' additionally permits
- *  reload/same-URL navigation. */
-function installNavigationGuard(window: BrowserWindow, policy: 'deny' | 'allow-same-url'): void {
-  window.webContents.on('will-navigate', (event, url) => {
-    if (policy === 'deny' || url !== window.webContents.getURL()) event.preventDefault()
-  })
-}
-
-function isHttpUrl(value: string): boolean {
-  try {
-    const url = new URL(value)
-    return url.protocol === 'http:' || url.protocol === 'https:'
-  } catch {
-    return false
+    get webContents(): WebContents { return surface.webContents },
+    get window(): BrowserWindow { return surface.window },
+    ready: () => surface.ready(),
+    activate: () => surface.activate(),
+    dispose: () => surface.dispose()
   }
 }

@@ -13,7 +13,7 @@ describe('ShellSettingsStore', () => {
     const store = new ShellSettingsStore(join(directory, 'settings.json'))
 
     await expect(store.load()).resolves.toEqual(DEFAULT_SHELL_SETTINGS)
-    await expect(readFile(store.filePath, 'utf8')).resolves.toContain('"version": 3')
+    await expect(readFile(store.filePath, 'utf8')).resolves.toContain('"version": 4')
   })
 
   it('recovers from corrupt primary using backup', async () => {
@@ -26,7 +26,7 @@ describe('ShellSettingsStore', () => {
 
     const recovered = await new ShellSettingsStore(path).load()
 
-    expect(recovered).toMatchObject({ version: 3, launchAtLogin: true })
+    expect(recovered).toMatchObject({ version: 4, launchAtLogin: true, appPresence: 'dock' })
   })
 
   it('recovers from a syntactically valid but malformed primary using backup', async () => {
@@ -37,7 +37,7 @@ describe('ShellSettingsStore', () => {
     await store.update({ launchAtLogin: true })
     await writeFile(path, JSON.stringify({ version: 3, launchAtLogin: false, pendingLoginItems: [], features: {} }))
 
-    await expect(new ShellSettingsStore(path).load()).resolves.toMatchObject({ version: 3, launchAtLogin: true })
+    await expect(new ShellSettingsStore(path).load()).resolves.toMatchObject({ version: 4, launchAtLogin: true, appPresence: 'dock' })
   })
 
   it('falls back to defaults when primary and backup are invalid', async () => {
@@ -58,24 +58,25 @@ describe('ShellSettingsStore', () => {
     expect(updated.features).toEqual({})
   })
 
-  it('migrates v2 settings to v3 with no features installed by default', async () => {
+  it('migrates v2 settings to v4 with Dock presence and no features installed by default', async () => {
     const directory = await mkdtemp(join(tmpdir(), 'moirasia-settings-'))
     const store = new ShellSettingsStore(join(directory, 'settings.json'))
     await writeFile(store.filePath, JSON.stringify({ version: 2, launchAtLogin: true, pendingLoginItems: { amove: true, bogus: true } }))
 
     const migrated = await store.load()
 
-    expect(migrated).toEqual({ version: 3, launchAtLogin: true, pendingLoginItems: { amove: true }, features: {} })
+    expect(migrated).toEqual({ version: 4, launchAtLogin: true, appPresence: 'dock', pendingLoginItems: { amove: true }, features: {} })
   })
 
-  it('round-trips v3 feature flags across writes and reloads', async () => {
+  it('round-trips app presence and feature flags across writes and reloads', async () => {
     const directory = await mkdtemp(join(tmpdir(), 'moirasia-settings-'))
     const path = join(directory, 'settings.json')
     const store = new ShellSettingsStore(path)
-    await store.update({ features: { bonded: false } })
+    await store.update({ appPresence: 'menu-bar', features: { bonded: false } })
 
     const reloaded = await new ShellSettingsStore(path).load()
 
+    expect(reloaded.appPresence).toBe('menu-bar')
     expect(reloaded.features).toEqual({ bonded: false })
   })
 

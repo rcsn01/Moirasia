@@ -2,7 +2,7 @@ import { copyFile, mkdir, open, readFile, rename } from 'node:fs/promises'
 import { dirname } from 'node:path'
 import { APPLICATION_IDS, type ApplicationId, type ShellSettings } from '../shared/contracts'
 
-export const DEFAULT_SHELL_SETTINGS: ShellSettings = { version: 3, launchAtLogin: false, pendingLoginItems: {}, features: {} }
+export const DEFAULT_SHELL_SETTINGS: ShellSettings = { version: 4, launchAtLogin: false, appPresence: 'dock', pendingLoginItems: {}, features: {} }
 
 export class ShellSettingsStore {
   #settings: ShellSettings = structuredClone(DEFAULT_SHELL_SETTINGS)
@@ -20,7 +20,7 @@ export class ShellSettingsStore {
   get(): ShellSettings { return structuredClone(this.#settings) }
   async update(patch: Partial<Omit<ShellSettings, 'version'>>): Promise<ShellSettings> {
     this.#settings = {
-      ...this.#settings, ...patch, version: 3,
+      ...this.#settings, ...patch, version: 4,
       pendingLoginItems: { ...this.#settings.pendingLoginItems, ...patch.pendingLoginItems },
       features: { ...this.#settings.features, ...patch.features }
     }
@@ -45,10 +45,11 @@ function migrate(value: unknown): ShellSettings {
   if (!value || typeof value !== 'object') return structuredClone(DEFAULT_SHELL_SETTINGS)
   const object = value as Record<string, unknown>
   const launchAtLogin = object.launchAtLogin === true
-  if (object.version === 3) return { version: 3, launchAtLogin, pendingLoginItems: validPending(object.pendingLoginItems), features: validFeatures(object.features) }
-  if (object.version === 2) return { version: 3, launchAtLogin, pendingLoginItems: validPending(object.pendingLoginItems), features: {} }
+  const appPresence = object.appPresence === 'menu-bar' ? 'menu-bar' : 'dock'
+  if (object.version === 4 || object.version === 3) return { version: 4, launchAtLogin, appPresence, pendingLoginItems: validPending(object.pendingLoginItems), features: validFeatures(object.features) }
+  if (object.version === 2) return { version: 4, launchAtLogin, appPresence, pendingLoginItems: validPending(object.pendingLoginItems), features: {} }
   const legacy = object.autoStart && typeof object.autoStart === 'object' ? object.autoStart as Record<string, unknown> : {}
-  return { version: 3, launchAtLogin, pendingLoginItems: Object.fromEntries(APPLICATION_IDS.filter((id) => legacy[id] === true).map((id) => [id, true])), features: {} }
+  return { version: 4, launchAtLogin, appPresence, pendingLoginItems: Object.fromEntries(APPLICATION_IDS.filter((id) => legacy[id] === true).map((id) => [id, true])), features: {} }
 }
 
 function validPending(value: unknown): Readonly<Partial<Record<ApplicationId, true>>> {
@@ -66,6 +67,7 @@ function validFeatures(value: unknown): Readonly<Partial<Record<ApplicationId, b
 function isShellSettingsDocument(value: unknown): boolean {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return false
   const object = value as Record<string, unknown>
+  if (object.version === 4) return typeof object.launchAtLogin === 'boolean' && (object.appPresence === 'dock' || object.appPresence === 'menu-bar') && optionalRecord(object.pendingLoginItems) && optionalRecord(object.features)
   if (object.version === 3) return typeof object.launchAtLogin === 'boolean' && optionalRecord(object.pendingLoginItems) && optionalRecord(object.features)
   if (object.version === 2) return typeof object.launchAtLogin === 'boolean' && optionalRecord(object.pendingLoginItems)
   return object.version === undefined && (object.autoStart !== undefined || typeof object.launchAtLogin === 'boolean' || object.pendingLoginItems !== undefined || object.features !== undefined)

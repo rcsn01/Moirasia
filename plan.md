@@ -1,508 +1,671 @@
-# Plan: canonicalize the feature resource interface
+# Deepen the standalone window lifecycle
 
 ## Goal
 
-Make named resource maps the only valid `FeaturePaths` interface. Remove the deprecated scalar aliases that validation still accepts but the feature surface host cannot consume consistently.
+Concentrate the duplicated owned `BrowserWindow` lifecycle in one private module inside `@moirasia/desktop-shell`.
 
-The finished seam must have one meaning:
+The finished architecture must preserve the two public domain interfaces:
 
-- Hosts provide named maps such as `preloads.main`, `renderers.main`, and `native.helper`.
-- The feature catalog declares which names each host mode requires.
-- `validateFeatureResources` rejects a missing or invalid named resource before the feature surface host creates a `BrowserWindow` or registers appearance state.
-- Feature implementations read the same named maps that validation checked.
+- The Feature surface host continues to accept `FeatureContext`, validate Feature catalog requirements, return the shell surface in suite mode, and create a catalog-configured window in standalone mode.
+- The Standalone surface continues to accept app-owned window and appearance facts without importing the Feature catalog.
 
-This deepens the feature resource module by shrinking the interface every caller must understand. Validation and startup will use the same names, with no scalar representation that only part of the implementation understands.
+Both paths will translate their facts into one private owned-window interface. That module will own secure window construction, navigation guards, appearance registration, deferred renderer loading, activation, external-close handling, and teardown.
 
-## Settled decisions
+This is an internal deepening, not a merger of `acquireFeatureSurface` and `acquireStandaloneSurface`. Their public interfaces and package subpath exports remain separate.
 
-### Remove all scalar aliases now
+## Why this change
 
-Delete these fields from `FeaturePaths`:
+`packages/desktop-shell/src/feature-surface-host.ts` and `packages/desktop-shell/src/standalone-surface.ts` currently implement nearly the same standalone window lifecycle:
 
-- `preload`
-- `rendererUrl`
-- `rendererFile`
-- `nativeExecutable`
+1. Validate facts.
+2. Create a hidden `BrowserWindow` with shared chrome and secure web preferences.
+3. Deny `window.open`.
+4. Apply a navigation policy.
+5. Register product appearance.
+6. Return a handle that loads and shows on `ready()`.
+7. Restore, show, and focus on `activate()`.
+8. Dispose appearance and destroy the window on `dispose()`.
+9. Dispose appearance when the window closes externally.
 
-Do not add another deprecation period, translation module, compatibility adapter, runtime warning, or fallback. The package is private, every supported source consumer is in this workspace, and every production context producer already emits named maps.
+The implementations have already diverged:
 
-### Keep named maps as the canonical interface
+- `StandaloneSurface.ready()` memoizes one in-flight promise. `FeatureSurfaceHandle.ready()` uses a `loaded` boolean, so concurrent calls can start more than one renderer load.
+- The Standalone surface catches renderer load and `show()` failures in one block. The Feature surface host catches only renderer loading; a throwing `show()` bypasses cleanup.
+- The Standalone surface checks both `disposed` and `window.isDestroyed()` before activation and showing. The Feature surface host checks only the window.
+- Both attach the `closed` listener after awaiting appearance registration. An external close during registration can escape normal cleanup.
+- Synchronous setup failures after window construction can leave the window alive because setup is not covered by one rollback path.
 
-Retain:
+Two adapters prove that the seam is real. The catalog-backed Feature surface host and the catalog-free Standalone surface need different inputs, but they need the same lifecycle implementation.
 
-- `preloads?: FeatureResourceMap`
-- `renderers?: FeatureResourceMap`
-- `native?: FeatureResourceMap`
-- `workers?: FeatureResourceMap`
-- `assetsDirectory?: string`
-- `dataDirectory?: string`
-- `legacyDataDirectories?: readonly string[]`
-
-The maps remain optional because requirements differ by feature and host mode. Required names continue to come from `featureCatalog.get(context.id).requirements[context.mode]`. Do not make every map globally required or introduce feature-specific path types in this migration.
-
-### Preserve validation as the seam
-
-Keep `validateFeatureResources(context, requirements?)` as the resource validation interface. It is exported, directly tested, and called by `acquireFeatureSurface` before side effects.
-
-Simplify its implementation so each requirement reads only its matching named map:
-
-- preload requirements read `paths.preloads?.[name]`;
-- renderer requirements read `paths.renderers?.[name]`;
-- native requirements read `paths.native?.[name]`;
-- worker requirements continue to read `paths.workers?.[name]`.
-
-Keep the current URL rule for renderer values and the current absolute-path rule for all other resources. A renderer may be an absolute path or an HTTP or HTTPS URL. Other required resources must be absolute according to the existing POSIX, UNC, or drive-letter checks. Validation checks only names listed in the selected requirements. It must continue validating every supplied `legacyDataDirectories` entry.
-
-Do not add a second validated-resource object or an accessor module. The mismatch comes from two accepted representations, not from a missing abstraction.
-
-### Reject alias-only runtime objects before side effects
-
-TypeScript will no longer expose the scalar fields, but runtime JavaScript can still pass arbitrary objects. Objects containing only `preload`, `rendererUrl`, `rendererFile`, or `nativeExecutable` must not satisfy named requirements.
-
-For standalone renderer acquisition, rejection must happen in `validateFeatureResources` before `BrowserWindow` construction. The current renderer-alias path creates a window and registers appearance state, then fails in `ready()` because that code reads only `renderers.main`. That inconsistent path must disappear.
-
-### Remove Amove's last compatibility read
-
-Amove must read `native.addon`, `preloads.shelf`, and `renderers.shelf` directly from the maps. Delete the private `namedResource` helper. Once its fallback argument is gone, it is a one-line pass-through and fails the deletion test.
-
-Keep the existing missing-shelf-preload guard. Leave Amove's existing `assetsDirectory` and `dataDirectory` defaults unchanged; normal registration validates both directories before constructing `AppController`, and changing those defaults is unrelated. Do not add new local defaults. Missing required resources belong to the host validation seam.
-
-### Keep domain and host ownership decisions unchanged
-
-This change does not add or rename a domain concept, so `CONTEXT.md` does not need an update.
-
-There is no root `docs/adr/` directory, and this change supports the feature catalog and feature surface host split documented in `docs/architecture/standalone-applications.md`. The independent Orbis repository has its own `docs/adr/` directory, which does not govern this contract. No ADR is needed.
-
-Do not:
-
-- merge `acquireFeatureSurface` with `acquireStandaloneSurface`;
-- move feature catalog ownership;
-- redesign artifact resolution;
-- alter feature lifecycle behavior;
-- add a new module or adapter;
-- change standalone-only application contracts that happen to use similar field names.
+The deletion test is concrete. After this work, deleting the private module must force BrowserWindow construction, guards, appearance state, renderer readiness, activation, and cleanup back into both adapters. The current lifecycle blocks in both adapters should disappear wholesale.
 
 ## Ground-truth inventory
 
-The inventory searches `packages`, `src`, `tests`, and `apps`. It excludes nested `.git` metadata, `node_modules`, Python `.venv`, vendored dependencies, Rust `target`, Swift `.build`, and generated `out`, `dist`, `build`, and `release` directories.
+### Duplicated lifecycle sites
 
-### Contract declaration and fallback reads
+The production source has exactly two owned-window lifecycle implementations, one in each public module. Each file contains one `new BrowserWindow`, one `setWindowOpenHandler`, one `will-navigate` listener, one `registerProductAppearance` call, one renderer branch mentioning both `loadURL` and `loadFile`, and one private `isHttpUrl` helper. `standalone-surface.ts` alone also contains generic option validation and a private `isAbsolutePath` helper. No third production implementation exists under `packages/desktop-shell/src`.
 
-`FeaturePaths` is declared in `packages/desktop-shell/src/feature.ts`. That file contains all four deprecated declarations and all validator fallback reads:
+`packages/desktop-shell/src/main.ts` owns the appearance implementation and chrome helpers; it is a dependency, not a third window lifecycle. `packages/desktop-shell/src/feature.ts` separately has the Feature resource path and URL predicates. Those validators remain where they are because they validate all Feature resources, not owned-window options.
 
-- `preload` can satisfy only `preloads.main`;
-- `rendererUrl`, then `rendererFile`, can satisfy only `renderers.main`;
-- `nativeExecutable` can satisfy only `native.executable`.
+### Public modules and exports
 
-`acquireFeatureSurface` validates the context before selecting suite or standalone behavior. Standalone handling then reads only named maps. It reads `preloads.main` before constructing the window and reads `renderers.main` in `ready()` after constructing the window and registering appearance state.
+`packages/desktop-shell/package.json` exports:
 
-The compatibility case taxonomy is:
+- `./feature-surface-host` from `src/feature-surface-host.ts`;
+- `./standalone-surface` from `src/standalone-surface.ts`.
 
-- `preload` is considered only when `preloads.main` is nullish. It cannot satisfy any other preload name. If it is the only main preload in an otherwise valid standalone context, validation passes and `standaloneHandle` rejects the missing named `preloads.main` before constructing a window.
-- `rendererUrl` is considered only when `renderers.main` is nullish. `rendererFile` is considered only when both the named value and `rendererUrl` are nullish. If either scalar renderer is the only main renderer in an otherwise valid standalone context, validation passes, a window is constructed, appearance is registered, and `ready()` disposes appearance state and destroys the window before rejecting the missing named `renderers.main`.
-- `nativeExecutable` is considered only when `native.executable` is nullish. No catalog requirement asks for that name, so only an explicit requirement can reach this fallback.
-- A present empty, relative, or otherwise invalid named value wins over its scalar alias under `??` and fails validation. The validator does not fall back after rejecting a named value.
-- Aliases are ignored for unlisted requirements. Validation still ignores all supplied named resources that the selected requirement table does not list, except that it always validates every supplied `legacyDataDirectories` entry.
+Neither module is re-exported by `src/index.ts`.
 
-These cases cover alias absent or present, named value absent or present, matching or nonmatching requirement names, valid or invalid values, and explicit or catalog-driven requirements. There is no remaining compatibility branch outside this taxonomy.
+The new implementation module will be imported by relative path only. Do not add it to the package `exports` map or `src/index.ts`.
 
-### Production context producers
+### Feature surface host contract
 
-There are six production context branches. All six already emit named maps:
+`packages/desktop-shell/src/feature-surface-host.ts` exports:
 
-- `src/main/features/suite-context.ts` has suite branches for Amove, Bonded, and Shout.
-- `apps/integrated/Amove/src/main/standalone.ts` emits `preloads.main`, `preloads.shelf`, `renderers.main`, `renderers.shelf`, and `native.addon`.
-- `apps/integrated/Bonded/src/main/standalone.ts` emits `preloads.main`, `renderers.main`, and `native.helper`.
-- `apps/integrated/Shout/src/main/standalone.ts` emits `preloads.main`, `renderers.main`, `native.helper`, and `native.driver`.
+- `FeatureSurfaceOptions`, with optional `icon` and `devTools`;
+- `FeatureSurfaceHandle`, with `mode`, `webContents`, optional `window`, `ready()`, `activate()`, and `dispose()`;
+- `acquireFeatureSurface(context, options)`.
 
-No production producer writes a deprecated scalar alias.
+Suite mode must remain unchanged:
 
-### Production consumers
+- no `BrowserWindow` is created;
+- `webContents` comes from `context.surface`;
+- `ready()` and `dispose()` are no-ops;
+- `activate()` calls `surface.activate()` and then `surface.focus()`;
+- the shell retains renderer and window ownership.
 
-Bonded and Shout consume named maps exclusively.
+Standalone Feature mode must retain:
 
-Amove has the only production scalar read outside validation. In `apps/integrated/Amove/src/main/app-controller.ts`, `preloads.shelf` falls back to `ctx.paths.preload`. The same helper reads `native.addon` and `renderers.shelf` without fallbacks.
+- `validateFeatureResources(context)` before side effects;
+- title, dimensions, fullscreen behavior, and navigation policy from `featureCatalog.get(context.id).standaloneWindow`;
+- `preloads.main` and `renderers.main` from `FeatureContext.paths`;
+- initial background from `defaultProductAppearance(context.productId)`;
+- shared appearance registration with no app-local registry path and no legacy seed;
+- optional icon and `devTools` overrides;
+- `mode: 'standalone'` on the returned handle.
 
-Both Amove context producers provide `preloads.shelf`, and both Amove catalog requirement tables require it. The validator's `preload` fallback applies only to the name `main`, so `ctx.paths.preload` cannot satisfy Amove's `shelf` requirement. `AmoveFeature.register` acquires and validates the feature surface before constructing `AppController`; the controller's shelf fallback is therefore unreachable through normal suite or standalone registration. Removing it does not remove supported behavior.
+### Standalone surface contract
 
-### Catalog requirements
+`packages/desktop-shell/src/standalone-surface.ts` exports:
 
-The feature catalog has six mode-specific requirement tables, one suite and one standalone table for each embedded feature:
+- `StandaloneSurfaceOptions`;
+- `StandaloneSurface`;
+- `acquireStandaloneSurface(options)`.
 
-- Amove standalone requires `preloads.main`, `preloads.shelf`, `renderers.main`, `renderers.shelf`, `native.addon`, `assetsDirectory`, and `dataDirectory`.
-- Amove suite requires `preloads.shelf`, `renderers.shelf`, `native.addon`, `assetsDirectory`, and `dataDirectory`.
-- Bonded standalone requires `preloads.main`, `renderers.main`, `native.helper`, and `dataDirectory`.
-- Bonded suite requires `native.helper` and `dataDirectory`.
-- Shout standalone requires `preloads.main`, `renderers.main`, `native.helper`, `native.driver`, and `dataDirectory`.
-- Shout suite requires `native.helper`, `native.driver`, and `dataDirectory`.
+The public option and result types must not change. The module must remain independent of `FeatureContext` and the Feature catalog.
 
-No production requirement uses `native.executable`. The `nativeExecutable` fallback is reachable only through an explicit requirement in the migration-era contract test.
+It must retain:
 
-### Existing test coverage that must change
+- caller-owned title and dimensions;
+- caller-owned preload and renderer;
+- caller-owned appearance file and default appearance;
+- optional fullscreen, navigation, icon, `devTools`, and spellcheck facts;
+- validation before window construction;
+- app-local appearance registration using `appearanceFile` and `defaultAppearance` as the legacy seed.
 
-Three root test sites still use the old shape:
+### Direct consumers
 
-- `tests/feature-contract.test.ts` has 4 tests. Replace `keeps the legacy main resource fields usable during migration`; the other 3 tests cover named maps, workers, directories selected by explicit requirements, relative preloads, and a disallowed renderer scheme.
-- `tests/feature-surface-host.test.ts` has 13 tests and 14 `acquireFeatureSurface` calls. Replace `cleans up if validation passed through a deprecated renderer alias but the named renderer is absent`; keep the other 12 tests unchanged.
-- `tests/feature-runtime.test.ts` has 16 tests that share one scalar-shaped `FeatureContext` fixture even though none calls resource validation. Change only that fixture.
+There are six production acquisition call sites across five nested application repositories.
 
-The focused baseline is 33 tests across those three files, and all 33 pass before the migration. Positive named-map coverage already exists in the contract and surface-host tests. Preserve it and add one catalog-driven Shout standalone case because Shout is the only production requirement set with two names in one native map. The test-local `context` helper currently restricts its `id` parameter to `'amove' | 'bonded'`; the Shout case requires widening that parameter to `FeatureContext['id']`.
+The Feature surface host has four calls across three integrated products:
 
-Related unchanged coverage also matters. `tests/feature-catalog.test.ts` pins the Amove, Bonded, and Shout requirement tables, including both Shout native names. `tests/feature-paths.test.ts` pins all three suite producers in development and packaged modes. `apps/integrated/Amove/tests/feature.test.ts` passes canonical maps through suite and standalone acquisition but mocks `AppController`. `apps/integrated/Bonded/tests/feature.test.ts` uses canonical suite and standalone maps. Shout has no feature registration test or test `FeatureContext`; its standalone producer and direct named-map consumer are covered by the Shout type check. These tests and compiler checks do not replace the new alias-rejection cases.
+- `apps/integrated/Amove/src/main/feature.ts` acquires the initial surface;
+- `apps/integrated/Amove/src/main/app-controller.ts` reacquires it after an external close;
+- `apps/integrated/Bonded/src/main/feature.ts` acquires one surface;
+- `apps/integrated/Shout/src/main/feature.ts` acquires one surface.
 
-### Lexical search classification
+The Standalone surface has two calls:
 
-The current static search returns 49 matching lines containing 57 token occurrences for `rendererFile`, `rendererUrl`, `nativeExecutable`, or `paths.preload` across the searched source tree. Per token, it finds 5 `rendererFile` occurrences in 4 files, 38 `rendererUrl` occurrences on 33 lines in 15 files, 10 `nativeExecutable` occurrences in 7 files, and 4 `paths.preload` occurrences in 4 files. Some lines contain more than one token, so the per-token line counts are not additive. Most results are unrelated to `FeaturePaths`:
+- `apps/standalone/Exithibition/src/main/application.ts`;
+- `apps/standalone/Orbis/src/main/application.ts`.
 
-- local `rendererUrl` variables hold Electron development-server URLs;
-- content-security-policy functions accept a renderer URL;
-- `src/main/paths.ts` exposes the root shell's separate `preload()` path resolver;
-- `packages/desktop-shell/src/standalone-launch.ts` uses a renderer URL in its own launch options;
-- Exithibition owns a separate `nativeExecutable` field in its standalone application resources;
-- YN360 and Orbis use separate standalone surface contracts.
+Type-only consumers also pin the public result types: `apps/integrated/Amove/tests/feature.test.ts`, `apps/standalone/Exithibition/src/main/controller.ts`, and `apps/standalone/Exithibition/tests/exithibition-controller.test.ts`. `apps/standalone/Exithibition/tests/exithibition-application.test.ts` mocks the Standalone acquisition subpath. These sites need no source edits, but their compiler or Vitest suites are part of the consumer checks below.
 
-The migration must classify matches rather than require the broad lexical search to return zero. After implementation there must be no deprecated alias declaration, validator fallback, production `FeaturePaths` read or write, or stale runtime fixture. Deliberate runtime-regression test objects may retain the old property spellings behind an `unknown` cast.
+The applications are independent nested Git repositories. No application source change should be needed because the public package interfaces remain unchanged. Verify each repository separately and do not commit nested repository changes as part of the root implementation unless an unexpected compile failure proves a consumer change is necessary.
 
-## Implementation steps
+### Current test seams
 
-### Step 1: narrow `FeaturePaths` and validator reads
+The current adapter suites contain 18 declared tests: 13 in `tests/feature-surface-host.test.ts` and 5 in `tests/standalone-surface.test.ts`. The Feature suite's table-driven alias case expands to two runtime tests. `tests/feature-contract.test.ts` has 5 declarations, including a four-row table, and expands to 8 runtime tests. Together these three files currently run 27 tests; all 27 pass before this refactor.
 
-File: `packages/desktop-shell/src/feature.ts`
+The retain/remove lists in steps 5 and 6 classify all 18 adapter test declarations. `feature-contract.test.ts` needs no source edit. It stays in the focused command because its existing Feature validation cases prove that malformed standalone Feature resources reject before owned-window acquisition.
 
-1. Remove the four deprecated scalar properties and their comments from `FeaturePaths`.
-2. Keep the comment that resources are keyed by feature-owned names and renderer entries may be packaged paths or HTTP or HTTPS development URLs.
-3. In `validateFeatureResources`, remove every scalar fallback.
-4. Read required preload, renderer, native, and worker values only from their named maps.
-5. Leave default requirement lookup through the feature catalog unchanged.
-6. Leave `requireResource`, `requireDirectory`, absolute-path detection, URL detection, and existing error text unchanged.
-7. Do not clean up the return values from `requireResource` or `requireDirectory`. That is unrelated work.
+`tests/feature-surface-host.test.ts` and `tests/standalone-surface.test.ts` replace Electron and appearance helpers with local Vitest fakes. The new private module can use the same mechanism through direct imports of `electron` and `./main`.
 
-Expected result: the resource interface has one representation, and validation cannot accept a value downstream code ignores.
+Do not add a dependency object to the production interface. There is one Electron implementation, and the existing module mocks already provide the local substitute used in tests. An extra dependency interface would add a hypothetical seam.
 
-### Step 2: remove Amove's compatibility read
+The deep module's interface will become the main lifecycle test surface. Adapter tests will retain only domain translation and public contract coverage. Delete redundant lifecycle assertions from the adapter suites instead of keeping two copies of every test.
 
-File: `apps/integrated/Amove/src/main/app-controller.ts`
+## Settled decisions
 
-This file belongs to the independent nested Amove Git repository.
+These decisions use the recommended answer for every design branch.
 
-1. Replace `namedResource(ctx, 'native', 'addon')` with `ctx.paths.native?.addon`.
-2. Replace `namedResource(ctx, 'preloads', 'shelf', ctx.paths.preload)` with `ctx.paths.preloads?.shelf`.
-3. Replace `namedResource(ctx, 'renderers', 'shelf')` with `ctx.paths.renderers?.shelf`.
-4. Delete the private `namedResource` helper because no caller remains.
-5. Keep the existing `Amove shelf preload resource is missing` guard.
-6. Do not add local fallback defaults for native or renderer resources. Preserve the existing asset and data directory defaults; validated feature registration makes them unreachable, and removing them is outside this migration.
+### Keep both public acquisition interfaces
 
-Expected result: Amove consumes the same named resources that catalog-driven validation checked.
+Do not merge or rename `acquireFeatureSurface` and `acquireStandaloneSurface`.
 
-### Step 3: replace migration-era contract coverage
+The Feature surface host owns Feature catalog translation and suite-versus-standalone behavior. The Standalone surface owns its explicit app options and remains catalog-free. These are meaningful domain seams even though their standalone branches share an implementation.
 
-File: `tests/feature-contract.test.ts`
+### Add one private deep module
 
-1. Delete `keeps the legacy main resource fields usable during migration`.
-2. Add focused rejection cases for alias-only runtime objects.
-3. Construct those objects through a deliberate `unknown` cast to `FeatureContext['paths']`. Add a short comment that the cast models untyped runtime JavaScript rather than supported TypeScript input.
-4. Cover each removed fallback independently so an earlier validation failure cannot hide a later one:
-   - `preload` does not satisfy `preloads.main`;
-   - `rendererUrl` does not satisfy `renderers.main`;
-   - `rendererFile` does not satisfy `renderers.main`;
-   - `nativeExecutable` does not satisfy `native.executable`.
-5. Use an explicit single requirement for each rejection case. For the native case, require `native.executable`. A `native.helper` case already fails before this change and would not prove removal of the actual fallback.
-6. Keep existing positive coverage for named preload, renderer, native, worker, and directory resources.
-7. Widen the test-local `context` helper's `id` parameter from `'amove' | 'bonded'` to `FeatureContext['id']`; do not weaken any production type.
-8. Add one catalog-driven positive case for a Shout standalone context with:
-   - `preloads.main`;
-   - `renderers.main`;
-   - `native.helper`;
-   - `native.driver`;
-   - `dataDirectory`.
-9. Do not pass explicit requirements to the Shout case. Let `validateFeatureResources` use `featureCatalog.get('shout').requirements.standalone` so the test pins default catalog lookup and the only production native map with two required names.
-10. Keep invalid-path and disallowed-renderer-scheme coverage unchanged.
+Create:
 
-Expected result: contract tests describe the supported interface and prove old runtime object shapes do not regain compatibility accidentally.
+`packages/desktop-shell/src/owned-window-surface.ts`
 
-### Step 4: move renderer-alias regression coverage to the acquisition seam
+The name describes an internal Electron window that the calling host owns. It does not add a new user-facing domain concept, so `CONTEXT.md` does not need a new term.
 
-File: `tests/feature-surface-host.test.ts`
+The module must not import:
 
-Replace `cleans up if validation passed through a deprecated renderer alias but the named renderer is absent` with compact coverage for both `rendererUrl` and `rendererFile`.
+- `FeatureContext`;
+- `FeatureId`;
+- `featureCatalog`;
+- feature controllers;
+- IPC registration;
+- runtime leases;
+- application-specific code.
 
-For each alias:
+It may import:
 
-1. Start from the valid Bonded standalone context.
-2. Remove `renderers` and add only that scalar alias through an `unknown` cast to `FeatureContext`.
-3. Call `acquireFeatureSurface` directly. Do not expect a handle and do not call `ready()`.
-4. Assert rejection with the existing `renderers.main` validation error.
-5. Assert `FakeWindow.instances` remains empty.
-6. Assert appearance registration was not called.
-7. Assert the appearance disposer was not called.
+- `BrowserWindow` and Electron types;
+- `Appearance` and `ProductId` as types;
+- `desktopWindowChromeOptions`;
+- `neutralWindowBackground`;
+- `registerProductAppearance`.
 
-Use a table-driven test if it remains clearer than two copied tests.
+### Use one normalized options object
 
-Keep `validates the context before any window exists`. That case protects general validation ordering. The new cases specifically protect against reintroducing renderer alias fallbacks.
+The private module should expose one acquisition function and one returned lifecycle type. Use this shape as the implementation target:
 
-Expected result: a renderer represented only by a removed scalar alias fails at the validation seam before window or appearance side effects.
+```ts
+export type OwnedWindowNavigation = 'deny' | 'allow-same-url'
 
-### Step 5: update the stale runtime fixture
+export type OwnedWindowAppearance =
+  | {
+      readonly initial: Appearance
+      readonly registry: 'shared'
+    }
+  | {
+      readonly initial: Appearance
+      readonly registry: {
+        readonly path: string
+      }
+    }
 
-File: `tests/feature-runtime.test.ts`
+export interface OwnedWindowSurfaceOptions {
+  readonly productId: ProductId
+  readonly title: string
+  readonly width: number
+  readonly height: number
+  readonly minWidth: number
+  readonly minHeight: number
+  readonly preload: string
+  readonly renderer: string
+  readonly appearance: OwnedWindowAppearance
+  readonly fullscreenable?: boolean
+  readonly navigation?: OwnedWindowNavigation
+  readonly icon?: string
+  readonly devTools?: boolean
+  readonly spellcheck?: boolean
+}
 
-Replace the three `CONTEXT.paths` scalar fields with their Amove suite named-map counterparts:
+export interface OwnedWindowSurface {
+  readonly webContents: WebContents
+  readonly window: BrowserWindow
+  ready(): Promise<void>
+  activate(): void
+  dispose(): void
+}
 
-- `preloads.shelf`;
-- `renderers.shelf`;
-- `native.addon`.
-
-Keep this fixture minimal. It does not need `assetsDirectory` or `dataDirectory` because the runtime tests exercise loading and lifecycle only, and one test clones it with a Bonded id. The runtime tests do not call resource validation. This is a type-shape correction, not a catalog-validation or behavioral test change. Do not alter runtime lifecycle assertions or add resource validation to `FeatureRuntime`.
-
-### Step 6: run the migration inventory check
-
-Run:
-
-```sh
-rg -uuu -n \
-  --glob '!**/.git/**' --glob '!**/node_modules/**' --glob '!**/.venv/**' --glob '!**/vendor/**' \
-  --glob '!**/.build/**' --glob '!**/target/**' \
-  --glob '!**/out/**' --glob '!**/dist/**' --glob '!**/build/**' --glob '!**/release/**' \
-  "rendererFile|rendererUrl|nativeExecutable|paths\\.preload\\b" \
-  packages src tests apps
+export function acquireOwnedWindowSurface(
+  options: OwnedWindowSurfaceOptions
+): Promise<OwnedWindowSurface>
 ```
 
-Classify every remaining result.
+The interface is normalized rather than accepting `BrowserWindowConstructorOptions`. Callers cannot weaken `contextIsolation`, enable Node integration, disable the sandbox, show before readiness, replace the navigation guard, or bypass appearance cleanup.
 
-Allowed results include:
+The appearance union prevents invalid combinations:
 
-- deliberate alias-only regression objects in root tests;
-- development-server variables named `rendererUrl`;
-- renderer URL parameters used for content security policy;
-- Exithibition's separate `nativeExecutable` application resource;
-- the root shell's separate `paths.preload()` resolver;
-- standalone-only application contracts unrelated to `FeaturePaths`.
+- Feature standalone mode chooses `registry: 'shared'` and supplies the initial product appearance.
+- Standalone-only applications supply an app-local registry path. Their `initial` appearance is also the legacy seed passed to `registerProductAppearance`, matching the existing single `defaultAppearance` input.
 
-Disallowed results include:
+Do not add a separately variable app-local legacy seed. No caller has separate initial-background and migration-seed values, and allowing them to differ would create an unsupported state. Do not add lifecycle hooks, arbitrary callbacks, renderer target objects, or a general Electron port. No current caller needs them.
 
-- alias declarations in `FeaturePaths`;
-- alias fallback reads in `validateFeatureResources`;
-- production `FeatureContext` producers emitting scalar aliases;
-- feature implementations reading scalar aliases;
-- ordinary typed fixtures using the old shape.
+### Keep fixed security and ownership policy inside the module
 
-## Verification strategy
+The implementation owns these fixed window facts:
 
-The interface is the test surface. Verification should prove behavior through `validateFeatureResources` and `acquireFeatureSurface`, not private helpers.
+- `show: false`;
+- shared platform chrome from `desktopWindowChromeOptions()`;
+- `contextIsolation: true`;
+- `nodeIntegration: false`;
+- `sandbox: true`;
+- `spellcheck: false` by default;
+- `fullscreenable: true` by default;
+- navigation policy `deny` by default;
+- `window.open` always denied;
+- `applyNativeTheme: true` for appearance registration.
 
-### 1. Focused root tests
+The adapters supply only facts that genuinely vary.
 
-Run the directly affected tests first:
+### Validate before constructing a window
+
+Move the generic Standalone window validation into the private module and apply it to both adapters:
+
+- every dimension is a positive safe integer, rejecting zero, negatives, fractions, `NaN`, infinities, and integers outside JavaScript's safe range;
+- `minWidth` may equal but must not exceed `width`;
+- `minHeight` may equal but must not exceed `height`;
+- preload is an absolute path under the existing lexical rule;
+- renderer is an absolute path under that rule or a URL whose parsed protocol is exactly HTTP or HTTPS;
+- an app-local appearance path is absolute under the same lexical rule.
+
+Preserve the current lexical path predicate rather than replacing it with host-platform `node:path` behavior. It accepts POSIX-rooted paths beginning `/`, UNC paths beginning two backslashes, and drive-rooted paths matching `^[A-Za-z]:[\\/]`. It rejects relative paths, drive-relative paths such as `C:relative`, and a path beginning with only one backslash. This matters because tests and callers may describe Windows resources while running on another host.
+
+Preserve the current URL predicate too: parse with `new URL(value)` and accept only normalized `http:` and `https:` protocols. Both schemes and case-normalized scheme spellings pass; relative strings, malformed URLs, and `file:`, `ftp:`, or other schemes fail. This predicate also accepts URL-parser forms such as `http:localhost`; do not silently tighten it in this refactor.
+
+Preserve the current Standalone surface error text so callers do not see avoidable message changes:
+
+- `Standalone window <dimension> must be a positive integer.`;
+- `Standalone window minimum size exceeds its initial size.`;
+- `Standalone window preload must be an absolute path.`;
+- `Standalone window renderer must be an absolute path or HTTP URL.`;
+- `Standalone appearance file must be an absolute path.`.
+
+Feature contexts still pass through `validateFeatureResources` first. That remains the authoritative source of feature-specific missing-resource errors and preserves rejection before side effects.
+
+### Serialize readiness
+
+Use one memoized `readyPromise` in the private implementation.
+
+The contract is:
+
+- acquisition creates a hidden, unloaded window;
+- the first `ready()` chooses `loadURL` for HTTP or HTTPS and `loadFile` otherwise;
+- concurrent `ready()` calls share the same in-flight promise;
+- repeated calls after success do not load or show again;
+- the window shows only after loading succeeds;
+- disposal during an in-flight load immediately disposes appearance state and destroys the window; the already-started load promise is still allowed to settle, but it must not show the window afterward;
+- a load or `show()` error disposes the appearance registration, destroys the window, and rejects with the original error;
+- later `ready()` calls after failure or disposal resolve as inert no-ops.
+
+This adopts the stronger existing Standalone surface behavior and fixes the Feature surface host's concurrent-load gap.
+
+### Make acquisition race-safe
+
+Attach the `closed` listener immediately after construction and before awaiting appearance registration.
+
+Use one idempotent disposal state for all paths. The acquisition sequence should be:
+
+1. Validate normalized options.
+2. Construct the hidden window.
+3. Define idempotent disposal state and attach the `closed` listener.
+4. Install the `window.open` denial and navigation guard.
+5. Await appearance registration.
+6. Store the appearance disposer if the window is still alive.
+7. If the window closed while registration was pending, invoke the returned appearance disposer immediately and return an inert surface.
+8. Return the surface.
+
+Wrap every post-construction acquisition step in rollback logic. If guard setup or appearance registration throws, destroy the window if it is still alive and rethrow the original error.
+
+Do not invent an error when the user closes the window during appearance registration. Treat it like any external close: acquisition may resolve, but the returned surface is disposed and all methods are inert.
+
+### Keep activation and disposal ordering
+
+`activate()` must:
+
+1. Return without side effects when disposed or destroyed.
+2. Restore when minimized.
+3. Show.
+4. Focus.
+
+`dispose()` must:
+
+1. Mark the lifecycle disposed once.
+2. Invoke the appearance disposer once.
+3. Clear the stored disposer.
+4. Destroy the window only when it is still alive.
+
+The external `closed` event must mark the lifecycle disposed and clean appearance state, but it must never call `destroy()` again.
+
+Appearance cleanup must happen before explicit destruction. This preserves current IPC and native-theme cleanup ordering.
+
+### Preserve domain ownership and documentation
+
+This work does not move Feature catalog facts, FeatureContext validation, controllers, IPC, leases, or presence policy.
+
+`CONTEXT.md` and `docs/architecture/standalone-applications.md` describe public ownership and remain accurate. The public Feature surface host and Standalone surface still own their windows from each caller's perspective. The new module is private implementation. No domain glossary or architecture document change is required.
+
+There is no root `docs/adr/` directory. This plan respects the recorded split rather than revisiting it, so no ADR is needed.
+
+## Detailed implementation steps
+
+### Step 1: add the private owned-window module
+
+Create `packages/desktop-shell/src/owned-window-surface.ts`.
+
+Implement the normalized types and `acquireOwnedWindowSurface` interface described above.
+
+Add private helpers in the same file for:
+
+- option validation;
+- absolute-path detection;
+- HTTP or HTTPS URL detection;
+- navigation guard installation.
+
+Do not extract these helpers into more modules. They are part of one lifecycle implementation and have no independent callers.
+
+Construct `BrowserWindow` with the shared fixed policy and optional facts. Preserve omission behavior for `icon` and `devTools`: add those properties only when callers supplied them.
+
+Translate appearance registration as follows:
+
+- Shared registry: call `registerProductAppearance(productId, window, undefined, { applyNativeTheme: true })`.
+- App-local registry: call `registerProductAppearance(productId, window, appearance.initial, { applyNativeTheme: true, registryPath: appearance.registry.path })`.
+
+Implement one closure-backed `OwnedWindowSurface`. Methods must not rely on JavaScript `this`, which keeps delegation safe.
+
+Cover synchronous post-construction failures and asynchronous appearance registration failures with the same rollback path.
+
+### Step 2: reduce the Feature surface host to an adapter
+
+Edit `packages/desktop-shell/src/feature-surface-host.ts`.
+
+Keep:
+
+- exported `FeatureSurfaceOptions`;
+- exported `FeatureSurfaceHandle`;
+- `acquireFeatureSurface`;
+- `validateFeatureResources(context)` before mode selection;
+- the suite handle implementation;
+- Feature catalog lookup and standalone fact translation;
+- feature-specific preload and renderer narrowing errors.
+
+For standalone mode:
+
+1. Read the catalog entry.
+2. Read and narrow `paths.preloads.main`.
+3. Read and narrow `paths.renderers.main`.
+4. Call `acquireOwnedWindowSurface` with catalog window facts, FeatureContext resources, default product appearance, shared appearance registry mode, and the two public overrides.
+5. Return a `FeatureSurfaceHandle` that adds `mode: 'standalone'` and delegates `webContents`, `window`, `ready()`, `activate()`, and `dispose()` to the owned surface.
+
+Delete from this file:
+
+- runtime `BrowserWindow` construction;
+- secure web preference assembly;
+- `setWindowOpenHandler` setup;
+- `installNavigationGuard`;
+- appearance registration and disposal state;
+- `loaded` state;
+- URL detection;
+- renderer loading;
+- standalone activation and destruction logic.
+
+Retain Electron imports only as type imports needed by the public interfaces.
+
+Do not change suite-mode behavior or move it into the private module.
+
+### Step 3: reduce the Standalone surface to an adapter
+
+Edit `packages/desktop-shell/src/standalone-surface.ts`.
+
+Keep the public option and result interfaces unchanged.
+
+Replace its implementation with translation to `acquireOwnedWindowSurface`:
+
+- copy product identity, title, dimensions, preload, renderer, and optional window facts;
+- use `defaultAppearance` as `appearance.initial`;
+- use app-local registry mode with `appearanceFile`; the private module also uses `appearance.initial` as the legacy seed;
+- return the owned surface directly because it structurally satisfies `StandaloneSurface`.
+
+Delete from this file:
+
+- `validateOptions` and its private path and URL helpers;
+- runtime `BrowserWindow` construction;
+- security and chrome assembly;
+- navigation guards;
+- appearance registration;
+- ready state;
+- activation and disposal implementation.
+
+Retain Electron imports only as type imports for `StandaloneSurface`.
+
+Do not import the Feature catalog or FeatureContext.
+
+### Step 4: add focused tests for the deep module
+
+Create `tests/owned-window-surface.test.ts`.
+
+Use one Electron fake and one mocked `./main` module for the private interface. The fake must support:
+
+- construction option capture;
+- `webContents.setWindowOpenHandler`;
+- `will-navigate` listeners and current URL;
+- deferred and failing `loadFile` and `loadURL`;
+- `show`, `focus`, and `restore` call ordering;
+- external `closed` events;
+- destroyed and minimized state;
+- a deferred appearance registration promise.
+
+Test the private module through `acquireOwnedWindowSurface`.
+
+Required cases:
+
+1. Shared-registry acquisition creates one hidden and unloaded window with exact security defaults, shared chrome, the initial background, and the expected appearance arguments.
+2. App-local acquisition forwards registry path, legacy seed, icon, `devTools`, spellcheck, fullscreen, and navigation facts.
+3. Invalid dimensions, minimums, preload, renderer, and app-local appearance path each reject before construction with the preserved errors. Exercise the dimension boundaries listed under validation, equality and greater-than minimums, all three accepted path families, the rejected relative, drive-relative, and single-backslash families, both accepted URL schemes, and malformed or disallowed schemes. Table-driven cases are appropriate.
+4. `window.open` is always denied.
+5. `deny` blocks every navigation.
+6. `allow-same-url` permits only exact string equality with `webContents.getURL()`: it blocks a nonempty navigation before loading when the current URL is empty, permits the exact current URL after loading, and blocks a different URL.
+7. A file renderer uses `loadFile`; an HTTP or HTTPS renderer uses `loadURL`.
+8. Two concurrent `ready()` calls return the same promise object, start one load, share completion, and show once.
+9. Repeated `ready()` after success does not reload or show again.
+10. Disposal during an in-flight load cleans appearance state and destroys the window immediately, before the deferred load settles; settling that load does not show or clean up a second time.
+11. A renderer load failure cleans appearance state, destroys the window, rethrows the original error, and leaves later `ready()` calls inert.
+12. A synchronous `show()` failure performs the same rollback.
+13. Activation restores a minimized window before show and focus, and becomes inert after disposal.
+14. Explicit disposal cleans appearance before destruction and remains idempotent.
+15. External close cleans appearance once, never destroys again, and leaves `ready()` and `activate()` inert.
+16. Appearance registration failure destroys the window and rethrows the original error.
+17. External close while appearance registration is pending invokes the eventual appearance disposer immediately and returns an inert surface without a second destroy.
+18. Synchronous failures from either guard call destroy the constructed window and rethrow the original error. Cover `setWindowOpenHandler` itself and `webContents.on('will-navigate', ...)` after the open handler has already been installed, so the later partial-setup boundary is not missed.
+
+Assert observable behavior through the private module interface and fake Electron objects. Do not test private helper functions directly.
+
+### Step 5: narrow Feature surface host tests to adapter behavior
+
+Edit `tests/feature-surface-host.test.ts`.
+
+Retain or reshape coverage for:
+
+- suite mode returning the shell surface and creating no window;
+- FeatureContext validation before any window or appearance side effect;
+- removed renderer aliases failing before side effects;
+- Bonded catalog title, geometry, fullscreen policy, secure defaults, product appearance, and standalone mode;
+- Amove icon and `devTools` option translation;
+- Bonded `deny` and Amove `allow-same-url` catalog policy translation;
+- returned standalone `webContents` and `window` identity.
+
+Move general lifecycle coverage to `owned-window-surface.test.ts` and remove redundant Feature-host cases for:
+
+- repeated readiness;
+- generic URL-versus-file loading;
+- generic appearance disposal;
+- renderer load rollback;
+- activation ordering;
+- external close cleanup;
+- appearance registration rollback.
+
+Keep at least one integration path through the real private module. Do not mock `acquireOwnedWindowSurface` in every adapter test. The adapter suite must prove that catalog translation reaches actual window construction, while the private suite owns the exhaustive state-machine matrix.
+
+Update the fake only as needed to support the retained integration cases. Remove fake fields used solely by deleted duplicate tests.
+
+### Step 6: narrow Standalone surface tests to adapter behavior
+
+Edit `tests/standalone-surface.test.ts`.
+
+Retain or reshape coverage for:
+
+- public options mapping to actual window construction;
+- secure defaults and hidden initial state;
+- app-local appearance path and legacy/default seed;
+- optional fullscreen, navigation, icon, `devTools`, and spellcheck translation;
+- invalid public facts rejecting before construction;
+- returned `webContents` and `window` identity.
+
+Move generic lifecycle behavior to `owned-window-surface.test.ts` and remove redundant Standalone-surface cases for:
+
+- generic renderer selection and navigation implementation;
+- repeated readiness;
+- activation ordering and disposal idempotency;
+- renderer-load rollback.
+
+Keep one small public integration assertion that `ready()` loads and shows the configured renderer. This protects the adapter-to-private-module seam without repeating the full lifecycle matrix.
+
+### Step 7: confirm the deletion test and exports
+
+Run a focused source inventory after edits:
 
 ```sh
-pnpm vitest run \
-  tests/feature-contract.test.ts \
+rg -n \
+  "new BrowserWindow|setWindowOpenHandler|will-navigate|registerProductAppearance|loadURL|loadFile|isHttpUrl|isAbsolutePath|disposeAppearance|isMinimized|window\\.(restore|show|focus|destroy)" \
+  packages/desktop-shell/src/owned-window-surface.ts \
+  packages/desktop-shell/src/feature-surface-host.ts \
+  packages/desktop-shell/src/standalone-surface.ts
+```
+
+Expected result:
+
+- owned-window construction, guards, appearance registration, renderer selection, activation, and disposal exist only in `owned-window-surface.ts`;
+- `feature-surface-host.ts` contains only suite activation plus catalog and FeatureContext translation;
+- `standalone-surface.ts` contains only public option translation and type declarations.
+
+Also verify:
+
+```sh
+rg -n "owned-window-surface" packages/desktop-shell/package.json packages/desktop-shell/src/index.ts
+```
+
+Expected result: no matches. The module remains private.
+
+Check that the public declarations retain their names:
+
+```sh
+rg -n \
+  "export interface FeatureSurfaceOptions|export interface FeatureSurfaceHandle|export async function acquireFeatureSurface|export interface StandaloneSurfaceOptions|export interface StandaloneSurface|export async function acquireStandaloneSurface" \
+  packages/desktop-shell/src/feature-surface-host.ts \
+  packages/desktop-shell/src/standalone-surface.ts
+```
+
+That search does not verify fields. Read and compare both declaration blocks against the exact contract inventory above, then inspect their diff. `FeatureSurfaceOptions`, `FeatureSurfaceHandle`, `StandaloneSurfaceOptions`, and `StandaloneSurface` must retain every field, optional marker, and method return type. The two acquisition functions must retain their parameter and return types.
+
+## Test and verification strategy
+
+### Focused root checks
+
+Run the changed test surfaces first:
+
+```sh
+pnpm exec vitest run \
+  tests/owned-window-surface.test.ts \
   tests/feature-surface-host.test.ts \
-  tests/feature-runtime.test.ts
+  tests/standalone-surface.test.ts \
+  tests/feature-contract.test.ts
 ```
 
-The pre-migration baseline is 3 files and 33 passing tests. After the edits, these tests must prove:
+`feature-contract.test.ts` remains relevant because Feature resource validation must still reject before the private module receives standalone facts.
 
-- canonical named resources validate;
-- alias-only runtime objects fail validation;
-- both renderer aliases fail before standalone window creation;
-- appearance registration and disposal do not run for invalid alias-only input;
-- valid suite and standalone feature surfaces retain acquisition, readiness, activation, and disposal behavior;
-- feature runtime lifecycle tests still pass with canonical fixtures.
-
-### 2. Root type check
-
-Run:
+Then run root compilation and the full root suite:
 
 ```sh
 pnpm typecheck
+pnpm test
 ```
 
-The root compiler configurations include desktop-shell, root tests, and integrated main, preload, and shared sources. This catches stale typed `FeaturePaths` consumers and invalid test fixtures.
+### Direct consumer checks
 
-### 3. Integrated application type checks
+The public interfaces do not change, so no nested application edit is expected. Still verify every direct consumer against the local package source.
 
-Run each linked application's compiler configuration:
+Run TypeScript checks:
 
 ```sh
 pnpm -C apps/integrated/Amove typecheck
 pnpm -C apps/integrated/Bonded typecheck
 pnpm -C apps/integrated/Shout typecheck
+pnpm -C apps/standalone/Exithibition typecheck
+pnpm -C apps/standalone/Orbis typecheck
 ```
 
-These checks compile each repository's own tests and renderer sources in addition to the linked desktop-shell contract. Together with the root check, they cover every supported `FeatureContext` producer and consumer.
-
-### 4. Root regression suite
-
-Run:
+Run the JavaScript test suites without invoking unrelated Swift, driver, or native builds:
 
 ```sh
-pnpm test
+pnpm -C apps/integrated/Amove exec vitest run
+pnpm -C apps/integrated/Bonded exec vitest run
+pnpm -C apps/integrated/Shout exec vitest run
+pnpm -C apps/standalone/Exithibition exec vitest run
+pnpm -C apps/standalone/Orbis exec vitest run
 ```
 
-This covers feature catalog lookup, suite context construction, feature runtime behavior, feature surface behavior, and nearby desktop-shell contracts.
+If a consumer check fails, first determine whether the failure exposes a public contract change. Do not edit nested repositories to accommodate an accidental interface break. Fix the root adapter so the existing contract remains valid.
 
-### 5. Amove regression suite
+### Build checks
 
-Run:
+Because package exports point directly to TypeScript source and the new private module sits behind two exported modules, build at least one consumer of each public path:
 
 ```sh
-pnpm -C apps/integrated/Amove test
+pnpm -C apps/integrated/Amove build:app
+pnpm -C apps/standalone/Exithibition build:renderer
 ```
 
-Amove's feature tests mock `AppController`, so this suite does not directly execute the removed fallback expression. The direct guarantees are:
+These Electron Vite builds verify that the bundler follows the relative private import from both package subpaths. Do not use Orbis's `build:app` for this check: its `prebuild:app` lifecycle script builds a worker and native Rust artifact, which is outside this refactor.
 
-- `FeaturePaths.preload` no longer exists at compile time;
-- both Amove context producers provide `preloads.shelf`;
-- both Amove catalog tables require `preloads.shelf`;
-- contract and surface-host tests prove validation behavior;
-- root and Amove type checks compile the direct map reads.
+### Manual behavior assessment
 
-Do not add a mock-heavy `AppController` test for a one-expression deletion.
+This change has no renderer or visual layout change. Browser testing does not exercise Electron main-process window ownership. The focused Electron fakes cover the lifecycle state machine and error paths that are difficult to trigger manually.
 
-### 6. Optional broader verification
+If an Electron runtime is available, perform a short smoke check after automated verification:
 
-Bonded and Shout do not need their full native suites for this migration because their production source already uses named maps and no behavior changes there. Their type checks are required.
+1. Launch Amove in standalone mode; it is the integrated consumer with an existing surface-recreation path.
+2. Confirm its window remains hidden until renderer readiness completes.
+3. Exercise activation while the window exists, then close and reopen it through Amove's existing flow.
+4. Launch Orbis or Exithibition, confirm readiness and activation while its window exists, then close it normally. These applications quit on the last closed window and do not recreate a surface in-process.
+5. Confirm no duplicate appearance IPC handler error appears in logs during Amove's recreation or after relaunching the standalone-only application.
 
-If broader confidence is needed after all required checks pass, run their JavaScript and native suites through their existing commands:
-
-```sh
-pnpm -C apps/integrated/Bonded test
-pnpm -C apps/integrated/Shout test
-```
-
-Do not make those expensive native checks a prerequisite unless a Bonded or Shout file changes unexpectedly during implementation.
-
-### 7. Repository status and diff review
-
-Because `apps/` contains independent repositories, inspect each status separately:
-
-```sh
-git status --short
-git -C apps/integrated/Amove status --short
-git -C apps/integrated/Bonded status --short
-git -C apps/integrated/Shout status --short
-```
-
-Review root and Amove diffs separately. Preserve unrelated changes in every repository.
-
-Expected code changes are:
-
-Root repository:
-
-- `packages/desktop-shell/src/feature.ts`;
-- `tests/feature-contract.test.ts`;
-- `tests/feature-surface-host.test.ts`;
-- `tests/feature-runtime.test.ts`;
-- `plan.md`, which records this plan.
-
-Nested Amove repository:
-
-- `apps/integrated/Amove/src/main/app-controller.ts`.
-
-Bonded and Shout repositories should remain unchanged.
+Do not make packaging or release work part of this refactor.
 
 ## Acceptance criteria
 
-- `FeaturePaths` exposes only named resource maps and directory fields.
-- `validateFeatureResources` has no scalar alias fallback.
-- `validateFeatureResources` keeps its existing interface, catalog lookup, path rules, URL rules, and error text.
-- Every production suite and standalone feature context uses named maps.
-- Amove has no `ctx.paths.preload` fallback and no `namedResource` pass-through helper.
-- Scalar aliases do not satisfy named requirements when passed by untyped runtime JavaScript.
-- `rendererUrl`-only and `rendererFile`-only standalone contexts fail before a `BrowserWindow` exists.
-- Invalid alias-only standalone input does not register or dispose appearance state.
-- Valid suite and standalone feature surfaces retain current behavior.
-- Runtime lifecycle behavior remains unchanged.
-- The static migration search contains no production alias declaration, read, write, or stale typed fixture.
-- Focused root tests pass.
-- Root and all three integrated-application type checks pass.
-- The full root test suite passes.
-- Amove's test suite passes.
-- No unrelated standalone contract is renamed merely because it contains `rendererUrl` or `nativeExecutable`.
-- No new dependency, module, adapter, domain term, or ADR is introduced.
-- Root and nested repository diffs contain no unrelated edits.
+The implementation is complete when all of the following are true:
 
-## Risks and controls
+- One private module owns the standalone `BrowserWindow` lifecycle used by both public adapters.
+- `acquireFeatureSurface` and `acquireStandaloneSurface` keep their existing public names, parameters, result types, and package subpaths.
+- Suite-mode Feature surface behavior is unchanged.
+- The Standalone surface remains independent of FeatureContext and the Feature catalog.
+- Feature catalog facts remain in the Feature surface host adapter.
+- Standalone app facts remain in the Standalone surface adapter.
+- Secure Electron settings cannot be overridden through the private options interface.
+- Both paths validate invalid resources before constructing a window.
+- `ready()` coalesces concurrent calls and loads once.
+- Renderer load and `show()` failures clean appearance state and destroy the window.
+- External close during appearance registration cannot leak the eventual disposer.
+- Activation performs no window action after disposal or destruction; disposal performs appearance cleanup at most once and never destroys an already-destroyed window.
+- Appearance cleanup runs once and before explicit window destruction.
+- Adapter tests cover domain translation; private-module tests cover lifecycle behavior.
+- The old duplicate lifecycle blocks and helpers are deleted from both adapters.
+- The private module is absent from package exports.
+- Root tests, root type checks, direct-consumer type checks, direct-consumer Vitest suites, and one build per public path pass.
+- Root and nested worktree status is reviewed before any later commit so unrelated changes remain untouched.
 
-### Private-package compatibility
+## Out of scope
 
-Risk: a supported consumer may still construct `FeaturePaths` with scalar fields in a source path missed by a narrow search.
+Do not:
 
-Controls:
-
-- search the full non-generated tree;
-- inspect all six production context branches;
-- run root and all three integrated-application type checks;
-- treat callers outside this private, checked workspace as unsupported.
-
-### Runtime JavaScript input
-
-Risk: removing TypeScript fields alone may leave arbitrary JavaScript objects silently accepted.
-
-Controls:
-
-- remove validator fallbacks, not only type declarations;
-- cover all four aliases independently at the validation seam;
-- cover both renderer aliases through `acquireFeatureSurface`;
-- assert no window or appearance side effects occur.
-
-### Amove shelf startup
-
-Risk: removing the fallback may reveal an incomplete Amove context.
-
-Controls:
-
-- both suite and standalone Amove producers already provide `preloads.shelf`;
-- both catalog requirement tables require `preloads.shelf`;
-- the old scalar fallback cannot satisfy the catalog's `shelf` requirement and is already unreachable through normal registration;
-- validation runs before `AppController` construction;
-- preserve the unrelated asset and data directory defaults;
-- run root and Amove type checks plus Amove tests.
-
-### False-positive migration search results
-
-Risk: a blanket rename could damage unrelated contracts that use the same words.
-
-Controls:
-
-- classify each lexical match by owning type and module;
-- keep development `rendererUrl` variables and content-security-policy parameters;
-- keep Exithibition's separate `nativeExecutable` resource;
-- keep the root shell's `paths.preload()` resolver;
-- change only values typed or consumed as `FeaturePaths`.
-
-### Over-expansion
-
-Risk: the nearby feature resource model invites broader changes to artifact resolution, feature-specific typing, feature surfaces, or lifecycle ownership.
-
-Controls:
-
-- keep one canonical resource representation as the sole goal;
-- preserve the feature catalog and feature surface host seams;
-- add no abstraction for direct named-map reads;
-- record other architecture candidates separately rather than combining them with this migration.
-
-### Nested repository ownership
-
-Risk: root status does not report changes in the ignored integrated application repositories.
-
-Controls:
-
-- inspect Amove, Bonded, and Shout statuses independently before and after implementation;
-- expect one Amove source edit only;
-- do not stage, commit, or alter nested repository history as part of implementation unless requested separately.
-
-## Completion sequence
-
-1. Narrow `FeaturePaths` and remove validator fallbacks.
-2. Remove Amove's fallback and pass-through helper.
-3. Replace migration-era contract coverage with alias-rejection cases.
-4. Move renderer-alias coverage to rejection-before-side-effects behavior.
-5. Convert the runtime fixture to named maps.
-6. Run and classify the static migration search.
-7. Run focused root tests.
-8. Run root and integrated-application type checks.
-9. Run the full root suite and Amove suite.
-10. Inspect root and nested repository statuses and diffs for exact scope.
-11. Confirm every acceptance criterion before declaring the implementation complete.
+- merge the two public surface interfaces;
+- export the private owned-window module;
+- change FeatureContext or Feature resource maps;
+- move or redesign Feature catalog facts;
+- move controllers, IPC, runtime leases, presence policy, or renderer ownership;
+- change appearance persistence formats or registry semantics;
+- add lifecycle hooks or a general window framework;
+- add a dependency-injection interface solely for tests;
+- alter standalone launch behavior;
+- edit standalone-only application contracts;
+- change renderer UI, styling, or preload bridges;
+- update unrelated documentation;
+- build native artifacts, package applications, publish, or release.

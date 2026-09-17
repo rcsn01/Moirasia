@@ -4,6 +4,7 @@ import { pathToFileURL } from 'node:url'
 import { AppearanceRegistry, applyAppearance, applyWindowAppearance, desktopWindowChromeOptions, neutralWindowBackground, sendToRenderer } from '@moirasia/desktop-shell/main'
 import { IPC } from '../shared/contracts'
 import { ApplicationController } from './application-controller'
+import { AppPresence } from './app-presence'
 import { EmbeddedFeatureHost } from './features/embedded-host'
 import { FeatureRuntime, suiteFeatureContext } from './features/runtime'
 import { registerControllerIpc } from './ipc'
@@ -50,10 +51,13 @@ async function createApplication(): Promise<void> {
   await features.syncAtLaunch()
 
   const controller = new ApplicationController(appearances, settings, features)
+  const menuBarIconPath = app.isPackaged ? join(process.resourcesPath, 'tray', 'trayTemplate.png') : join(app.getAppPath(), 'build', 'trayTemplate.png')
+  const appPresence = new AppPresence(window, menuBarIconPath)
+  appPresence.apply(settings.get().appPresence)
   const applyShellAppearance = (): void => applyWindowAppearance(nativeTheme, window, appearances.get().values.moirasia)
   const updateSystemBackground = (): void => { if (appearances.get().values.moirasia === 'system') window.setBackgroundColor(neutralWindowBackground('system', nativeTheme.shouldUseDarkColors)) }
   nativeTheme.on('updated', updateSystemBackground)
-  const disposeIpc = registerControllerIpc({ window, controller, settings, applyShellAppearance })
+  const disposeIpc = registerControllerIpc({ window, controller, settings, applyShellAppearance, applyAppPresence: (mode) => appPresence.apply(mode) })
   installApplicationMenu(window, (id) => void controller.open(id).catch((error) => console.error(error)), (page) => controller.reportPage(page))
   window.webContents.setWindowOpenHandler(() => ({ action: 'deny' }))
   window.webContents.on('will-navigate', (event) => event.preventDefault())
@@ -85,6 +89,7 @@ async function createApplication(): Promise<void> {
     nativeTheme.removeListener('updated', updateSystemBackground)
     disposeIpc()
     stopNavigation()
+    appPresence.dispose()
     controller.close()
     void features.disposeAll().finally(() => {
       host.dispose()

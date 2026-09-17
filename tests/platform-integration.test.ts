@@ -48,15 +48,18 @@ describe('Bonded platform integration', () => {
   })
 
   it('configures a branded Moirasia Dock icon for development and packaging', async () => {
-    const [main, builder, icon] = await Promise.all([
+    const [main, builder, icon, menuBarIcon] = await Promise.all([
       readFile(new URL('../src/main/index.ts', import.meta.url), 'utf8'),
       readFile(new URL('../electron-builder.yml', import.meta.url), 'utf8'),
-      readFile(new URL('../build/icon.icns', import.meta.url))
+      readFile(new URL('../build/icon.icns', import.meta.url)),
+      readFile(new URL('../build/trayTemplate.png', import.meta.url))
     ])
     expect(main).toContain("app.setName('Moirasia')")
     expect(main).toContain("app.dock.setIcon(join(app.getAppPath(), 'build', 'icon.png'))")
     expect(builder).toContain('icon: build/icon.icns')
+    expect(builder).toContain('to: tray/trayTemplate.png')
     expect(icon.subarray(0, 4).toString('ascii')).toBe('icns')
+    expect(menuBarIcon.subarray(1, 4).toString('ascii')).toBe('PNG')
   })
 
   it('uses the staged native agent while running from Electron dev', () => {

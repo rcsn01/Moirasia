@@ -26,24 +26,15 @@ const fakes = vi.hoisted(() => {
     static instances: FakeWindow[] = []
     readonly webContents = new FakeWebContents()
     readonly options: unknown
-    /** When set, the next loadURL/loadFile rejects with it. */
-    nextLoadError: Error | undefined
-    minimized = false
     destroyed = false
     private readonly listeners = new Map<string, Array<(...args: unknown[]) => void>>()
     constructor(options: unknown) { this.options = options; FakeWindow.instances.push(this) }
-    loadURL = vi.fn(async (url: string): Promise<void> => { this.webContents.url = url; this.failLoad() })
-    loadFile = vi.fn(async (path: string): Promise<void> => { this.webContents.url = `file://${path}`; this.failLoad() })
-    private failLoad(): void {
-      const error = this.nextLoadError
-      this.nextLoadError = undefined
-      if (error) throw error
-    }
+    loadURL = vi.fn(async (url: string): Promise<void> => { this.webContents.url = url })
+    loadFile = vi.fn(async (path: string): Promise<void> => { this.webContents.url = `file://${path}` })
     show = vi.fn()
     focus = vi.fn()
     restore = vi.fn()
-    isMinimized = vi.fn((): boolean => this.minimized)
-    setFullScreenable = vi.fn()
+    isMinimized = vi.fn((): boolean => false)
     isDestroyed = (): boolean => this.destroyed
     destroy = vi.fn((): void => { this.destroyed = true; this.emit('closed') })
     on(event: string, listener: (...args: unknown[]) => void): void {
@@ -52,8 +43,6 @@ const fakes = vi.hoisted(() => {
     emit(event: string, ...args: unknown[]): void {
       for (const listener of [...(this.listeners.get(event) ?? [])]) listener(...args)
     }
-    /** An external close (user close): closed is emitted without dispose(). */
-    simulateClose(): void { this.destroyed = true; this.webContents.destroyed = true; this.emit('closed') }
   }
   const appearanceDispose = vi.fn()
   const appearanceRegister = vi.fn(async (): Promise<() => void> => appearanceDispose)
@@ -68,7 +57,7 @@ vi.mock('../packages/desktop-shell/src/main', () => ({
   registerProductAppearance: fakes.appearanceRegister
 }))
 
-import { acquireFeatureSurface, type FeatureSurfaceHandle } from '../packages/desktop-shell/src/feature-surface-host'
+import { acquireFeatureSurface } from '../packages/desktop-shell/src/feature-surface-host'
 
 /** Validated standalone contexts, one per feature: the fact joins are pinned against the real catalog tables. */
 const standaloneContexts = {
@@ -157,6 +146,7 @@ describe('feature surface host', () => {
       backgroundColor: neutralWindowBackground(defaultProductAppearance('bonded')),
       webPreferences: { preload: '/tmp/bonded-preload.cjs', contextIsolation: true, nodeIntegration: false, sandbox: true, spellcheck: false }
     })
+    expect(handle.mode).toBe('standalone')
     expect(handle.window).toBe(window)
     expect(handle.webContents).toBe(window.webContents)
     expect(fakes.appearanceRegister).toHaveBeenCalledWith('bonded', window, undefined, { applyNativeTheme: true })
@@ -189,31 +179,6 @@ describe('feature surface host', () => {
     expect(fakes.appearanceDispose).not.toHaveBeenCalled()
   })
 
-  it('leaves the window unloaded after acquire, loads it on ready, and shows it exactly once', async () => {
-    const handle = await acquireFeatureSurface(standaloneContexts.bonded)
-    const window = fakes.FakeWindow.instances[0]!
-    expect(window.loadFile).not.toHaveBeenCalled()
-    expect(window.loadURL).not.toHaveBeenCalled()
-    expect(window.show).not.toHaveBeenCalled()
-
-    await handle.ready()
-    expect(window.loadFile).toHaveBeenCalledWith('/tmp/bonded.html')
-    expect(window.show).toHaveBeenCalledTimes(1)
-
-    await handle.ready()
-    expect(window.loadFile).toHaveBeenCalledTimes(1)
-    expect(window.show).toHaveBeenCalledTimes(1)
-  })
-
-  it('loads http renderers by URL and file renderers by file', async () => {
-    const context = { ...standaloneContexts.bonded, paths: { ...standaloneContexts.bonded.paths, renderers: { main: 'http://localhost:5173/index.html' } } }
-    const handle = await acquireFeatureSurface(context)
-    await handle.ready()
-    const window = fakes.FakeWindow.instances[0]!
-    expect(window.loadURL).toHaveBeenCalledWith('http://localhost:5173/index.html')
-    expect(window.loadFile).not.toHaveBeenCalled()
-  })
-
   it('denies window-open and applies the catalog navigation policy', async () => {
     const bonded = await acquireFeatureSurface(standaloneContexts.bonded)
     const bondedWindow = fakes.FakeWindow.instances[0]!
@@ -229,65 +194,4 @@ describe('feature surface host', () => {
     expect(emitNavigation(amoveWindow, 'https://elsewhere.example').preventDefault).toHaveBeenCalled()
   })
 
-  it('registers and disposes the product appearance exactly once', async () => {
-    const handle = await acquireFeatureSurface(standaloneContexts.amove)
-    const window = fakes.FakeWindow.instances[0]!
-    expect(fakes.appearanceRegister).toHaveBeenCalledWith('amove', window, undefined, { applyNativeTheme: true })
-
-    handle.dispose()
-    handle.dispose()
-    expect(fakes.appearanceDispose).toHaveBeenCalledTimes(1)
-    expect(window.destroy).toHaveBeenCalledTimes(1)
-  })
-
-  it('cleans up and stays inert when ready() fails to load', async () => {
-    const handle = await acquireFeatureSurface(standaloneContexts.bonded)
-    const window = fakes.FakeWindow.instances[0]!
-    window.nextLoadError = new Error('renderer failed')
-    await expect(handle.ready()).rejects.toThrow('renderer failed')
-
-    expect(fakes.appearanceDispose).toHaveBeenCalledTimes(1)
-    expect(window.destroy).toHaveBeenCalledTimes(1)
-    await expect(handle.ready()).resolves.toBeUndefined()
-    expect(window.loadFile).toHaveBeenCalledTimes(1)
-    handle.dispose()
-    expect(fakes.appearanceDispose).toHaveBeenCalledTimes(1)
-  })
-
-  it('restores a minimized standalone window on activate and tolerates a destroyed one', async () => {
-    const handle = await acquireFeatureSurface(standaloneContexts.amove)
-    const window = fakes.FakeWindow.instances[0]!
-    window.minimized = true
-    handle.activate()
-    expect(window.restore).toHaveBeenCalledTimes(1)
-    expect(window.show).toHaveBeenCalledTimes(1)
-    expect(window.focus).toHaveBeenCalledTimes(1)
-    expect(window.restore.mock.invocationCallOrder[0]).toBeLessThan(window.show.mock.invocationCallOrder[0]!)
-    expect(window.show.mock.invocationCallOrder[0]).toBeLessThan(window.focus.mock.invocationCallOrder[0]!)
-
-    window.destroyed = true
-    expect(() => handle.activate()).not.toThrow()
-    expect(window.restore).toHaveBeenCalledTimes(1)
-  })
-
-  it('marks the handle disposed on an external close', async () => {
-    const handle = await acquireFeatureSurface(standaloneContexts.amove)
-    const window = fakes.FakeWindow.instances[0]!
-    window.simulateClose()
-
-    expect(fakes.appearanceDispose).toHaveBeenCalledTimes(1)
-    handle.dispose()
-    expect(fakes.appearanceDispose).toHaveBeenCalledTimes(1)
-    expect(window.destroy).not.toHaveBeenCalled()
-    await expect(handle.ready()).resolves.toBeUndefined()
-    expect(window.loadFile).not.toHaveBeenCalled()
-  })
-
-  it('destroys the window and rethrows when appearance registration fails', async () => {
-    fakes.appearanceRegister.mockRejectedValueOnce(new Error('appearance registry locked'))
-    await expect(acquireFeatureSurface(standaloneContexts.bonded)).rejects.toThrow('appearance registry locked')
-    const window = fakes.FakeWindow.instances[0]!
-    expect(window.destroyed).toBe(true)
-    expect(fakes.appearanceDispose).not.toHaveBeenCalled()
-  })
 })

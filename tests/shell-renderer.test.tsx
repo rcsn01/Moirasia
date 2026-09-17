@@ -17,10 +17,10 @@ const snapshot: ControllerSnapshot = { applications: [
   { id: 'amove', installed: true, loaded: true, restartPending: false },
   { id: 'bonded', installed: false, loaded: false, restartPending: false }
 ] }
-const settings: ShellSettings = { version: 3, launchAtLogin: false, pendingLoginItems: {}, features: { amove: true, bonded: false } }
+const settings: ShellSettings = { version: 4, launchAtLogin: false, appPresence: 'dock', pendingLoginItems: {}, features: { amove: true, bonded: false } }
 let navigate: ((page: ControllerPage) => void) | undefined
 let publishSnapshot: ((snapshot: ControllerSnapshot) => void) | undefined
-function api(next: ControllerSnapshot = snapshot): ControllerApi { return { getSnapshot: vi.fn(async () => next), refresh: vi.fn(async () => next), getSettings: vi.fn(async () => settings), openApplication: vi.fn(async () => next), quitApplication: vi.fn(async () => next), setAppearance: vi.fn(async () => next), setAllAppearances: vi.fn(async () => next), setLaunchAtLogin: vi.fn(async (enabled) => ({ ...settings, launchAtLogin: enabled })), setApplicationLoginItem: vi.fn(async () => next), installFeature: vi.fn(async () => next), uninstallFeature: vi.fn(async () => next), openFeature: vi.fn(async () => {}), reportPage: vi.fn(async () => {}), relaunchApp: vi.fn(async () => {}), openLoginItemsSettings: vi.fn(async () => {}), onSnapshot: vi.fn((listener) => { publishSnapshot = listener; return vi.fn() }), onNavigate: vi.fn((listener) => { navigate = listener; return vi.fn() }) } }
+function api(next: ControllerSnapshot = snapshot): ControllerApi { return { getSnapshot: vi.fn(async () => next), refresh: vi.fn(async () => next), getSettings: vi.fn(async () => settings), openApplication: vi.fn(async () => next), quitApplication: vi.fn(async () => next), setAppearance: vi.fn(async () => next), setAllAppearances: vi.fn(async () => next), setLaunchAtLogin: vi.fn(async (enabled) => ({ ...settings, launchAtLogin: enabled })), setAppPresence: vi.fn(async (appPresence) => ({ ...settings, appPresence })), setApplicationLoginItem: vi.fn(async () => next), installFeature: vi.fn(async () => next), uninstallFeature: vi.fn(async () => next), openFeature: vi.fn(async () => {}), reportPage: vi.fn(async () => {}), relaunchApp: vi.fn(async () => {}), openLoginItemsSettings: vi.fn(async () => {}), onSnapshot: vi.fn((listener) => { publishSnapshot = listener; return vi.fn() }), onNavigate: vi.fn((listener) => { navigate = listener; return vi.fn() }) } }
 
 beforeEach(() => { navigate = undefined; publishSnapshot = undefined; vi.stubGlobal('matchMedia', vi.fn(() => ({ matches: false, addEventListener: vi.fn(), removeEventListener: vi.fn() }))); document.documentElement.className = '' })
 afterEach(() => { cleanup(); vi.unstubAllGlobals(); vi.restoreAllMocks() })
@@ -30,7 +30,8 @@ describe('Moirasia renderer', () => {
     const bridge = api(); window.moirasia = bridge; const user = userEvent.setup(); render(<App />)
 
     expect(await screen.findByRole('heading', { name: 'General' })).toBeVisible()
-    expect(screen.getByText('General settings will appear here.')).toBeVisible()
+    expect(screen.getByText('Choose how Moirasia appears on your Mac.')).toBeVisible()
+    expect(screen.getByRole('radio', { name: 'Dock Icon' })).toBeChecked()
     expect(bridge.reportPage).toHaveBeenCalledWith('general')
     expect(screen.getAllByRole('navigation')).toHaveLength(1)
     expect(screen.getByRole('group', { name: 'Essentials' })).toBeVisible()
@@ -38,6 +39,9 @@ describe('Moirasia renderer', () => {
     expect(within(apps).getByRole('button', { name: 'Amove' })).toBeVisible()
     expect(within(apps).queryByRole('button', { name: 'Bonded' })).not.toBeInTheDocument()
     expect(screen.queryByRole('button', { name: 'Vox' })).not.toBeInTheDocument()
+
+    await user.click(screen.getByRole('radio', { name: 'Menu Bar' }))
+    expect(bridge.setAppPresence).toHaveBeenCalledWith('menu-bar')
 
     await user.click(screen.getByRole('button', { name: 'Features' }))
     expect(await screen.findByRole('heading', { name: 'Features' })).toBeVisible()

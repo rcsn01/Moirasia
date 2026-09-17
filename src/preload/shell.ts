@@ -3,12 +3,12 @@ import { createAmoveBridge } from '../../apps/integrated/Amove/src/preload/bridg
 import { createBondedBridge } from '../../apps/integrated/Bonded/src/preload/bridge'
 import { createShoutBridge } from '../../apps/integrated/Shout/src/preload/bridge'
 import type { Appearance } from '@moirasia/desktop-shell'
-import { IPC, type ApplicationId, type ControllerApi, type ControllerPage, type ControllerSnapshot, type ShellSettings } from '../shared/contracts'
+import { IPC, type ApplicationId, type AppPresenceMode, type ControllerApi, type ControllerPage, type ControllerSnapshot, type ShellSettings } from '../shared/contracts'
 const api: ControllerApi = {
   getSnapshot: () => ipcRenderer.invoke(IPC.getSnapshot), refresh: () => ipcRenderer.invoke(IPC.refresh), getSettings: () => ipcRenderer.invoke(IPC.getSettings),
   openApplication: (id: ApplicationId) => ipcRenderer.invoke(IPC.openApplication, id), quitApplication: (id: ApplicationId) => ipcRenderer.invoke(IPC.quitApplication, id),
   setAppearance: (product, appearance: Appearance) => ipcRenderer.invoke(IPC.setAppearance, product, appearance), setAllAppearances: (appearance: Appearance) => ipcRenderer.invoke(IPC.setAllAppearances, appearance),
-  setLaunchAtLogin: (enabled: boolean) => ipcRenderer.invoke(IPC.setLaunchAtLogin, enabled) as Promise<ShellSettings>, setApplicationLoginItem: (id, enabled) => ipcRenderer.invoke(IPC.setApplicationLoginItem, id, enabled),
+  setLaunchAtLogin: (enabled: boolean) => ipcRenderer.invoke(IPC.setLaunchAtLogin, enabled) as Promise<ShellSettings>, setAppPresence: (mode: AppPresenceMode) => ipcRenderer.invoke(IPC.setAppPresence, mode) as Promise<ShellSettings>, setApplicationLoginItem: (id, enabled) => ipcRenderer.invoke(IPC.setApplicationLoginItem, id, enabled),
   installFeature: (id: ApplicationId) => ipcRenderer.invoke(IPC.installFeature, id), uninstallFeature: (id: ApplicationId) => ipcRenderer.invoke(IPC.uninstallFeature, id),
   openFeature: (id: ApplicationId) => ipcRenderer.invoke(IPC.openFeature, id) as Promise<void>,
   reportPage: (page: ControllerPage) => ipcRenderer.invoke(IPC.reportPage, page) as Promise<void>,

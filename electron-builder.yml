@@ -7,6 +7,10 @@ files:
   - out/**
   - package.json
 extraResources:
+  - from: build/trayTemplate.png
+    to: tray/trayTemplate.png
+  - from: build/trayTemplate@2x.png
+    to: tray/trayTemplate@2x.png
   - from: native/staged/application-agent
     to: application-agent
   - from: native/staged/features/amove/native

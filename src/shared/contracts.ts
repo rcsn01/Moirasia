@@ -4,6 +4,9 @@ import { isFeatureId, type FeatureId } from '@moirasia/desktop-shell/feature'
 
 export { APPLICATION_IDS, isApplicationId, type ApplicationId }
 export type ControllerPage = 'general' | 'features' | FeatureId
+export type AppPresenceMode = 'dock' | 'menu-bar'
+
+export function isAppPresenceMode(value: unknown): value is AppPresenceMode { return value === 'dock' || value === 'menu-bar' }
 
 export interface ApplicationStatus {
   readonly id: ApplicationId
@@ -32,8 +35,9 @@ export interface ControllerSnapshot {
 }
 
 export interface ShellSettings {
-  readonly version: 3
+  readonly version: 4
   readonly launchAtLogin: boolean
+  readonly appPresence: AppPresenceMode
   readonly pendingLoginItems: Readonly<Partial<Record<ApplicationId, true>>>
   readonly features: Readonly<Partial<Record<ApplicationId, boolean>>>
 }
@@ -47,6 +51,7 @@ export interface ControllerApi {
   setAppearance(product: ApplicationId | 'moirasia', appearance: Appearance): Promise<ControllerSnapshot>
   setAllAppearances(appearance: Appearance): Promise<ControllerSnapshot>
   setLaunchAtLogin(enabled: boolean): Promise<ShellSettings>
+  setAppPresence(mode: AppPresenceMode): Promise<ShellSettings>
   setApplicationLoginItem(id: ApplicationId, enabled: boolean): Promise<ControllerSnapshot>
   installFeature(id: ApplicationId): Promise<ControllerSnapshot>
   uninstallFeature(id: ApplicationId): Promise<ControllerSnapshot>
@@ -64,7 +69,7 @@ export const IPC = {
   installFeature: 'controller:install-feature', uninstallFeature: 'controller:uninstall-feature',
   openFeature: 'controller:open-feature', relaunch: 'controller:relaunch',
   setAppearance: 'controller:set-appearance', setAllAppearances: 'controller:set-all-appearances',
-  setLaunchAtLogin: 'controller:set-launch-at-login', setApplicationLoginItem: 'controller:set-application-login-item',
+  setLaunchAtLogin: 'controller:set-launch-at-login', setAppPresence: 'controller:set-app-presence', setApplicationLoginItem: 'controller:set-application-login-item',
   openLoginItemsSettings: 'controller:open-login-items-settings', reportPage: 'controller:report-page', snapshot: 'controller:snapshot', navigate: 'controller:navigate'
 } as const
 

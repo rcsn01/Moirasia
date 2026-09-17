@@ -2,11 +2,11 @@ import { ipcMain, type BrowserWindow, type IpcMainEvent, type IpcMainInvokeEvent
 import { isAppearance, isProductId } from '@moirasia/desktop-shell'
 import { isFeatureId } from '@moirasia/desktop-shell/feature'
 import { sendToRenderer } from '@moirasia/desktop-shell/main'
-import { IPC, isApplicationId, isControllerPage } from '../shared/contracts'
+import { IPC, isApplicationId, isAppPresenceMode, isControllerPage, type AppPresenceMode } from '../shared/contracts'
 import type { ApplicationController } from './application-controller'
 import type { ShellSettingsStore } from './settings'
 
-export function registerControllerIpc(options: { window: BrowserWindow; controller: ApplicationController; settings: ShellSettingsStore; applyShellAppearance(): void }): () => void {
+export function registerControllerIpc(options: { window: BrowserWindow; controller: ApplicationController; settings: ShellSettingsStore; applyShellAppearance(): void; applyAppPresence(mode: AppPresenceMode): void }): () => void {
   const authorize = (event: IpcMainEvent | IpcMainInvokeEvent) => { if (event.sender !== options.window.webContents || event.sender.isDestroyed()) throw new Error('Unauthorized IPC sender') }
   const applicationId = (value: unknown) => { if (!isApplicationId(value)) throw new TypeError('Invalid application id'); return value }
   const featureId = (value: unknown) => { if (!isFeatureId(value)) throw new TypeError('Invalid feature id'); return value }
@@ -18,6 +18,7 @@ export function registerControllerIpc(options: { window: BrowserWindow; controll
   ipcMain.handle(IPC.setAppearance, async (event, product, appearance) => { authorize(event); if (!isProductId(product) || !isAppearance(appearance)) throw new TypeError('Invalid appearance'); const result = await options.controller.setAppearance(product, appearance); if (product === 'moirasia') options.applyShellAppearance(); return result })
   ipcMain.handle(IPC.setAllAppearances, async (event, appearance) => { authorize(event); if (!isAppearance(appearance)) throw new TypeError('Invalid appearance'); const result = await options.controller.setAllAppearances(appearance); options.applyShellAppearance(); return result })
   ipcMain.handle(IPC.setLaunchAtLogin, async (event, enabled) => { authorize(event); if (typeof enabled !== 'boolean') throw new TypeError('Invalid login setting'); const result = await options.settings.update({ launchAtLogin: enabled }); appSetLoginItem(enabled); return result })
+  ipcMain.handle(IPC.setAppPresence, async (event, mode) => { authorize(event); if (!isAppPresenceMode(mode)) throw new TypeError('Invalid app presence'); options.applyAppPresence(mode); return options.settings.update({ appPresence: mode }) })
   ipcMain.handle(IPC.setApplicationLoginItem, (event, id, enabled) => { authorize(event); if (typeof enabled !== 'boolean') throw new TypeError('Invalid login setting'); return options.controller.setLoginItem(applicationId(id), enabled) })
   ipcMain.handle(IPC.installFeature, (event, id) => { authorize(event); return options.controller.installFeature(featureId(id)) })
   ipcMain.handle(IPC.uninstallFeature, (event, id) => { authorize(event); return options.controller.uninstallFeature(featureId(id)) })

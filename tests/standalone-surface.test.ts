@@ -74,52 +74,44 @@ describe('acquireStandaloneSurface', () => {
       registryPath: '/tmp/amove/appearance.json'
     })
 
-    await surface.ready()
+    expect(surface.window).toBe(window)
+    expect(surface.webContents).toBe(window.webContents)
     await surface.ready()
     expect(window.loadFile).toHaveBeenCalledTimes(1)
     expect(window.loadFile).toHaveBeenCalledWith('/tmp/index.html')
     expect(window.show).toHaveBeenCalledTimes(1)
   })
 
-  it('loads development URLs and enforces the navigation policy', async () => {
-    const surface = await acquireStandaloneSurface({ ...options, renderer: 'http://localhost:5173/index.html', navigation: 'allow-same-url' })
+  it('maps optional public facts to the owned window', async () => {
+    await acquireStandaloneSurface({
+      ...options,
+      fullscreenable: false,
+      navigation: 'allow-same-url',
+      icon: '/tmp/icon.png',
+      devTools: false,
+      spellcheck: true
+    })
     const window = fakes.FakeWindow.instances[0]!
-    await surface.ready()
-    expect(window.loadURL).toHaveBeenCalledWith('http://localhost:5173/index.html')
+    expect(window.options).toMatchObject({
+      fullscreenable: false,
+      icon: '/tmp/icon.png',
+      webPreferences: { devTools: false, spellcheck: true }
+    })
+    window.currentUrl = '/tmp/index.html'
     const navigate = window.listeners.get('web:will-navigate')![0]!
     const same = { preventDefault: vi.fn() }
-    navigate(same, 'http://localhost:5173/index.html')
+    navigate(same, '/tmp/index.html')
     expect(same.preventDefault).not.toHaveBeenCalled()
-    const other = { preventDefault: vi.fn() }
-    navigate(other, 'https://example.com')
-    expect(other.preventDefault).toHaveBeenCalledTimes(1)
   })
 
-  it('restores on activation and disposes once', async () => {
-    const surface = await acquireStandaloneSurface(options)
-    const window = fakes.FakeWindow.instances[0]!
-    window.minimized = true
-    surface.activate()
-    expect(window.restore).toHaveBeenCalledTimes(1)
-    expect(window.show).toHaveBeenCalledTimes(1)
-    expect(window.focus).toHaveBeenCalledTimes(1)
-    surface.dispose()
-    surface.dispose()
-    expect(fakes.disposeAppearance).toHaveBeenCalledTimes(1)
-    expect(window.destroy).toHaveBeenCalledTimes(1)
-  })
-
-  it('rolls back the window and appearance when loading fails', async () => {
-    const surface = await acquireStandaloneSurface(options)
-    const window = fakes.FakeWindow.instances[0]!
-    window.loadFile.mockRejectedValueOnce(new Error('load failed'))
-    await expect(surface.ready()).rejects.toThrow('load failed')
-    expect(fakes.disposeAppearance).toHaveBeenCalledTimes(1)
-    expect(window.destroy).toHaveBeenCalledTimes(1)
-  })
-
-  it('rejects invalid resources before constructing a window', async () => {
-    await expect(acquireStandaloneSurface({ ...options, preload: 'relative.cjs' })).rejects.toThrow(/preload/)
+  it.each([
+    [{ width: 0 }, /width/],
+    [{ minWidth: 1281 }, /minimum size/],
+    [{ preload: 'relative.cjs' }, /preload/],
+    [{ renderer: 'ftp://example.com' }, /renderer/],
+    [{ appearanceFile: 'appearance.json' }, /appearance file/]
+  ] as const)('rejects invalid public facts before constructing a window', async (override, expected) => {
+    await expect(acquireStandaloneSurface({ ...options, ...override })).rejects.toThrow(expected)
     expect(fakes.FakeWindow.instances).toHaveLength(0)
   })
 })

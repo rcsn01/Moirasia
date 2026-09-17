@@ -51,7 +51,7 @@ export function App(): React.JSX.Element {
     {controller.loading
       ? <DesktopPage width="standard" className="controller-main"><p role="status">Loading applications…</p></DesktopPage>
       : <>
-        {activePage === 'general' && <div className="shell-route"><DesktopPage width="standard" className="controller-main"><GeneralScreen /></DesktopPage></div>}
+        {activePage === 'general' && <div className="shell-route"><DesktopPage width="standard" className="controller-main"><GeneralScreen appPresence={controller.settings.appPresence} onAppPresenceChange={(mode) => void controller.setAppPresence(mode)} /></DesktopPage></div>}
         {activePage === 'features' && <div className="shell-route"><DesktopPage width="standard" className="controller-main"><FeaturesScreen controller={controller} /></DesktopPage></div>}
         {featureCatalog.ids.map((id) => {
           const available = availableFeatures.some((feature) => feature.id === id)
