@@ -80,6 +80,7 @@ const standaloneContexts = {
 
 interface SuiteSurfaceDouble {
   webContents: InstanceType<typeof fakes.FakeWebContents>
+  renderer: { current(): InstanceType<typeof fakes.FakeWebContents>; send(): boolean; subscribe(listener: (current: InstanceType<typeof fakes.FakeWebContents>) => void): () => void }
   state: { active: boolean; focused: boolean }
   activate: ReturnType<typeof vi.fn>
   focus: ReturnType<typeof vi.fn>
@@ -87,8 +88,10 @@ interface SuiteSurfaceDouble {
 }
 
 function suiteContext(): { context: FeatureContext; surface: SuiteSurfaceDouble } {
+  const webContents = new fakes.FakeWebContents()
   const surface: SuiteSurfaceDouble = {
-    webContents: new fakes.FakeWebContents(),
+    webContents,
+    renderer: { current: () => webContents, send: () => false, subscribe: (listener) => { listener(webContents); return () => undefined } },
     state: { active: true, focused: true },
     activate: vi.fn(),
     focus: vi.fn(),
@@ -119,7 +122,7 @@ describe('feature surface host', () => {
     const handle = await acquireFeatureSurface(context)
     expect(handle.mode).toBe('suite')
     expect(handle.window).toBeUndefined()
-    expect(handle.webContents).toBe(surface.webContents)
+    expect(handle.renderer.current()).toBe(surface.webContents)
 
     await handle.ready()
     handle.activate()
@@ -148,7 +151,7 @@ describe('feature surface host', () => {
     })
     expect(handle.mode).toBe('standalone')
     expect(handle.window).toBe(window)
-    expect(handle.webContents).toBe(window.webContents)
+    expect(handle.renderer.current()).toBe(window.webContents)
     expect(fakes.appearanceRegister).toHaveBeenCalledWith('bonded', window, undefined, { applyNativeTheme: true })
   })
 

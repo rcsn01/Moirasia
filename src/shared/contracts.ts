@@ -23,8 +23,12 @@ export interface ApplicationStatus {
 export interface FeatureStatus {
   readonly id: FeatureId
   readonly installed: boolean
-  readonly loaded: boolean         // register() has run in this session
-  readonly restartPending: boolean // was loaded, now uninstalled; relaunch fully unloads
+  /** Native runtime state. Legacy local runtimes expose the derived value. */
+  readonly state?: 'stopped' | 'starting' | 'running' | 'error'
+  readonly error?: string
+  /** Kept for standalone/development compatibility while the migration rolls out. */
+  readonly loaded: boolean
+  readonly restartPending: boolean
   readonly loadError?: string
 }
 
@@ -46,6 +50,7 @@ export interface ControllerApi {
   getSnapshot(): Promise<ControllerSnapshot>
   refresh(): Promise<ControllerSnapshot>
   getSettings(): Promise<ShellSettings>
+  getPage(): Promise<ControllerPage>
   openApplication(id: ApplicationId): Promise<ControllerSnapshot>
   quitApplication(id: ApplicationId): Promise<ControllerSnapshot>
   setAppearance(product: ApplicationId | 'moirasia', appearance: Appearance): Promise<ControllerSnapshot>
@@ -64,7 +69,7 @@ export interface ControllerApi {
 }
 
 export const IPC = {
-  getSnapshot: 'controller:get-snapshot', refresh: 'controller:refresh', getSettings: 'controller:get-settings',
+  getSnapshot: 'controller:get-snapshot', refresh: 'controller:refresh', getSettings: 'controller:get-settings', getPage: 'controller:get-page',
   openApplication: 'controller:open-application', quitApplication: 'controller:quit-application',
   installFeature: 'controller:install-feature', uninstallFeature: 'controller:uninstall-feature',
   openFeature: 'controller:open-feature', relaunch: 'controller:relaunch',

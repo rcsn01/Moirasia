@@ -4,25 +4,49 @@ import { isFeatureId } from '@moirasia/desktop-shell/feature'
 import { sendToRenderer } from '@moirasia/desktop-shell/main'
 import { IPC, isApplicationId, isAppPresenceMode, isControllerPage, type AppPresenceMode } from '../shared/contracts'
 import type { ApplicationController } from './application-controller'
+import type { NativeHostClientLike } from '../shared/native-host-contracts'
 import type { ShellSettingsStore } from './settings'
 
-export function registerControllerIpc(options: { window: BrowserWindow; controller: ApplicationController; settings: ShellSettingsStore; applyShellAppearance(): void; applyAppPresence(mode: AppPresenceMode): void }): () => void {
+export function registerControllerIpc(options: { window: BrowserWindow; controller: ApplicationController; settings: ShellSettingsStore; applyShellAppearance(): void; applyAppPresence(mode: AppPresenceMode): void; nativeClient?: NativeHostClientLike }): () => void {
   const authorize = (event: IpcMainEvent | IpcMainInvokeEvent) => { if (event.sender !== options.window.webContents || event.sender.isDestroyed()) throw new Error('Unauthorized IPC sender') }
   const applicationId = (value: unknown) => { if (!isApplicationId(value)) throw new TypeError('Invalid application id'); return value }
   const featureId = (value: unknown) => { if (!isFeatureId(value)) throw new TypeError('Invalid feature id'); return value }
   ipcMain.handle(IPC.getSnapshot, (event) => { authorize(event); return options.controller.snapshot() })
   ipcMain.handle(IPC.refresh, (event) => { authorize(event); return options.controller.refresh() })
   ipcMain.handle(IPC.getSettings, (event) => { authorize(event); return options.settings.get() })
+  ipcMain.handle(IPC.getPage, (event) => { authorize(event); return options.controller.restorablePage() })
   ipcMain.handle(IPC.openApplication, (event, id) => { authorize(event); return options.controller.open(applicationId(id)) })
   ipcMain.handle(IPC.quitApplication, (event, id) => { authorize(event); return options.controller.quit(applicationId(id)) })
   ipcMain.handle(IPC.setAppearance, async (event, product, appearance) => { authorize(event); if (!isProductId(product) || !isAppearance(appearance)) throw new TypeError('Invalid appearance'); const result = await options.controller.setAppearance(product, appearance); if (product === 'moirasia') options.applyShellAppearance(); return result })
   ipcMain.handle(IPC.setAllAppearances, async (event, appearance) => { authorize(event); if (!isAppearance(appearance)) throw new TypeError('Invalid appearance'); const result = await options.controller.setAllAppearances(appearance); options.applyShellAppearance(); return result })
-  ipcMain.handle(IPC.setLaunchAtLogin, async (event, enabled) => { authorize(event); if (typeof enabled !== 'boolean') throw new TypeError('Invalid login setting'); const result = await options.settings.update({ launchAtLogin: enabled }); appSetLoginItem(enabled); return result })
-  ipcMain.handle(IPC.setAppPresence, async (event, mode) => { authorize(event); if (!isAppPresenceMode(mode)) throw new TypeError('Invalid app presence'); options.applyAppPresence(mode); return options.settings.update({ appPresence: mode }) })
+  ipcMain.handle(IPC.setLaunchAtLogin, async (event, enabled) => {
+    authorize(event)
+    if (typeof enabled !== 'boolean') throw new TypeError('Invalid login setting')
+    if (options.nativeClient) {
+      await options.nativeClient.request('host.setLaunchAtLogin', { enabled })
+      appSetLoginItem(enabled)
+      const snapshot = await options.nativeClient.request<unknown>('host.getSnapshot')
+      cacheNativeSettings(options.settings, snapshot)
+      return options.settings.get()
+    }
+    const result = await options.settings.update({ launchAtLogin: enabled }); appSetLoginItem(enabled); return result
+  })
+  ipcMain.handle(IPC.setAppPresence, async (event, mode) => {
+    authorize(event)
+    if (!isAppPresenceMode(mode)) throw new TypeError('Invalid app presence')
+    options.applyAppPresence(mode)
+    if (options.nativeClient) {
+      await options.nativeClient.request('host.setPresence', { mode })
+      const snapshot = await options.nativeClient.request<unknown>('host.getSnapshot')
+      cacheNativeSettings(options.settings, snapshot)
+      return options.settings.get()
+    }
+    return options.settings.update({ appPresence: mode })
+  })
   ipcMain.handle(IPC.setApplicationLoginItem, (event, id, enabled) => { authorize(event); if (typeof enabled !== 'boolean') throw new TypeError('Invalid login setting'); return options.controller.setLoginItem(applicationId(id), enabled) })
   ipcMain.handle(IPC.installFeature, (event, id) => { authorize(event); return options.controller.installFeature(featureId(id)) })
   ipcMain.handle(IPC.uninstallFeature, (event, id) => { authorize(event); return options.controller.uninstallFeature(featureId(id)) })
-  ipcMain.handle(IPC.openFeature, (event, id) => { authorize(event); options.controller.openFeature(featureId(id)) })
+  ipcMain.handle(IPC.openFeature, (event, id) => { authorize(event); return options.controller.openFeature(featureId(id)) })
   ipcMain.handle(IPC.reportPage, (event, page) => { authorize(event); if (!isControllerPage(page)) throw new TypeError('Invalid controller page'); options.controller.reportPage(page) })
   ipcMain.handle(IPC.relaunch, (event) => { authorize(event); options.controller.relaunch() })
   ipcMain.handle(IPC.openLoginItemsSettings, (event) => { authorize(event); return options.controller.openLoginItemsSettings() })
@@ -30,9 +54,20 @@ export function registerControllerIpc(options: { window: BrowserWindow; controll
   const handlers = Object.values(IPC).filter((value) => value !== IPC.snapshot && value !== IPC.navigate)
   return () => { unsubscribe(); handlers.forEach((channel) => ipcMain.removeHandler(channel)) }
 }
+
+function cacheNativeSettings(store: ShellSettingsStore, snapshot: unknown): void {
+  if (!snapshot || typeof snapshot !== 'object') return
+  const value = (snapshot as { settings?: unknown }).settings
+  if (!value || typeof value !== 'object') return
+  const candidate = value as Record<string, unknown>
+  if (candidate.version !== 4 || typeof candidate.launchAtLogin !== 'boolean' || (candidate.appPresence !== 'dock' && candidate.appPresence !== 'menu-bar')) return
+  store.setCached(value as Parameters<ShellSettingsStore['setCached']>[0])
+}
+
 function appSetLoginItem(openAtLogin: boolean): void {
   void import('electron').then(({ app }) => {
     if (process.platform === 'darwin' && !app.isPackaged) return
-    app.setLoginItemSettings({ openAtLogin })
+    if (process.platform === 'darwin') app.setLoginItemSettings({ openAtLogin, type: 'loginItemService', serviceName: 'com.moirasia.desktop.host' })
+    else app.setLoginItemSettings({ openAtLogin })
   })
 }

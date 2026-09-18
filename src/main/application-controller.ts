@@ -20,7 +20,11 @@ export class ApplicationController {
   #listeners = new Set<(snapshot: ControllerSnapshot) => void>()
   #busy = new Map<ApplicationId, ApplicationStatus['busy']>()
   #errors = new Map<ApplicationId, string>()
-  constructor(readonly appearances: AppearanceRegistry, private readonly settings: ShellSettingsStore, private readonly features: FeatureRuntime, private readonly agent: ApplicationAgent = new SwiftApplicationAgent()) {}
+  #page: ControllerPage = 'general'
+  readonly #disposeFeatureStatus: () => void
+  constructor(readonly appearances: AppearanceRegistry, private readonly settings: ShellSettingsStore, private readonly features: FeatureRuntime, private readonly agent: ApplicationAgent = new SwiftApplicationAgent()) {
+    this.#disposeFeatureStatus = features.subscribe(() => this.#emit())
+  }
 
   snapshot(): ControllerSnapshot { return { applications: structuredClone(this.#applications), appearances: this.appearances.get(), features: this.features.statuses() } }
   subscribe(listener: (snapshot: ControllerSnapshot) => void): () => void { this.#listeners.add(listener); return () => this.#listeners.delete(listener) }
@@ -33,7 +37,14 @@ export class ApplicationController {
   async installFeature(id: ApplicationId): Promise<ControllerSnapshot> { await this.features.setInstalled(id, true); this.#emit(); return this.snapshot() }
   async uninstallFeature(id: ApplicationId): Promise<ControllerSnapshot> { await this.features.setInstalled(id, false); this.#emit(); return this.snapshot() }
   openFeature(id: ApplicationId): void { this.features.activate(id) }
-  reportPage(page: ControllerPage): void { this.features.setActive(isFeatureId(page) ? page : undefined) }
+  rememberPage(page: ControllerPage): void { this.#page = page }
+  reportPage(page: ControllerPage): void { this.rememberPage(page); this.features.setActive(isFeatureId(page) ? page : undefined) }
+  suspendRenderer(): void { this.features.setActive(undefined) }
+  restorablePage(): ControllerPage {
+    if (!isFeatureId(this.#page)) return this.#page
+    const feature = this.features.statuses().find(({ id }) => id === this.#page)
+    return feature?.installed && feature.loaded ? this.#page : 'general'
+  }
   relaunch(): void { this.features.relaunch() }
   async quit(id: ApplicationId): Promise<ControllerSnapshot> { return this.#action(id, 'quitting', async (record) => { if (!await this.agent.quit(record)) throw new Error(`${applicationCatalog.get(id).label} did not quit within 10 seconds.`) }) }
   async setAppearance(product: ProductId, appearance: Appearance): Promise<ControllerSnapshot> { await this.appearances.set(product, appearance); this.#emit(); return this.snapshot() }
@@ -52,7 +63,7 @@ export class ApplicationController {
     return this.snapshot()
   }
   openLoginItemsSettings(): Promise<void> { return this.agent.openLoginItemsSettings() }
-  close(): void { this.appearances.close() }
+  close(): void { this.#disposeFeatureStatus(); this.appearances.close() }
 
   async #action(id: ApplicationId, busy: NonNullable<ApplicationStatus['busy']>, operation: (record: AgentRecord) => Promise<void>): Promise<ControllerSnapshot> {
     const current = this.#applications.find((item) => item.id === id)

@@ -6,11 +6,12 @@
   "description": "Moirasia desktop shell",
   "main": "out/main/index.js",
   "scripts": {
-    "predev": "pnpm agent:build && pnpm test:dev-ready",
+    "predev": "pnpm agent:build && pnpm runtime:build && pnpm test:dev-ready",
     "dev": "electron-vite dev",
-    "build": "pnpm agent:build && pnpm features:stage && pnpm build:app",
+    "build": "pnpm agent:build && pnpm runtime:build && pnpm features:stage && pnpm build:app",
     "build:app": "electron-vite build",
     "agent:build": "node scripts/build-application-agent.mjs",
+    "runtime:build": "node scripts/build-moirasia-runtime.mjs",
     "features:stage": "node scripts/stage-feature-binaries.mjs",
     "preview": "electron-vite preview",
     "typecheck": "tsc -p tsconfig.node.json --noEmit && tsc -p tsconfig.react.json --noEmit && tsc -p packages/ui-react/tsconfig.json --noEmit",
@@ -24,6 +25,7 @@
     "ui:verify": "pnpm ui:preset:check && pnpm --filter @moirasia/design-system test && pnpm test:dev-ready:all && pnpm typecheck && pnpm test && pnpm -C apps/integrated/Amove typecheck && pnpm -C apps/integrated/Amove test && pnpm -C apps/standalone/Orbis typecheck && pnpm -C apps/standalone/Orbis test && pnpm -C apps/standalone/Orbis native:test && pnpm -C apps/standalone/Exithibition typecheck && pnpm -C apps/standalone/Exithibition test && pnpm -C apps/integrated/Bonded typecheck && pnpm -C apps/integrated/Bonded test && pnpm -C apps/integrated/Bonded build:renderer && pnpm -C apps/integrated/Shout typecheck && pnpm -C apps/integrated/Shout test && pnpm -C apps/integrated/Shout build:renderer && bun --cwd apps/standalone/Vox run typecheck && bun --cwd apps/standalone/Vox test",
     "test:watch": "vitest",
     "test:e2e": "playwright test",
+    "memory:benchmark": "node scripts/benchmark-electron-memory.mjs",
     "package:mac": "pnpm build && CSC_IDENTITY_AUTO_DISCOVERY=false electron-builder --mac --arm64 --publish never -c.mac.notarize=false"
   },
   "dependencies": {

@@ -18,6 +18,8 @@ export class ShellSettingsStore {
     return this.get()
   }
   get(): ShellSettings { return structuredClone(this.#settings) }
+  /** Update the Electron cache from the native host without writing the document. */
+  setCached(value: ShellSettings): void { this.#settings = structuredClone(value) }
   async update(patch: Partial<Omit<ShellSettings, 'version'>>): Promise<ShellSettings> {
     this.#settings = {
       ...this.#settings, ...patch, version: 4,

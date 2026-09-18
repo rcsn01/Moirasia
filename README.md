@@ -1,6 +1,6 @@
 # Moirasia
 
-Moirasia is a macOS controller for Amove, Vox, Bonded, and Shout, and an embedded feature host for Amove, Bonded, and Shout. Its Applications menu discovers those four standalone bundles and opens or focuses them. Exithibition and Orbis are standalone-only repositories under `apps/standalone`; they share Moirasia's UI packages but have no controller or embedded runtime integration.
+Moirasia is a macOS controller for Amove, Vox, Bonded, and Shout, and an embedded feature host for Amove, Bonded, and Shout. Its Applications menu discovers those four standalone bundles and opens or focuses them. In Menu Bar mode, closing Moirasia destroys its primary renderer to release memory while feature backends and a visible Amove shelf keep running; reopening creates a fresh renderer. Exithibition and Orbis are standalone-only repositories under `apps/standalone`; they share Moirasia's UI packages but have no controller or embedded runtime integration.
 
 ## Development
 

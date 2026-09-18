@@ -13,6 +13,12 @@ extraResources:
     to: tray/trayTemplate@2x.png
   - from: native/staged/application-agent
     to: application-agent
+  - from: native/staged/runtime/MoirasiaFeatureService.app
+    to: runtime/MoirasiaFeatureService.app
+  - from: native/staged/runtime/MoirasiaFeatureService
+    to: runtime/MoirasiaFeatureService
+  - from: native/staged/runtime/MoirasiaHost
+    to: runtime/MoirasiaHost
   - from: native/staged/features/amove/native
     to: features/amove/native
   - from: native/staged/features/amove/assets
@@ -23,6 +29,11 @@ extraResources:
     to: features/shout/native
   - from: native/staged/features/shout/driver
     to: features/shout/driver
+# The host bundle lives in Contents/Library/LoginItems so launch-at-login can
+# start it as a login item service.
+extraFiles:
+  - from: native/staged/runtime/MoirasiaHost.app
+    to: Library/LoginItems/MoirasiaHost.app
 mac:
   icon: build/icon.icns
   target:

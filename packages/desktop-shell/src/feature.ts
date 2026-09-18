@@ -22,6 +22,12 @@ export interface FeaturePaths {
   legacyDataDirectories?: readonly string[]
 }
 
+export interface RendererTarget {
+  current(): WebContents | undefined
+  send(channel: string, ...args: unknown[]): boolean
+  subscribe(listener: (current: WebContents | undefined) => void): () => void
+}
+
 export interface EmbeddedFeatureSurfaceState {
   readonly active: boolean
   readonly focused: boolean
@@ -29,7 +35,7 @@ export interface EmbeddedFeatureSurfaceState {
 
 /** The shell-owned surface an embedded feature may use for IPC and focus. */
 export interface EmbeddedFeatureSurface {
-  readonly webContents: WebContents
+  readonly renderer: RendererTarget
   readonly state: EmbeddedFeatureSurfaceState
   activate(): void
   focus(): void
@@ -101,6 +107,8 @@ export interface MoirasiaFeature {
   dispose(): Promise<void> | void
   /** Select/focus the feature's primary surface. */
   activate?(): void
+  /** Amove-only UI intent used when the native shelf hotkey launches the UI. */
+  openShelf?(): Promise<void> | void
   /** Tell the feature whether its embedded tab is currently selected. */
   setActive?(active: boolean): void
 }

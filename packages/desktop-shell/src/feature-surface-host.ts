@@ -1,7 +1,7 @@
-import type { BrowserWindow, WebContents } from 'electron'
+import type { BrowserWindow } from 'electron'
 import { defaultProductAppearance } from './main'
 import { acquireOwnedWindowSurface } from './owned-window-surface'
-import { featureCatalog, validateFeatureResources, type FeatureContext, type FeatureHostMode } from './feature'
+import { featureCatalog, validateFeatureResources, type FeatureContext, type FeatureHostMode, type RendererTarget } from './feature'
 
 export interface FeatureSurfaceOptions {
   /** Standalone window icon (Amove's app icon; the tray/dock reuse the same path). */
@@ -18,8 +18,8 @@ export interface FeatureSurfaceOptions {
  */
 export interface FeatureSurfaceHandle {
   readonly mode: FeatureHostMode
-  /** The IPC target: the shell webContents in suite mode, the standalone window's otherwise. */
-  readonly webContents: WebContents
+  /** Stable renderer identity across suite window replacement. */
+  readonly renderer: RendererTarget
   /** The standalone window when the host owns it; undefined in suite mode. Observe and act on it (dialogs, listeners); never create or destroy it. */
   readonly window: BrowserWindow | undefined
   /** Load the standalone renderer and show the window. No-op in suite mode. Awaits the load; rejects after cleaning up. */
@@ -46,7 +46,7 @@ function suiteHandle(context: Extract<FeatureContext, { mode: 'suite' }>): Featu
   const surface = context.surface
   return {
     mode: 'suite',
-    get webContents(): WebContents { return surface.webContents },
+    renderer: surface.renderer,
     window: undefined,
     async ready(): Promise<void> { /* The shell owns the surface's renderer. */ },
     activate(): void {
@@ -82,7 +82,7 @@ async function standaloneHandle(context: Extract<FeatureContext, { mode: 'standa
 
   return {
     mode: 'standalone',
-    get webContents(): WebContents { return surface.webContents },
+    renderer: surface.renderer,
     get window(): BrowserWindow { return surface.window },
     ready: () => surface.ready(),
     activate: () => surface.activate(),

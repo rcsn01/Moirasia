@@ -1,5 +1,7 @@
 import { BrowserWindow, type WebContents } from 'electron'
 import type { Appearance, ProductId } from './index'
+import type { RendererTarget } from './feature'
+import { MutableRendererTarget } from './renderer-target'
 import { desktopWindowChromeOptions, neutralWindowBackground, registerProductAppearance } from './main'
 
 export type OwnedWindowNavigation = 'deny' | 'allow-same-url'
@@ -35,6 +37,7 @@ export interface OwnedWindowSurfaceOptions {
 
 export interface OwnedWindowSurface {
   readonly webContents: WebContents
+  readonly renderer: RendererTarget
   readonly window: BrowserWindow
   ready(): Promise<void>
   activate(): void
@@ -64,6 +67,8 @@ export async function acquireOwnedWindowSurface(options: OwnedWindowSurfaceOptio
     }
   })
 
+  const renderer = new MutableRendererTarget()
+  renderer.attach(window.webContents)
   let disposed = false
   let disposeAppearance: (() => void) | undefined
   let readyPromise: Promise<void> | undefined
@@ -74,6 +79,7 @@ export async function acquireOwnedWindowSurface(options: OwnedWindowSurfaceOptio
     const cleanup = disposeAppearance
     disposeAppearance = undefined
     cleanup?.()
+    renderer.dispose()
   }
 
   window.on('closed', markDisposed)
@@ -96,6 +102,7 @@ export async function acquireOwnedWindowSurface(options: OwnedWindowSurfaceOptio
 
   const surface: OwnedWindowSurface = {
     get webContents(): WebContents { return window.webContents },
+    renderer,
     get window(): BrowserWindow { return window },
     ready(): Promise<void> {
       if (disposed || window.isDestroyed()) return Promise.resolve()

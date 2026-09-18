@@ -1,4 +1,4 @@
-import { lazy, Suspense, useEffect, useState } from 'react'
+import { lazy, Suspense, useEffect } from 'react'
 import { AlertCircle, Grid2X2, Settings } from '@moirasia/ui-react/lib/icons'
 import { Alert, AlertDescription, AlertTitle } from '@moirasia/ui-react/components/alert'
 import { DesktopAppShell, DesktopNavigation, DesktopPage } from '@moirasia/desktop-shell/react'
@@ -25,7 +25,6 @@ const PRIMARY_PANELS: Record<FeatureId, (appearance: Appearance) => React.JSX.El
 
 export function App(): React.JSX.Element {
   const controller = useController()
-  const [visited, setVisited] = useState<Set<FeatureId>>(() => new Set())
   const appearance = controller.snapshot.appearances.values.moirasia
   const availableFeatures = controller.snapshot.features.filter((feature) => feature.installed && feature.loaded)
   const activeFeature = isFeatureId(controller.page) && availableFeatures.some((feature) => feature.id === controller.page) ? controller.page : undefined
@@ -34,10 +33,6 @@ export function App(): React.JSX.Element {
   useEffect(() => {
     if (!controller.loading && activePage !== controller.page) controller.setPage(activePage)
   }, [activePage, controller.loading, controller.page, controller.setPage])
-
-  useEffect(() => {
-    if (activeFeature) setVisited((current) => current.has(activeFeature) ? current : new Set(current).add(activeFeature))
-  }, [activeFeature])
 
   const navigation = <DesktopNavigation<ControllerPage> label="Moirasia sections" active={activePage} onSelect={controller.setPage} groups={[
     { id: 'essentials', label: 'Essentials', items: [
@@ -53,19 +48,13 @@ export function App(): React.JSX.Element {
       : <>
         {activePage === 'general' && <div className="shell-route"><DesktopPage width="standard" className="controller-main"><GeneralScreen appPresence={controller.settings.appPresence} onAppPresenceChange={(mode) => void controller.setAppPresence(mode)} /></DesktopPage></div>}
         {activePage === 'features' && <div className="shell-route"><DesktopPage width="standard" className="controller-main"><FeaturesScreen controller={controller} /></DesktopPage></div>}
-        {featureCatalog.ids.map((id) => {
-          const available = availableFeatures.some((feature) => feature.id === id)
-          if (!available || !visited.has(id)) return null
-          const selected = activePage === id
-          const label = featureCatalog.get(id).label
-          return <div key={id} className="shell-feature-route" hidden={!selected} aria-hidden={!selected}>
-            <FeatureErrorBoundary name={label}>
-              <Suspense fallback={<p className="shell-feature-loading" role="status">Loading {label}…</p>}>
-                {PRIMARY_PANELS[id](controller.snapshot.appearances.values[id])}
-              </Suspense>
-            </FeatureErrorBoundary>
-          </div>
-        })}
+        {activeFeature && <div className="shell-feature-route">
+          <FeatureErrorBoundary name={featureCatalog.get(activeFeature).label}>
+            <Suspense fallback={<p className="shell-feature-loading" role="status">Loading {featureCatalog.get(activeFeature).label}…</p>}>
+              {PRIMARY_PANELS[activeFeature](controller.snapshot.appearances.values[activeFeature])}
+            </Suspense>
+          </FeatureErrorBoundary>
+        </div>}
       </>}
     {controller.error && <Alert variant="destructive" className="controller-error"><AlertCircle /><AlertTitle>Action failed</AlertTitle><AlertDescription>{controller.error}</AlertDescription></Alert>}
   </DesktopAppShell>

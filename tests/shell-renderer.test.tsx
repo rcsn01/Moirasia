@@ -20,7 +20,7 @@ const snapshot: ControllerSnapshot = { applications: [
 const settings: ShellSettings = { version: 4, launchAtLogin: false, appPresence: 'dock', pendingLoginItems: {}, features: { amove: true, bonded: false } }
 let navigate: ((page: ControllerPage) => void) | undefined
 let publishSnapshot: ((snapshot: ControllerSnapshot) => void) | undefined
-function api(next: ControllerSnapshot = snapshot): ControllerApi { return { getSnapshot: vi.fn(async () => next), refresh: vi.fn(async () => next), getSettings: vi.fn(async () => settings), openApplication: vi.fn(async () => next), quitApplication: vi.fn(async () => next), setAppearance: vi.fn(async () => next), setAllAppearances: vi.fn(async () => next), setLaunchAtLogin: vi.fn(async (enabled) => ({ ...settings, launchAtLogin: enabled })), setAppPresence: vi.fn(async (appPresence) => ({ ...settings, appPresence })), setApplicationLoginItem: vi.fn(async () => next), installFeature: vi.fn(async () => next), uninstallFeature: vi.fn(async () => next), openFeature: vi.fn(async () => {}), reportPage: vi.fn(async () => {}), relaunchApp: vi.fn(async () => {}), openLoginItemsSettings: vi.fn(async () => {}), onSnapshot: vi.fn((listener) => { publishSnapshot = listener; return vi.fn() }), onNavigate: vi.fn((listener) => { navigate = listener; return vi.fn() }) } }
+function api(next: ControllerSnapshot = snapshot, initialPage: ControllerPage = 'general'): ControllerApi { return { getSnapshot: vi.fn(async () => next), refresh: vi.fn(async () => next), getSettings: vi.fn(async () => settings), getPage: vi.fn(async () => initialPage), openApplication: vi.fn(async () => next), quitApplication: vi.fn(async () => next), setAppearance: vi.fn(async () => next), setAllAppearances: vi.fn(async () => next), setLaunchAtLogin: vi.fn(async (enabled) => ({ ...settings, launchAtLogin: enabled })), setAppPresence: vi.fn(async (appPresence) => ({ ...settings, appPresence })), setApplicationLoginItem: vi.fn(async () => next), installFeature: vi.fn(async () => next), uninstallFeature: vi.fn(async () => next), openFeature: vi.fn(async () => {}), reportPage: vi.fn(async () => {}), relaunchApp: vi.fn(async () => {}), openLoginItemsSettings: vi.fn(async () => {}), onSnapshot: vi.fn((listener) => { publishSnapshot = listener; return vi.fn() }), onNavigate: vi.fn((listener) => { navigate = listener; return vi.fn() }) } }
 
 beforeEach(() => { navigate = undefined; publishSnapshot = undefined; vi.stubGlobal('matchMedia', vi.fn(() => ({ matches: false, addEventListener: vi.fn(), removeEventListener: vi.fn() }))); document.documentElement.className = '' })
 afterEach(() => { cleanup(); vi.unstubAllGlobals(); vi.restoreAllMocks() })
@@ -48,6 +48,13 @@ describe('Moirasia renderer', () => {
     expect(bridge.reportPage).toHaveBeenLastCalledWith('features')
   })
 
+  it('restores the page remembered by the main process', async () => {
+    const bridge = api(snapshot, 'amove'); window.moirasia = bridge; render(<App />)
+
+    expect(await screen.findByText('Amove panel')).toBeVisible()
+    expect(bridge.reportPage).toHaveBeenCalledWith('amove')
+  })
+
   it('installs, opens, and uninstalls features from the Features page', async () => {
     const bridge = api(); window.moirasia = bridge; const user = userEvent.setup(); render(<App />)
     await screen.findByRole('heading', { name: 'General' })
@@ -68,7 +75,7 @@ describe('Moirasia renderer', () => {
 
   })
 
-  it('opens loaded Bonded and keeps its panel mounted after leaving the tab', async () => {
+  it('opens loaded Bonded and unmounts its panel after leaving the tab', async () => {
     const bondedSnapshot: ControllerSnapshot = { ...snapshot, features: snapshot.features.map((feature) => feature.id === 'bonded' ? { ...feature, installed: true, loaded: true } : feature) }
     const bridge = api(bondedSnapshot); window.moirasia = bridge; const user = userEvent.setup(); render(<App />)
     await screen.findByRole('heading', { name: 'General' })
@@ -77,7 +84,7 @@ describe('Moirasia renderer', () => {
     expect(await screen.findByText('Bonded panel')).toBeVisible()
     expect(bridge.reportPage).toHaveBeenLastCalledWith('bonded')
     await user.click(screen.getByRole('button', { name: 'General' }))
-    expect(screen.getByText('Bonded panel')).not.toBeVisible()
+    expect(screen.queryByText('Bonded panel')).not.toBeInTheDocument()
   })
 
   it('offers Retry for an installed feature whose backend failed to load', async () => {

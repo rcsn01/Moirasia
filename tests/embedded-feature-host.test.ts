@@ -3,7 +3,7 @@ import { describe, expect, it, vi } from 'vitest'
 import { EmbeddedFeatureHost } from '../src/main/features/embedded-host'
 
 class FakeWindow extends EventEmitter {
-  webContents = { send: vi.fn() }
+  webContents = { send: vi.fn(), isDestroyed: () => this.destroyed }
   destroyed = false
   focused = false
   shown = false
@@ -39,17 +39,33 @@ describe('EmbeddedFeatureHost', () => {
     expect(amove.state).toEqual({ active: false, focused: false })
   })
 
-  it('does not deliver navigation after the shell window is destroyed', () => {
+  it('keeps a stable surface while replacing the shell renderer', () => {
+    const first = new FakeWindow()
+    const second = new FakeWindow()
+    const host = new EmbeddedFeatureHost(first as never)
+    const surface = host.surface('amove')
+    const targets: unknown[] = []
+    surface.renderer.subscribe((target) => targets.push(target))
+
+    host.detach(first as never)
+    expect(surface.renderer.current()).toBeUndefined()
+    host.attach(second as never)
+
+    expect(host.surface('amove')).toBe(surface)
+    expect(surface.renderer.current()).toBe(second.webContents)
+    expect(targets).toEqual([first.webContents, undefined, second.webContents])
+  })
+
+  it('requests navigation when a detached feature is activated', () => {
     const window = new FakeWindow()
     const host = new EmbeddedFeatureHost(window as never)
-    const navigate = vi.fn(() => { if (window.destroyed) throw new TypeError('Object has been destroyed') })
+    const navigate = vi.fn()
     host.subscribeNavigation(navigate)
-    host.setActive('bonded')
-    navigate.mockClear()
-    window.destroyed = true
+    host.detach(window as never)
 
-    expect(() => host.setActive(undefined)).not.toThrow()
-    expect(navigate).not.toHaveBeenCalled()
+    host.surface('bonded').activate()
+
+    expect(navigate).toHaveBeenCalledWith('bonded')
   })
 
   it('does not deliver navigation or state callbacks after disposal', () => {

@@ -3,11 +3,13 @@ import { isFeatureId, type FeatureContext, type FeatureId, type MoirasiaFeature 
 import type { ApplicationId, FeatureStatus } from '../../shared/contracts'
 import type { EmbeddedFeatureHost } from './embedded-host'
 import type { ShellSettingsStore } from '../settings'
+import type { NativeHostClientLike } from '../../shared/native-host-contracts'
 import { suiteFeatureContext } from './suite-context'
 
 export { suiteFeatureContext }
 
 type FeatureLoader = () => Promise<{ feature: MoirasiaFeature }>
+type NativeFeatureLoader = (client: NativeHostClientLike) => Promise<{ feature: MoirasiaFeature }>
 
 // Keep these imports as string literals. Electron-vite turns each feature into
 // a separate chunk, and an uninstalled feature is never evaluated.
@@ -17,22 +19,38 @@ const LOADERS: Record<FeatureId, FeatureLoader> = {
   shout: () => import('../../../apps/integrated/Shout/src/main/feature')
 }
 
+// Native adapters contain only renderer IPC and surface wiring. They are
+// imported eagerly for installed features so their ipcMain handlers exist
+// before the shell renderer can mount a feature panel.
+const NATIVE_LOADERS: Record<FeatureId, NativeFeatureLoader> = {
+  amove: async (client) => (await import('../../../apps/integrated/Amove/src/main/native-feature')).createNativeFeature(client),
+  bonded: async (client) => (await import('../../../apps/integrated/Bonded/src/main/native-feature')).createNativeFeature(client),
+  shout: async (client) => (await import('../../../apps/integrated/Shout/src/main/native-feature')).createNativeFeature(client)
+}
+
 export class FeatureRuntime {
   #instances = new Map<FeatureId, MoirasiaFeature>()
   #loadedThisSession = new Set<FeatureId>()
   #loadErrors = new Map<FeatureId, string>()
   #operations = new Map<FeatureId, Promise<void>>()
   #active: FeatureId | undefined
+  readonly #statusListeners = new Set<() => void>()
   readonly #loaders: Partial<Record<FeatureId, FeatureLoader>>
+  readonly #nativeLoaders: Partial<Record<FeatureId, NativeFeatureLoader>>
   readonly #context: (id: FeatureId) => FeatureContext
   readonly #host: EmbeddedFeatureHost | undefined
+  readonly #nativeClient: NativeHostClientLike | undefined
+  readonly #nativeStatuses = new Map<FeatureId, { installed: boolean; state: 'stopped' | 'starting' | 'running' | 'error'; error?: string }>()
+  #unsubscribeNative: (() => void) | undefined
 
   constructor(
     private readonly settings: ShellSettingsStore,
-    options: { loaders?: Partial<Record<FeatureId, FeatureLoader>>; context?: (id: FeatureId) => FeatureContext; host?: EmbeddedFeatureHost } = {}
+    options: { loaders?: Partial<Record<FeatureId, FeatureLoader>>; nativeLoaders?: Partial<Record<FeatureId, NativeFeatureLoader>>; context?: (id: FeatureId) => FeatureContext; host?: EmbeddedFeatureHost; nativeClient?: NativeHostClientLike } = {}
   ) {
     this.#loaders = options.loaders ?? LOADERS
+    this.#nativeLoaders = options.nativeLoaders ?? NATIVE_LOADERS
     this.#host = options.host
+    this.#nativeClient = options.nativeClient
     this.#context = options.context ?? (this.#host
       ? (id) => suiteFeatureContext(id, this.#host!.surface(id))
       : () => { throw new Error('FeatureRuntime requires an embedded host or an explicit feature context') })
@@ -40,18 +58,33 @@ export class FeatureRuntime {
 
   statuses(): readonly FeatureStatus[] {
     return (Object.keys(this.#loaders) as FeatureId[]).map((id) => {
-      const installed = this.isInstalled(id)
-      const loaded = this.#loadedThisSession.has(id)
-      const loadError = this.#loadErrors.get(id)
-      return { id, installed, loaded, restartPending: loaded && !installed, ...(loadError ? { loadError } : {}) }
+      const native = this.#nativeStatuses.get(id)
+      const installed = native?.installed ?? this.isInstalledFromSettings(id)
+      const loaded = native ? native.state === 'running' : this.#loadedThisSession.has(id)
+      const loadError = native?.error ?? this.#loadErrors.get(id)
+      return { id, installed, ...(native ? { state: native.state, ...(native.error ? { error: native.error } : {}) } : {}), loaded, restartPending: loaded && !installed, ...(loadError ? { loadError } : {}) }
     })
   }
 
-  isInstalled(id: FeatureId): boolean { return this.settings.get().features[id] !== false }
-  isLoaded(id: FeatureId): boolean { return this.#instances.has(id) }
+  isInstalled(id: FeatureId): boolean { return this.#nativeClient ? (this.#nativeStatuses.get(id)?.installed ?? this.isInstalledFromSettings(id)) : this.isInstalledFromSettings(id) }
+  hasInstalledFeatures(): boolean { return (Object.keys(this.#loaders) as FeatureId[]).some((id) => this.isInstalled(id)) }
+  isLoaded(id: FeatureId): boolean { return this.#nativeClient ? this.#instances.has(id) || this.#nativeStatuses.get(id)?.state === 'running' : this.#instances.has(id) }
   get activeFeature(): FeatureId | undefined { return this.#active }
+  subscribe(listener: () => void): () => void { this.#statusListeners.add(listener); return () => this.#statusListeners.delete(listener) }
 
   async syncAtLaunch(): Promise<void> {
+    if (this.#nativeClient) {
+      await this.#nativeClient.connect()
+      await this.#refreshNativeSnapshot()
+      this.#unsubscribeNative = this.#nativeClient.subscribe('host.snapshotChanged', (payload) => { this.#applyNativeSnapshot(payload); this.#loadRunningNativeAdapters(); this.#emitNativeStatus() })
+      // Feature panels invoke feature IPC the moment they mount, so every
+      // installed feature's adapter (and its ipcMain handlers) must exist
+      // before the shell renderer can navigate to its page.
+      await Promise.all((Object.keys(this.#loaders) as FeatureId[])
+        .filter((id) => this.isInstalled(id))
+        .map((id) => this.#enqueue(id, async () => { await this.#loadNative(id) })))
+      return
+    }
     for (const id of Object.keys(this.#loaders) as FeatureId[]) {
       if (this.isInstalled(id)) await this.#enqueue(id, async () => { await this.#load(id) })
     }
@@ -59,6 +92,19 @@ export class FeatureRuntime {
 
   async setInstalled(id: ApplicationId, installed: boolean): Promise<void> {
     const featureId = narrow(id)
+    if (this.#nativeClient) {
+      if (!installed && this.#active === featureId) this.setActive(undefined)
+      await this.#nativeClient.request('host.setFeatureInstalled', { id: featureId, installed })
+      await this.#refreshNativeSnapshot()
+      const instance = this.#instances.get(featureId)
+      if (instance && !installed) {
+        this.#instances.delete(featureId)
+        try { await instance.dispose() }
+        catch (error) { console.error(`Feature '${featureId}' failed to dispose after uninstall`, error) }
+      }
+      if (installed && this.#nativeStatuses.get(featureId)?.state === 'running') await this.#enqueue(featureId, async () => { await this.#loadNative(featureId) })
+      return
+    }
     await this.#enqueue(featureId, async () => {
       if (!installed) {
         this.#loadErrors.delete(featureId)
@@ -87,14 +133,19 @@ export class FeatureRuntime {
 
   /** Select a loaded feature tab, or clear selection for Apps/Settings. */
   setActive(id: FeatureId | undefined): void {
-    if (id !== undefined && (!this.#instances.has(id) || !this.isInstalled(id))) id = undefined
+    if (id !== undefined && (!this.isInstalled(id) || (!this.#nativeClient && !this.#instances.has(id)))) id = undefined
     this.#active = id
     this.#host?.setActive(id)
     for (const featureId of this.#instances.keys()) this.#setInstanceActive(featureId, featureId === id)
+    if (this.#nativeClient) {
+      void this.#nativeClient.request('host.setUiState', { page: id ?? 'general' }).catch(() => undefined)
+      if (id && !this.#instances.has(id)) void this.#enqueue(id, async () => { await this.#loadNative(id) })
+    }
   }
 
-  activate(id: ApplicationId): void {
+  activate(id: ApplicationId): void | Promise<void> {
     const featureId = narrow(id)
+    if (this.#nativeClient) return this.#activateNative(featureId)
     const instance = this.#instances.get(featureId)
     if (!instance?.activate && !this.#host) throw new Error('Feature is not running inside Moirasia. Relaunch or reinstall it.')
     if (!instance) throw new Error('Feature is not loaded. Relaunch or reinstall it.')
@@ -103,10 +154,25 @@ export class FeatureRuntime {
     else this.#host?.activate(featureId)
   }
 
+  async openShelf(): Promise<void> {
+    if (!this.#nativeClient) {
+      const instance = this.#instances.get('amove')
+      if (instance?.openShelf) await instance.openShelf()
+      else this.activate('amove')
+      return
+    }
+    if (!this.isInstalled('amove')) throw new Error('Amove is not installed.')
+    if (!await this.#loadNative('amove')) throw new Error(this.#loadErrors.get('amove') ?? 'Amove UI adapter could not be loaded.')
+    const instance = this.#instances.get('amove')
+    if (instance?.openShelf) await instance.openShelf()
+    else throw new Error('Amove shelf adapter is unavailable.')
+  }
+
   relaunch(): void { app.relaunch(); app.exit(0) }
 
   async disposeAll(): Promise<void> {
     await Promise.all([...this.#operations.values()].map((operation) => operation.catch(() => undefined)))
+    this.#unsubscribeNative?.(); this.#unsubscribeNative = undefined
     this.setActive(undefined)
     const instances = [...this.#instances.values()]
     this.#instances.clear()
@@ -121,12 +187,65 @@ export class FeatureRuntime {
     catch (error) { console.error(`Feature '${id}' failed to update active state`, error) }
   }
 
+  /** Load an adapter for each feature whose native state has reached running
+   * without one yet — covers a first load attempt that lost the race with a
+   * still-starting feature service. */
+  #loadRunningNativeAdapters(): void {
+    if (!this.#nativeClient) return
+    for (const id of Object.keys(this.#loaders) as FeatureId[]) {
+      if (this.#instances.has(id) || this.#nativeStatuses.get(id)?.state !== 'running') continue
+      void this.#enqueue(id, async () => { await this.#loadNative(id) })
+    }
+  }
+
   #enqueue(id: FeatureId, operation: () => Promise<void> | void): Promise<void> {
     const previous = this.#operations.get(id) ?? Promise.resolve()
     const next = previous.catch(() => undefined).then(operation)
     this.#operations.set(id, next)
     return next.finally(() => { if (this.#operations.get(id) === next) this.#operations.delete(id) })
   }
+
+  async #activateNative(id: FeatureId): Promise<void> {
+    if (!this.isInstalled(id)) throw new Error(`Feature '${id}' is not installed.`)
+    const loaded = await this.#loadNative(id)
+    if (!loaded) throw new Error(this.#loadErrors.get(id) ?? `Feature '${id}' could not be loaded.`)
+    this.setActive(id)
+    this.#instances.get(id)?.activate?.()
+  }
+
+  async #loadNative(id: FeatureId): Promise<boolean> {
+    if (this.#instances.has(id)) return true
+    const loader = this.#nativeLoaders[id]
+    if (!this.#nativeClient || !loader) return false
+    let loaded: { feature: MoirasiaFeature }
+    try { loaded = await loader(this.#nativeClient) }
+    catch (error) { this.#loadErrors.set(id, errorMessage(error)); return false }
+    try { await loaded.feature.register(this.#context(id)) }
+    catch (error) { this.#loadErrors.set(id, errorMessage(error)); try { await loaded.feature.dispose() } catch { /* rollback */ }; return false }
+    this.#loadErrors.delete(id); this.#loadedThisSession.add(id); this.#instances.set(id, loaded.feature); return true
+  }
+
+  async #refreshNativeSnapshot(): Promise<void> {
+    if (!this.#nativeClient) return
+    const snapshot = await this.#nativeClient.request<unknown>('host.getSnapshot')
+    this.#applyNativeSnapshot(snapshot)
+  }
+
+  #applyNativeSnapshot(value: unknown): void {
+    if (!value || typeof value !== 'object') return
+    const features = (value as { features?: unknown }).features
+    if (!Array.isArray(features)) return
+    for (const entry of features) {
+      if (!entry || typeof entry !== 'object') continue
+      const item = entry as { id?: unknown; installed?: unknown; state?: unknown; error?: unknown }
+      if (!isFeatureId(item.id) || typeof item.installed !== 'boolean' || !['stopped', 'starting', 'running', 'error'].includes(String(item.state))) continue
+      this.#nativeStatuses.set(item.id, { installed: item.installed, state: item.state as 'stopped' | 'starting' | 'running' | 'error', ...(typeof item.error === 'string' ? { error: item.error } : {}) })
+    }
+  }
+
+  #emitNativeStatus(): void { for (const listener of this.#statusListeners) listener() }
+
+  private isInstalledFromSettings(id: FeatureId): boolean { return this.settings.get().features[id] !== false }
 
   async #load(id: FeatureId): Promise<boolean> {
     if (this.#instances.has(id)) return true
