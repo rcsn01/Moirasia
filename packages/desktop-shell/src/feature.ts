@@ -109,6 +109,8 @@ export interface MoirasiaFeature {
   activate?(): void
   /** Amove-only UI intent used when the native shelf hotkey launches the UI. */
   openShelf?(): Promise<void> | void
+  /** Amove-only UI intent used when the native shelf hotkey toggles the UI. */
+  toggleShelf?(): Promise<void> | void
   /** Tell the feature whether its embedded tab is currently selected. */
   setActive?(active: boolean): void
 }

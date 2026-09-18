@@ -59,11 +59,8 @@ final class FeatureRuntime {
                 }
                 result = try module.handle(request)
                 if request.method != "\(id).getSnapshot" && request.method != "\(id).snapshot" {
+                    // Modules emit semantic UI events through eventHook; request handling only publishes state.
                     publishFeatureSnapshot(id: id)
-                    if id == "amove" && request.method == "amove.performAction" && request.params["action"]?.stringValue == "toggleShelf" {
-                        revision += 1
-                        emit(HostEvent(event: "ui.toggleShelf", revision: revision, payload: .object([:])))
-                    }
                 }
             }
             return HostResponse(id: request.id, result: result)

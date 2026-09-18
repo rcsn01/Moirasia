@@ -88,13 +88,13 @@ async function createApplication(): Promise<void> {
   })
   openShell = async (page) => { await shellWindow.open(page); uiLifetime.shellOpened() }
   uiLifetime = new UiLifetime({ mode: () => presence.mode, onFinalWindowGone: () => { preserveNativeMenuHost = true; app.quit() } })
-  const commandRouter = new UiCommandRouter({ openShell, openShelf: () => features.openShelf() })
+  const commandRouter = new UiCommandRouter({ openShell, openShelf: () => features.openShelf(), toggleShelf: () => features.toggleShelf() })
   const stopNavigation = host.subscribeNavigation((feature) => { if (feature) void openShell(feature).catch(console.error) })
   let nativeWillQuit = false
   const stopNativeWillQuit = nativeClient?.isConnected() ? nativeClient.subscribe('host.willQuit', () => { nativeWillQuit = true }) : () => undefined
   const stopNativeUi = nativeClient?.isConnected() ? [
     nativeClient.subscribe('ui.openShell', () => commandRouter.route({ kind: 'shell' })),
-    nativeClient.subscribe('ui.toggleShelf', () => commandRouter.route({ kind: 'shelf' })),
+    nativeClient.subscribe('ui.toggleShelf', () => commandRouter.route({ kind: 'toggle-shelf' })),
     nativeClient.subscribe('host.uiStateChanged', (payload) => {
       if (payload && typeof payload === 'object' && typeof (payload as { shelfVisible?: unknown }).shelfVisible === 'boolean') uiLifetime.shelfVisible((payload as { shelfVisible: boolean }).shelfVisible)
     })
@@ -112,7 +112,7 @@ async function createApplication(): Promise<void> {
   if (intent.kind === 'shelf') {
     uiLifetime.shelfVisible(true)
     await features.openShelf()
-  } else {
+  } else if (intent.kind === 'shell') {
     await openShell(intent.page)
   }
   const disposeMemoryDiagnostics = installMemoryDiagnostics({

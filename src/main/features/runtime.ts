@@ -155,17 +155,36 @@ export class FeatureRuntime {
   }
 
   async openShelf(): Promise<void> {
-    if (!this.#nativeClient) {
+    await this.#enqueue('amove', async () => {
+      if (!this.#nativeClient) {
+        const instance = this.#instances.get('amove')
+        if (instance?.openShelf) await instance.openShelf()
+        else this.activate('amove')
+        return
+      }
+      if (!this.isInstalled('amove')) throw new Error('Amove is not installed.')
+      if (!await this.#loadNative('amove')) throw new Error(this.#loadErrors.get('amove') ?? 'Amove UI adapter could not be loaded.')
       const instance = this.#instances.get('amove')
       if (instance?.openShelf) await instance.openShelf()
-      else this.activate('amove')
-      return
-    }
-    if (!this.isInstalled('amove')) throw new Error('Amove is not installed.')
-    if (!await this.#loadNative('amove')) throw new Error(this.#loadErrors.get('amove') ?? 'Amove UI adapter could not be loaded.')
-    const instance = this.#instances.get('amove')
-    if (instance?.openShelf) await instance.openShelf()
-    else throw new Error('Amove shelf adapter is unavailable.')
+      else throw new Error('Amove shelf adapter is unavailable.')
+    })
+  }
+
+  async toggleShelf(): Promise<void> {
+    await this.#enqueue('amove', async () => {
+      if (!this.#nativeClient) {
+        const instance = this.#instances.get('amove')
+        if (instance?.toggleShelf) await instance.toggleShelf()
+        else if (instance?.openShelf) await instance.openShelf()
+        else this.activate('amove')
+        return
+      }
+      if (!this.isInstalled('amove')) throw new Error('Amove is not installed.')
+      if (!await this.#loadNative('amove')) throw new Error(this.#loadErrors.get('amove') ?? 'Amove UI adapter could not be loaded.')
+      const instance = this.#instances.get('amove')
+      if (instance?.toggleShelf) await instance.toggleShelf()
+      else throw new Error('Amove shelf adapter is unavailable.')
+    })
   }
 
   relaunch(): void { app.relaunch(); app.exit(0) }

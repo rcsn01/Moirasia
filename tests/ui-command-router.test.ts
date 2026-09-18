@@ -12,12 +12,26 @@ describe('UiCommandRouter', () => {
   it('routes once and ignores requests after disposal', () => {
     const openShell = vi.fn()
     const openShelf = vi.fn()
-    const router = new UiCommandRouter({ openShell, openShelf })
+    const toggleShelf = vi.fn()
+    const router = new UiCommandRouter({ openShell, openShelf, toggleShelf })
     router.route({ kind: 'shell', page: 'amove' })
     router.route({ kind: 'shelf' })
     router.dispose()
     router.route({ kind: 'shell' })
     expect(openShell).toHaveBeenCalledWith('amove')
     expect(openShelf).toHaveBeenCalledOnce()
+  })
+
+  it('routes the native shelf toggle event to a toggle handler instead of opening again', () => {
+    const openShell = vi.fn()
+    const openShelf = vi.fn()
+    const toggleShelf = vi.fn()
+    const router = new UiCommandRouter({ openShell, openShelf, toggleShelf })
+
+    router.route({ kind: 'toggle-shelf' })
+    router.route({ kind: 'toggle-shelf' })
+
+    expect(toggleShelf).toHaveBeenCalledTimes(2)
+    expect(openShelf).not.toHaveBeenCalled()
   })
 })

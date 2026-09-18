@@ -59,6 +59,17 @@ final class NativeRuntimeTests: XCTestCase {
         XCTAssertEqual(bindings["moveDisplayLeft"]?.carbonKeyCode, 123)
     }
 
+    func testAmoveToggleActionPublishesOneShelfRequest() {
+        let runtime = AmoveRuntime(dataDirectory: NSTemporaryDirectory() + UUID().uuidString)
+        var toggleRequests = 0
+        runtime.onToggleShelf = { toggleRequests += 1 }
+
+        let result = runtime.perform(action: "toggleShelf")
+
+        XCTAssertTrue(result.ok)
+        XCTAssertEqual(toggleRequests, 1)
+    }
+
     func testAmoveHotkeyRegistryValidatesAndDispatches() {
         let registry = HotkeyRegistry()
         var registered: [UInt32: UInt32] = [:]

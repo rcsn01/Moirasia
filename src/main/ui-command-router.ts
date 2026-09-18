@@ -3,6 +3,7 @@ import type { ControllerPage } from '../shared/contracts'
 export type UiIntent =
   | { kind: 'shell'; page?: ControllerPage }
   | { kind: 'shelf' }
+  | { kind: 'toggle-shelf' }
 
 export function parseUiIntent(argv: readonly string[]): UiIntent {
   const value = argv.find((argument) => argument.startsWith('--moirasia-open='))?.slice('--moirasia-open='.length)
@@ -15,11 +16,12 @@ export function parseUiIntent(argv: readonly string[]): UiIntent {
 
 export class UiCommandRouter {
   #disposed = false
-  constructor(private readonly handlers: { openShell(page?: ControllerPage): void | Promise<void>; openShelf(): void | Promise<void> }) {}
+  constructor(private readonly handlers: { openShell(page?: ControllerPage): void | Promise<void>; openShelf(): void | Promise<void>; toggleShelf(): void | Promise<void> }) {}
 
   route(intent: UiIntent): void {
     if (this.#disposed) return
     if (intent.kind === 'shelf') void this.handlers.openShelf()
+    else if (intent.kind === 'toggle-shelf') void this.handlers.toggleShelf()
     else void this.handlers.openShell(intent.page)
   }
 

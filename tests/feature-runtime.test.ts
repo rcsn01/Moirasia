@@ -306,6 +306,32 @@ describe('FeatureRuntime', () => {
       expect(runtime.statuses()[0]).toMatchObject({ id: 'amove', installed: true, loaded: true, restartPending: false })
     })
 
+    it('serializes native shelf toggles so two hotkeys open then close the shelf', async () => {
+      let visible = false
+      const openShelf = vi.fn(async () => { visible = true })
+      const toggleShelf = vi.fn(async () => { visible = !visible })
+      const feature: MoirasiaFeature = {
+        id: 'amove',
+        register: vi.fn(),
+        dispose: vi.fn(),
+        openShelf,
+        toggleShelf
+      }
+      const runtime = new FeatureRuntime(await settingsWith(undefined), {
+        loaders: { amove: vi.fn(async () => ({ feature: fakeFeature().feature })) },
+        nativeLoaders: { amove: async () => ({ feature }) },
+        context: () => CONTEXT,
+        nativeClient: fakeNativeClient().client
+      })
+
+      await runtime.syncAtLaunch()
+      await Promise.all([runtime.toggleShelf(), runtime.toggleShelf()])
+
+      expect(toggleShelf).toHaveBeenCalledTimes(2)
+      expect(openShelf).not.toHaveBeenCalled()
+      expect(visible).toBe(false)
+    })
+
     it('leaves features uninstalled at launch unloaded', async () => {
       const nativeLoader = vi.fn(async () => ({ feature: fakeFeature().feature }))
       const runtime = new FeatureRuntime(await settingsWith({ amove: false }), {
