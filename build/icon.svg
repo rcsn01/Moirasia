@@ -1,38 +1,80 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024">
   <defs>
-    <linearGradient id="tile" x1="145" y1="96" x2="860" y2="920" gradientUnits="userSpaceOnUse">
-      <stop stop-color="#24262B"/>
-      <stop offset="0.55" stop-color="#17191D"/>
-      <stop offset="1" stop-color="#0C0D10"/>
+    <linearGradient id="tile" x1="132" y1="88" x2="888" y2="936" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#292929"/>
+      <stop offset="0.48" stop-color="#1D1D1D"/>
+      <stop offset="1" stop-color="#111111"/>
     </linearGradient>
-    <linearGradient id="thread" x1="252" y1="254" x2="771" y2="770" gradientUnits="userSpaceOnUse">
-      <stop stop-color="#B9D0FF"/>
-      <stop offset="0.38" stop-color="#5F8FFF"/>
-      <stop offset="0.7" stop-color="#7859E8"/>
-      <stop offset="1" stop-color="#C07AEF"/>
+    <linearGradient id="tileSheen" x1="184" y1="120" x2="806" y2="910" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#FFFFFF" stop-opacity="0.18"/>
+      <stop offset="0.34" stop-color="#FFFFFF" stop-opacity="0.03"/>
+      <stop offset="0.66" stop-color="#FFFFFF" stop-opacity="0"/>
+      <stop offset="1" stop-color="#FFFFFF" stop-opacity="0.08"/>
     </linearGradient>
-    <radialGradient id="glow" cx="0" cy="0" r="1" gradientTransform="translate(512 450) rotate(90) scale(390)" gradientUnits="userSpaceOnUse">
-      <stop stop-color="#426DFF" stop-opacity="0.22"/>
-      <stop offset="1" stop-color="#426DFF" stop-opacity="0"/>
+    <linearGradient id="glassBase" x1="306" y1="226" x2="718" y2="822" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#FFFFFF" stop-opacity="0.72"/>
+      <stop offset="0.34" stop-color="#DDDDDD" stop-opacity="0.48"/>
+      <stop offset="0.7" stop-color="#BFBFBF" stop-opacity="0.31"/>
+      <stop offset="1" stop-color="#FFFFFF" stop-opacity="0.52"/>
+    </linearGradient>
+    <linearGradient id="yinDark" x1="704" y1="246" x2="330" y2="786" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#0A0A0A" stop-opacity="0.9"/>
+      <stop offset="0.46" stop-color="#383838" stop-opacity="0.82"/>
+      <stop offset="1" stop-color="#707070" stop-opacity="0.66"/>
+    </linearGradient>
+    <radialGradient id="upperDot" cx="0" cy="0" r="1" gradientTransform="translate(494 346) rotate(50) scale(72)" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#FFFFFF" stop-opacity="0.9"/>
+      <stop offset="1" stop-color="#D0D0D0" stop-opacity="0.6"/>
     </radialGradient>
-    <filter id="shadow" x="30" y="42" width="964" height="978" filterUnits="userSpaceOnUse">
-      <feDropShadow dx="0" dy="24" stdDeviation="28" flood-color="#000" flood-opacity="0.35"/>
+    <radialGradient id="lowerDot" cx="0" cy="0" r="1" gradientTransform="translate(530 652) rotate(50) scale(72)" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#3B3B3B" stop-opacity="0.9"/>
+      <stop offset="1" stop-color="#101010" stop-opacity="0.72"/>
+    </radialGradient>
+    <linearGradient id="edgeLight" x1="260" y1="224" x2="740" y2="820" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#FFFFFF" stop-opacity="0.86"/>
+      <stop offset="0.42" stop-color="#FFFFFF" stop-opacity="0.24"/>
+      <stop offset="1" stop-color="#FFFFFF" stop-opacity="0.5"/>
+    </linearGradient>
+    <filter id="tileShadow" x="34" y="44" width="956" height="982" filterUnits="userSpaceOnUse" color-interpolation-filters="sRGB">
+      <feDropShadow dx="0" dy="24" stdDeviation="28" flood-color="#000000" flood-opacity="0.38"/>
     </filter>
-    <filter id="threadGlow" x="160" y="170" width="704" height="690" filterUnits="userSpaceOnUse">
-      <feGaussianBlur stdDeviation="11"/>
+    <filter id="orbShadow" x="164" y="164" width="696" height="696" filterUnits="userSpaceOnUse" color-interpolation-filters="sRGB">
+      <feDropShadow dx="0" dy="18" stdDeviation="22" flood-color="#050505" flood-opacity="0.5"/>
     </filter>
+    <filter id="softHighlight" x="170" y="120" width="684" height="430" filterUnits="userSpaceOnUse" color-interpolation-filters="sRGB">
+      <feGaussianBlur stdDeviation="18"/>
+    </filter>
+    <clipPath id="tileClip">
+      <rect x="96" y="96" width="832" height="832" rx="210"/>
+    </clipPath>
+    <clipPath id="orbClip">
+      <circle cx="512" cy="512" r="298"/>
+    </clipPath>
   </defs>
-  <g filter="url(#shadow)">
-    <rect x="92" y="76" width="840" height="840" rx="190" fill="url(#tile)"/>
-    <rect x="94" y="78" width="836" height="836" rx="188" fill="none" stroke="#FFFFFF" stroke-opacity="0.1" stroke-width="4"/>
+
+  <g filter="url(#tileShadow)">
+    <rect x="96" y="96" width="832" height="832" rx="210" fill="url(#tile)"/>
+    <g clip-path="url(#tileClip)">
+      <rect x="96" y="96" width="832" height="832" fill="url(#tileSheen)"/>
+      <path d="M92 284C270 112 518 74 720 142C526 154 342 250 220 406C160 484 120 574 92 694V284Z" fill="#FFFFFF" fill-opacity="0.055" filter="url(#softHighlight)"/>
+    </g>
+    <rect x="98" y="98" width="828" height="828" rx="208" fill="none" stroke="#FFFFFF" stroke-opacity="0.18" stroke-width="4"/>
+    <rect x="111" y="111" width="802" height="802" rx="195" fill="none" stroke="#FFFFFF" stroke-opacity="0.055" stroke-width="2"/>
   </g>
-  <rect x="112" y="96" width="800" height="800" rx="170" fill="url(#glow)"/>
-  <g opacity="0.26" filter="url(#threadGlow)" fill="none" stroke="url(#thread)" stroke-width="54" stroke-linecap="round" stroke-linejoin="round">
-    <path d="M262 700V342c0-47 59-68 89-32l161 196 161-196c30-36 89-15 89 32v358"/>
+
+  <g filter="url(#orbShadow)">
+    <circle cx="512" cy="512" r="298" fill="url(#glassBase)"/>
+    <path d="M512 214A298 298 0 0 1 512 810A149 149 0 0 1 512 512A149 149 0 0 0 512 214Z" fill="url(#yinDark)"/>
+    <g clip-path="url(#orbClip)">
+      <ellipse cx="414" cy="286" rx="214" ry="94" transform="rotate(-30 414 286)" fill="#FFFFFF" fill-opacity="0.18" filter="url(#softHighlight)"/>
+      <path d="M248 448C278 306 388 218 522 214C424 274 364 366 350 478C334 610 394 720 510 806C386 790 286 690 252 558C242 520 242 484 248 448Z" fill="#FFFFFF" fill-opacity="0.12"/>
+      <path d="M542 214C674 226 774 330 788 464C748 384 692 334 624 312C592 302 564 284 542 254C532 240 532 224 542 214Z" fill="#FFFFFF" fill-opacity="0.1"/>
+    </g>
+    <circle cx="512" cy="512" r="298" fill="none" stroke="url(#edgeLight)" stroke-width="7"/>
+    <circle cx="512" cy="512" r="286" fill="none" stroke="#FFFFFF" stroke-opacity="0.18" stroke-width="2"/>
+    <circle cx="512" cy="363" r="46" fill="url(#upperDot)" stroke="#FFFFFF" stroke-opacity="0.54" stroke-width="4"/>
+    <circle cx="512" cy="661" r="46" fill="url(#lowerDot)" stroke="#FFFFFF" stroke-opacity="0.2" stroke-width="4"/>
+    <circle cx="498" cy="349" r="11" fill="#FFFFFF" fill-opacity="0.36" filter="url(#softHighlight)"/>
+    <circle cx="528" cy="647" r="9" fill="#FFFFFF" fill-opacity="0.12" filter="url(#softHighlight)"/>
   </g>
-  <path d="M262 700V342c0-47 59-68 89-32l161 196 161-196c30-36 89-15 89 32v358" fill="none" stroke="url(#thread)" stroke-width="54" stroke-linecap="round" stroke-linejoin="round"/>
-  <path d="M262 342c0-47 59-68 89-32l161 196 161-196c30-36 89-15 89 32" fill="none" stroke="#FFFFFF" stroke-opacity="0.18" stroke-width="12" stroke-linecap="round"/>
-  <circle cx="262" cy="700" r="27" fill="#B9D0FF"/>
-  <circle cx="512" cy="506" r="27" fill="#7795FF"/>
-  <circle cx="762" cy="700" r="27" fill="#C07AEF"/>
 </svg>
