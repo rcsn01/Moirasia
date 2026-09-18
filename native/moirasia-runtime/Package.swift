@@ -21,7 +21,7 @@ let package = Package(
         .target(name: "AmoveRuntime", dependencies: ["MoirasiaProtocol"]),
         .executableTarget(name: "MoirasiaHost", dependencies: ["MoirasiaProtocol"]),
         .executableTarget(name: "MoirasiaFeatureService", dependencies: ["MoirasiaProtocol", "BondedRuntime", "ShoutRuntime", "AmoveRuntime"]),
-        .testTarget(name: "MoirasiaProtocolTests", dependencies: ["MoirasiaProtocol", "BondedRuntime", "AmoveRuntime", "ShoutRuntime"])
+        .testTarget(name: "MoirasiaProtocolTests", dependencies: ["MoirasiaProtocol", "BondedRuntime", "AmoveRuntime", "ShoutAudioCore", "ShoutRuntime"])
     ],
     swiftLanguageModes: [.v5]
 )

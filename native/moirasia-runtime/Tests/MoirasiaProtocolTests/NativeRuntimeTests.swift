@@ -1,5 +1,6 @@
 import XCTest
 import MoirasiaProtocol
+import ShoutAudioCore
 @testable import AmoveRuntime
 @testable import BondedRuntime
 @testable import ShoutRuntime
@@ -32,6 +33,26 @@ final class NativeRuntimeTests: XCTestCase {
         runtime.setBoost(true)
         XCTAssertFalse(runtime.snapshot.boostActive)
         XCTAssertEqual(provider.requestCount, 0)
+    }
+
+    func testShoutEnginePublishesInitialDeviceList() {
+        let devicesPublished = expectation(description: "initial device list")
+        let engine = ShoutEngine(dataDirectory: URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent(UUID().uuidString)) { event in
+            if event.event == "devices-changed" { devicesPublished.fulfill() }
+        }
+        engine.start()
+        wait(for: [devicesPublished], timeout: 2)
+        engine.shutdown()
+    }
+
+    func testShoutEngineDeviceListOmitsOutputOnlyDevices() {
+        let engine = ShoutEngine(dataDirectory: URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent(UUID().uuidString)) { _ in }
+        engine.devices = [
+            AudioDeviceSnapshot(uid: "speaker", name: "Speakers", hasInputStream: false, isShoutMic: false),
+            AudioDeviceSnapshot(uid: "mic", name: "Microphone", hasInputStream: true, isShoutMic: false),
+            AudioDeviceSnapshot(uid: "shout", name: "Shout Mic", hasInputStream: false, isShoutMic: true)
+        ]
+        XCTAssertEqual(engine.helperDevices().map(\.uid), ["mic", "shout"])
     }
 
     func testAmovePhysicalKeyCodesMatchUIAdapterTable() {

@@ -92,6 +92,7 @@ final class ShoutEngine {
     func start() {
         queue.async { [self] in
             refreshDeviceList()
+            emit(.devicesChanged(helperDevices()))
             let defaultUID = defaultInputUID()
             state.defaultInputUid = defaultUID
             state.defaultInputIsShoutMic = defaultUID == Self.shoutMicUID
@@ -309,6 +310,6 @@ final class ShoutEngine {
     }
 
     func helperDevices() -> [HelperDevice] {
-        devices.map { HelperDevice(uid: $0.uid, name: $0.name, isShoutMic: $0.isShoutMic, sampleRate: $0.sampleRate) }
+        devices.filter { $0.hasInputStream || $0.isShoutMic }.map { HelperDevice(uid: $0.uid, name: $0.name, isShoutMic: $0.isShoutMic, sampleRate: $0.sampleRate) }
     }
 }
