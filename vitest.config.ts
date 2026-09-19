@@ -6,7 +6,7 @@ export default defineConfig({
   resolve: { dedupe: ['react', 'react-dom'] },
   test: {
     environment: 'node',
-    include: ['tests/**/*.test.{ts,tsx}'],
+    include: ['tests/**/*.test.{ts,tsx}', 'scripts/**/*.test.mjs'],
     setupFiles: ['tests/setup.ts'],
     coverage: {
       include: ['src/main/application-controller.ts', 'src/main/settings.ts', 'packages/desktop-shell/src/**/*.ts']

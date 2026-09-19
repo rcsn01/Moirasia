@@ -27,6 +27,20 @@ Then package the suite:
 pnpm package:mac
 ```
 
+## Publishing a macOS release
+
+Create and publish a release from the local Mac:
+
+```sh
+brew install gh
+gh auth login
+pnpm release:mac
+```
+
+The command requires a clean `main` branch and a semantic `package.json` version greater than the latest `v<version>` release. It builds the unsigned ARM64 DMG, writes a SHA-256 checksum, creates the matching tag, atomically pushes `main` and the tag, and uploads both files to a GitHub Release with generated notes. Use `pnpm release:mac --dry-run` to inspect the artifact paths without building, tagging, pushing, or uploading anything.
+
+Moirasia releases are unsigned and unnotarized.
+
 Amove and Bonded remain buildable in standalone mode as well as embedded mode. Run Amove's commands from its app directory:
 
 ```sh

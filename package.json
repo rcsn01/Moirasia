@@ -26,7 +26,8 @@
     "test:watch": "vitest",
     "test:e2e": "playwright test",
     "memory:benchmark": "node scripts/benchmark-electron-memory.mjs",
-    "package:mac": "pnpm build && CSC_IDENTITY_AUTO_DISCOVERY=false electron-builder --mac --arm64 --publish never -c.mac.notarize=false"
+    "package:mac": "pnpm build && CSC_IDENTITY_AUTO_DISCOVERY=false electron-builder --mac --arm64 --publish never -c.mac.notarize=false",
+    "release:mac": "node scripts/release-mac.mjs"
   },
   "dependencies": {
     "@moirasia/desktop-shell": "workspace:*",
