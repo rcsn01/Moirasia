@@ -8,7 +8,7 @@ import { EmbeddedFeatureHost } from './features/embedded-host'
 import { FeatureRuntime, suiteFeatureContext } from './features/runtime'
 import { installMemoryDiagnostics } from './memory-diagnostics'
 import { installApplicationMenu } from './menu'
-import { applicationAgentPath, moirasiaFeatureResourcePath, moirasiaFeatureServicePath, moirasiaHostPath, moirasiaHostSocketPath } from './paths'
+import { applicationAgentPath, moirasiaFeatureServicePath, moirasiaHostPath, moirasiaHostSocketPath, moirasiaNativeFeaturePaths } from './paths'
 import { NativeHostClient } from './native-host/client'
 import { ShellWindowLifecycle } from './shell-window'
 import { ShellSettingsStore } from './settings'
@@ -42,6 +42,7 @@ async function createApplication(): Promise<void> {
   let presence: AppPresence
   let openShell: (page?: import('../shared/contracts').ControllerPage) => Promise<void>
   const nativeClient = nativeRuntimeAvailable ? new NativeHostClient({ socketPath: moirasiaHostSocketPath(app.getPath('userData')), tokenPath: join(app.getPath('userData'), 'runtime', 'client.token') }) : undefined
+  const nativeFeaturePaths = nativeRuntimeAvailable ? moirasiaNativeFeaturePaths() : undefined
   presence = new AppPresence({
     menuBarIconPath,
     open: () => void openShell().catch(console.error),
@@ -52,8 +53,8 @@ async function createApplication(): Promise<void> {
       userData: app.getPath('userData'),
       iconPath: menuBarIconPath,
       pidPath: join(app.getPath('userData'), 'menu-host.pid'),
-      bondedHelperPath: moirasiaFeatureResourcePath('bonded/native/BondedFirewallHelper'),
-      shoutDriverPath: moirasiaFeatureResourcePath('shout/driver')
+      bondedHelperPath: nativeFeaturePaths!.bondedHelperPath,
+      shoutDriverPath: nativeFeaturePaths!.shoutDriverPath
     } : {
       executable: applicationAgentPath(),
       applicationPath: resolve(process.execPath, '../../..'),

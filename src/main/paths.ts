@@ -3,6 +3,7 @@ import { createHash } from 'node:crypto'
 import { tmpdir } from 'node:os'
 import { fileURLToPath } from 'node:url'
 import { dirname, join } from 'node:path'
+import { resolveFeatureArtifact } from '@moirasia/desktop-shell/feature-resources'
 
 const mainDirectory = dirname(fileURLToPath(import.meta.url))
 
@@ -41,11 +42,19 @@ export function moirasiaFeatureServicePath(resourcesPath = process.resourcesPath
   return existsSync(packagedBundle) ? packagedBundle : existsSync(packaged) ? packaged : existsSync(developmentBundle) ? developmentBundle : development
 }
 
-/** Feature payloads (firewall helper, audio driver) under Resources/features. */
-export function moirasiaFeatureResourcePath(relative: string, resourcesPath = process.resourcesPath): string {
-  const packaged = join(resourcesPath, 'features', relative)
-  const development = join(mainDirectory, '../../native/staged/features', relative)
-  return existsSync(packaged) ? packaged : development
+export function moirasiaNativeFeaturePaths(
+  resourcesPath = process.resourcesPath,
+  suiteRoot = join(mainDirectory, '../..')
+): { bondedHelperPath: string; shoutDriverPath: string } {
+  const packagedBonded = resolveFeatureArtifact('bonded', 'helper', { kind: 'suite-packaged', resourcesRoot: resourcesPath })
+  const stagedBonded = resolveFeatureArtifact('bonded', 'helper', { kind: 'suite-staged', suiteRoot })
+  const packagedShout = dirname(resolveFeatureArtifact('shout', 'driver', { kind: 'suite-packaged', resourcesRoot: resourcesPath }))
+  const stagedShout = dirname(resolveFeatureArtifact('shout', 'driver', { kind: 'suite-staged', suiteRoot }))
+
+  return {
+    bondedHelperPath: existsSync(packagedBonded) ? packagedBonded : stagedBonded,
+    shoutDriverPath: existsSync(packagedShout) ? packagedShout : stagedShout
+  }
 }
 
 const preloadPages = {

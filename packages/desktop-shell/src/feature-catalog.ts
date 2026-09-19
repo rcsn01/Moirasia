@@ -2,15 +2,16 @@
  * The feature catalog: the single owner of every shared fact about the embedded
  * features — identity, labels, bundle and executable names,
  * descriptions, display groups, icon keys, order, per-host-mode resource
- * requirements, standalone window facts, and artifact facts: every binary, worker, and asset bundle a
- * feature ships, its filename, the dev build layout it comes from, where
- * staging places it, and where packaged resources land. Pure data and pure
+ * requirements, standalone window facts, and the validated artifact facet imported
+ * from feature-artifact-data.json. Pure data and pure
  * string helpers: no Electron, React, filesystem, or product-package imports
  * (not even node:path — the suite renderer bundles this module). Hosts join
- * the facts with their own roots via artifactPath; resolution, literal
+ * the facts with their own roots via artifactPath; resource resolution, literal
  * dynamic imports, renderer panel adapters, and preload bridge exposure stay
  * with the host.
  */
+
+import rawFeatureArtifactData from './feature-artifact-data.json'
 
 export type FeatureHostMode = 'suite' | 'standalone'
 
@@ -100,6 +101,87 @@ export function artifactPath(directory: string, artifact: FeatureArtifact): stri
  * tests pin the exact list and every Record<FeatureId, …> consumer enforces exhaustiveness. */
 export type FeatureId = 'amove' | 'bonded' | 'shout'
 
+type FeatureArtifactData = Readonly<Record<FeatureId, readonly FeatureArtifact[]>>
+
+const FEATURE_DATA_IDS: readonly FeatureId[] = ['amove', 'bonded', 'shout']
+const FEATURE_DATA_ID_SET = new Set<string>(FEATURE_DATA_IDS)
+const ARTIFACT_KINDS = new Set<string>(['native', 'executable', 'worker', 'assets', 'bundle'])
+const SUITE_DEV_SOURCES = new Set<string>(['buildOutput', 'staged'])
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value)
+}
+
+function isRelativeCatalogPath(value: string): boolean {
+  if (!value.trim() || value.startsWith('/') || value.startsWith('\\\\') || /^[A-Za-z]:[\\/]/.test(value)) return false
+  return !value.split(/[\\\\/]+/).some((segment) => segment === '..')
+}
+
+function isFilename(value: string): boolean {
+  return Boolean(value.trim()) && value !== '.' && value !== '..' && !/[\\\\/]/.test(value)
+}
+
+function hasSupportedBuildOutputPlaceholders(value: string): boolean {
+  return !/[{}]/.test(value.replaceAll('{configuration}', '').replaceAll('{Configuration}', ''))
+}
+
+function artifactLabel(value: unknown, index: number): string {
+  return typeof value === 'string' && value.trim() ? `'${value}'` : `at index ${index}`
+}
+
+function validateArtifactRecord(featureId: string, value: unknown, index: number): FeatureArtifact {
+  if (!isRecord(value)) throw new Error(`Feature '${featureId}' artifact at index ${index} must be an object.`)
+
+  const name = value.name
+  const label = artifactLabel(name, index)
+  if (typeof name !== 'string' || !name.trim() || !isFilename(name)) {
+    throw new Error(`Feature '${featureId}' artifact ${label} has an invalid name.`)
+  }
+
+  const kind = value.kind
+  if (typeof kind !== 'string' || !ARTIFACT_KINDS.has(kind)) {
+    throw new Error(`Feature '${featureId}' artifact '${name}' has an unsupported kind '${String(kind)}'.`)
+  }
+
+  for (const field of ['buildOutput', 'staged', 'suiteResource', 'standaloneResource'] as const) {
+    const path = value[field]
+    if (typeof path !== 'string' || !isRelativeCatalogPath(path) || (field === 'buildOutput' && !hasSupportedBuildOutputPlaceholders(path))) {
+      throw new Error(`Feature '${featureId}' artifact '${name}' has an invalid ${field} path.`)
+    }
+  }
+
+  const suiteDevSource = value.suiteDevSource
+  if (typeof suiteDevSource !== 'string' || !SUITE_DEV_SOURCES.has(suiteDevSource)) {
+    throw new Error(`Feature '${featureId}' artifact '${name}' has an invalid suiteDevSource '${String(suiteDevSource)}'.`)
+  }
+
+  const file = value.file
+  if (kind === 'assets') {
+    if (file !== undefined) throw new Error(`Feature '${featureId}' assets artifact '${name}' must not carry a filename.`)
+  } else if (typeof file !== 'string' || !isFilename(file)) {
+    throw new Error(`Feature '${featureId}' artifact '${name}' is missing a filename.`)
+  } else if (kind === 'native' && file.endsWith('.node')) {
+    throw new Error(`Feature '${featureId}' native artifact '${name}' must carry a napi base name, not '${file}'.`)
+  }
+
+  return value as unknown as FeatureArtifact
+}
+
+function validateFeatureArtifactData(value: unknown): FeatureArtifactData {
+  if (!isRecord(value)) throw new Error('Feature artifact data must be an object keyed by feature id.')
+
+  for (const id of FEATURE_DATA_IDS) {
+    const artifacts = value[id]
+    if (!Array.isArray(artifacts)) throw new Error(`Feature '${id}' artifact data must be an array.`)
+    artifacts.forEach((artifact, index) => validateArtifactRecord(id, artifact, index))
+  }
+  for (const id of Object.keys(value)) {
+    if (!FEATURE_DATA_ID_SET.has(id)) throw new Error(`Feature artifact data contains unknown feature '${id}'.`)
+  }
+
+  return value as FeatureArtifactData
+}
+
 export interface FeatureCatalogEntry {
   readonly id: FeatureId
   readonly label: string          // display name; menu, sidebar, cards
@@ -121,6 +203,7 @@ const GROUPS = [
 ] as const
 
 const NAVIGATION_POLICIES: ReadonlySet<string> = new Set(['deny', 'allow-same-url'])
+const FEATURE_ARTIFACT_DATA = validateFeatureArtifactData(rawFeatureArtifactData)
 
 const FEATURE_SEEDS = [
   {
@@ -137,12 +220,7 @@ const FEATURE_SEEDS = [
       suite: { preloads: ['shelf'], renderers: ['shelf'], native: ['addon'], assetsDirectory: true, dataDirectory: true }
     },
     standaloneWindow: { width: 1180, height: 760, minWidth: 980, minHeight: 700, navigation: 'allow-same-url' },
-    artifacts: [
-      // Standalone assets are asar-embedded (files: assets/**/*), not an extraResource;
-      // standaloneResource records the app-internal convention.
-      { name: 'addon', kind: 'native', file: 'amove-native', buildOutput: 'native', staged: 'native/staged/features/amove/native', suiteResource: 'features/amove/native', suiteDevSource: 'buildOutput', standaloneResource: 'native' },
-      { name: 'assets', kind: 'assets', buildOutput: 'assets', staged: 'native/staged/features/amove/assets', suiteResource: 'features/amove/assets', suiteDevSource: 'buildOutput', standaloneResource: 'assets' }
-    ]
+    artifacts: FEATURE_ARTIFACT_DATA.amove
   },
   {
     id: 'bonded',
@@ -158,10 +236,7 @@ const FEATURE_SEEDS = [
       suite: { native: ['helper'], dataDirectory: true }
     },
     standaloneWindow: { width: 430, height: 600, minWidth: 390, minHeight: 500, fullscreenable: false },
-    artifacts: [
-      // A SwiftPM executable like Exithibition's: exact filename, not a napi base name.
-      { name: 'helper', kind: 'executable', file: 'BondedFirewallHelper', buildOutput: 'native/.build/arm64-apple-macosx/{configuration}', staged: 'native/staged/features/bonded/native', suiteResource: 'features/bonded/native', suiteDevSource: 'buildOutput', standaloneResource: 'native' }
-    ]
+    artifacts: FEATURE_ARTIFACT_DATA.bonded
   },
   {
     id: 'shout',
@@ -177,12 +252,7 @@ const FEATURE_SEEDS = [
       suite: { native: ['helper', 'driver'], dataDirectory: true }
     },
     standaloneWindow: { width: 430, height: 640, minWidth: 390, minHeight: 500, fullscreenable: false },
-    artifacts: [
-      { name: 'helper', kind: 'executable', file: 'ShoutAudioHelper', buildOutput: 'native/.build/out/Products/{Configuration}', staged: 'native/staged/features/shout/native', suiteResource: 'features/shout/native', suiteDevSource: 'buildOutput', standaloneResource: 'native' },
-      // The AudioServerPlugIn is a .driver bundle directory; 'file' is the bundle name
-      // the host joins under its own root (like every non-assets kind).
-      { name: 'driver', kind: 'bundle', file: 'ShoutMic.driver', buildOutput: 'native/driver/dist', staged: 'native/staged/features/shout/driver', suiteResource: 'features/shout/driver', suiteDevSource: 'staged', standaloneResource: 'native' }
-    ]
+    artifacts: FEATURE_ARTIFACT_DATA.shout
   }
 ] as const satisfies readonly FeatureCatalogEntry[]
 
@@ -246,21 +316,12 @@ export function buildCatalog(seeds: readonly FeatureCatalogEntry[] = FEATURE_SEE
     if (!seed.requirements.standalone || !seed.requirements.suite) throw new Error(`Feature '${seed.id}' is missing requirements for a host mode.`)
     validateStandaloneWindow(seed.id, seed.standaloneWindow)
 
+    if (!Array.isArray(seed.artifacts)) throw new Error(`Feature '${seed.id}' artifact data must be an array.`)
     const artifactNames = new Set<string>()
-    for (const seedArtifact of seed.artifacts) {
-      const artifact: FeatureArtifact = seedArtifact
+    for (const [index, seedArtifact] of seed.artifacts.entries()) {
+      const artifact = validateArtifactRecord(seed.id, seedArtifact, index)
       if (artifactNames.has(artifact.name)) throw new Error(`Feature '${seed.id}' has a duplicate artifact name '${artifact.name}'.`)
       artifactNames.add(artifact.name)
-      if (!artifact.staged.trim() || !artifact.suiteResource.trim() || !artifact.standaloneResource.trim()) {
-        throw new Error(`Feature '${seed.id}' artifact '${artifact.name}' is missing a staged or resource destination.`)
-      }
-      if (artifact.kind === 'assets') {
-        if (artifact.file) throw new Error(`Feature '${seed.id}' assets artifact '${artifact.name}' must not carry a filename.`)
-      } else if (!artifact.file?.trim()) {
-        throw new Error(`Feature '${seed.id}' artifact '${artifact.name}' is missing a filename.`)
-      } else if (artifact.kind === 'native' && artifact.file.endsWith('.node')) {
-        throw new Error(`Feature '${seed.id}' native artifact '${artifact.name}' must carry a napi base name, not '${artifact.file}'.`)
-      }
     }
     for (const mode of ['standalone', 'suite'] as const) {
       const requirements: FeatureResourceRequirements = seed.requirements[mode]

@@ -1,14 +1,7 @@
 import { app } from 'electron'
 import { join } from 'node:path'
-import {
-  artifactPath,
-  featureCatalog,
-  type EmbeddedFeatureSurface,
-  type FeatureArtifact,
-  type FeatureCatalogEntry,
-  type FeatureContext,
-  type FeatureId
-} from '@moirasia/desktop-shell/feature'
+import { type EmbeddedFeatureSurface, type FeatureContext, type FeatureId } from '@moirasia/desktop-shell/feature'
+import { resolveFeatureResources } from '@moirasia/desktop-shell/feature-resources'
 import { paths } from '../paths'
 
 /**
@@ -20,17 +13,10 @@ import { paths } from '../paths'
  * the backends — and uninstalled features never evaluated — stay in runtime.ts.
  */
 export function suiteFeatureContext(id: FeatureId, surface: EmbeddedFeatureSurface): FeatureContext {
-  const entry = featureCatalog.get(id)
-  const appRoot = join(app.getAppPath(), 'apps', 'integrated', entry.directory)
+  const resources = app.isPackaged
+    ? resolveFeatureResources(id, { kind: 'suite-packaged', resourcesRoot: process.resourcesPath })
+    : resolveFeatureResources(id, { kind: 'suite-development', suiteRoot: app.getAppPath() })
   const dataDirectory = join(app.getPath('userData'), 'features', id)
-  // Packaged mode reads the suite bundle; development reads the app repo's own
-  // build output or the staged copy, exactly as the catalog's suiteDevSource says.
-  const resource = (artifact: FeatureArtifact): string => {
-    if (app.isPackaged) return artifactPath(join(process.resourcesPath, artifact.suiteResource), artifact)
-    return artifact.suiteDevSource === 'buildOutput'
-      ? artifactPath(join(appRoot, artifact.buildOutput.replace('{configuration}', 'debug').replace('{Configuration}', 'Debug')), artifact)
-      : artifactPath(join(app.getAppPath(), artifact.staged), artifact)
-  }
 
   switch (id) {
     case 'amove': {
@@ -40,8 +26,8 @@ export function suiteFeatureContext(id: FeatureId, surface: EmbeddedFeatureSurfa
         paths: {
           preloads: { shelf: paths.preload('feature-amove-shelf') },
           renderers: { shelf: rendererUrl ? `${rendererUrl}/apps/integrated/Amove/src/renderer/shelf.html` : paths.renderer('feature-amove-shelf') },
-          native: { addon: resource(artifact(entry, 'addon')) },
-          assetsDirectory: resource(artifact(entry, 'assets')),
+          native: resources.native,
+          assetsDirectory: resources.assetsDirectory!,
           dataDirectory,
           legacyDataDirectories: [join(app.getPath('appData'), 'Amove')]
         }
@@ -51,7 +37,7 @@ export function suiteFeatureContext(id: FeatureId, surface: EmbeddedFeatureSurfa
       return {
         id, mode: 'suite', productId: id, surface,
         paths: {
-          native: { helper: resource(artifact(entry, 'helper')) },
+          native: resources.native,
           dataDirectory,
           legacyDataDirectories: [join(app.getPath('appData'), 'Bonded')]
         }
@@ -60,7 +46,7 @@ export function suiteFeatureContext(id: FeatureId, surface: EmbeddedFeatureSurfa
       return {
         id, mode: 'suite', productId: id, surface,
         paths: {
-          native: { helper: resource(artifact(entry, 'helper')), driver: resource(artifact(entry, 'driver')) },
+          native: resources.native,
           dataDirectory,
           legacyDataDirectories: [join(app.getPath('appData'), 'Shout')]
         }
@@ -68,12 +54,6 @@ export function suiteFeatureContext(id: FeatureId, surface: EmbeddedFeatureSurfa
     default:
       return assertNever(id)
   }
-}
-
-function artifact(entry: FeatureCatalogEntry, name: string): FeatureArtifact {
-  const found = entry.artifacts.find((candidate) => candidate.name === name)
-  if (!found) throw new Error(`Feature '${entry.id}' has no artifact named '${name}'.`)
-  return found
 }
 
 function assertNever(value: never): never { throw new Error(`Unknown feature '${String(value)}'`) }

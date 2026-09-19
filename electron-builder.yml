@@ -19,16 +19,8 @@ extraResources:
     to: runtime/MoirasiaFeatureService
   - from: native/staged/runtime/MoirasiaHost
     to: runtime/MoirasiaHost
-  - from: native/staged/features/amove/native
-    to: features/amove/native
-  - from: native/staged/features/amove/assets
-    to: features/amove/assets
-  - from: native/staged/features/bonded/native
-    to: features/bonded/native
-  - from: native/staged/features/shout/native
-    to: features/shout/native
-  - from: native/staged/features/shout/driver
-    to: features/shout/driver
+  - from: native/staged/features
+    to: features
 # The host bundle lives in Contents/Library/LoginItems so launch-at-login can
 # start it as a login item service.
 extraFiles:

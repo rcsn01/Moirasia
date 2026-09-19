@@ -125,29 +125,12 @@ describe('catalog artifact invariants', () => {
 })
 
 describe('contract pins — hand-written files agree with the catalog', () => {
-  const stageScript = repoFile('scripts/stage-feature-binaries.mjs')
   const suiteBuilderYml = repoFile('electron-builder.yml')
-  const rootPackageJson = JSON.parse(repoFile('package.json')) as { scripts: Record<string, string> }
 
-  it('pins the staging script to every staged path and release source layout', () => {
-    const releaseSource = (buildOutput: string): string => buildOutput.includes('{Configuration}')
-      ? buildOutput.replace('{Configuration}', 'Release')
-      : buildOutput.replace('{configuration}', 'release')
-    for (const entry of featureCatalog.entries) {
-      for (const candidate of entry.artifacts) {
-        expect(stageScript, `${entry.id}/${candidate.name} staged path`).toContain(candidate.staged)
-        expect(stageScript, `${entry.id}/${candidate.name} release source`).toContain(releaseSource(candidate.buildOutput))
-      }
-    }
-  })
-
-  it('packages every artifact from its staged path to its suite destination', () => {
-    for (const entry of featureCatalog.entries) {
-      for (const candidate of entry.artifacts) {
-        expect(suiteBuilderYml, `${entry.id}/${candidate.name} from`).toContain(`from: ${candidate.staged}`)
-        expect(suiteBuilderYml, `${entry.id}/${candidate.name} to`).toContain(`to: ${candidate.suiteResource}`)
-      }
-    }
+  it('packages the clean staged feature tree as one suite resource', () => {
+    expect(suiteBuilderYml).toContain('  - from: native/staged/features\n    to: features')
+    expect(suiteBuilderYml.match(/from: native\/staged\/features(?:\/|\s)/g)).toHaveLength(1)
+    expect(suiteBuilderYml).not.toMatch(/from: native\/staged\/features\/(amove|bonded|shout)/)
   })
 
   it('pins each standalone bundle layout against the app-owned builder configs', () => {

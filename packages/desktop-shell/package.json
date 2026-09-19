@@ -6,6 +6,7 @@
   "exports": {
     ".": "./src/index.ts",
     "./feature": "./src/feature.ts",
+    "./feature-resources": "./src/feature-resources.ts",
     "./feature-surface-host": "./src/feature-surface-host.ts",
     "./native-feature-adapter": "./src/native-feature-adapter.ts",
     "./main": "./src/main.ts",

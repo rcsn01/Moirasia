@@ -1,0 +1,57 @@
+{
+  "amove": [
+    {
+      "name": "addon",
+      "kind": "native",
+      "file": "amove-native",
+      "buildOutput": "native",
+      "staged": "native/staged/features/amove/native",
+      "suiteResource": "features/amove/native",
+      "suiteDevSource": "buildOutput",
+      "standaloneResource": "native"
+    },
+    {
+      "name": "assets",
+      "kind": "assets",
+      "buildOutput": "assets",
+      "staged": "native/staged/features/amove/assets",
+      "suiteResource": "features/amove/assets",
+      "suiteDevSource": "buildOutput",
+      "standaloneResource": "assets"
+    }
+  ],
+  "bonded": [
+    {
+      "name": "helper",
+      "kind": "executable",
+      "file": "BondedFirewallHelper",
+      "buildOutput": "native/.build/arm64-apple-macosx/{configuration}",
+      "staged": "native/staged/features/bonded/native",
+      "suiteResource": "features/bonded/native",
+      "suiteDevSource": "buildOutput",
+      "standaloneResource": "native"
+    }
+  ],
+  "shout": [
+    {
+      "name": "helper",
+      "kind": "executable",
+      "file": "ShoutAudioHelper",
+      "buildOutput": "native/.build/out/Products/{Configuration}",
+      "staged": "native/staged/features/shout/native",
+      "suiteResource": "features/shout/native",
+      "suiteDevSource": "buildOutput",
+      "standaloneResource": "native"
+    },
+    {
+      "name": "driver",
+      "kind": "bundle",
+      "file": "ShoutMic.driver",
+      "buildOutput": "native/driver/dist",
+      "staged": "native/staged/features/shout/driver",
+      "suiteResource": "features/shout/driver",
+      "suiteDevSource": "staged",
+      "standaloneResource": "native"
+    }
+  ]
+}

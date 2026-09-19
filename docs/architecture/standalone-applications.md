@@ -16,7 +16,7 @@ Exithibition and Orbis do not appear in the catalog or AppKit agent. Their launc
 
 ## Embedded features
 
-The feature catalog in `packages/desktop-shell/src/feature-catalog.ts` contains Amove, Bonded, and Shout. `FeatureRuntime` loads their backends through literal imports. `EmbeddedFeatureHost` supplies the suite surface, and `suiteFeatureContext` supplies suite-owned resources and data directories.
+The feature catalog in `packages/desktop-shell/src/feature-catalog.ts` contains Amove, Bonded, and Shout. Its shared artifact facet lives in `packages/desktop-shell/src/feature-artifact-data.json`; the catalog validates and freezes that data. `@moirasia/desktop-shell/feature-resources` resolves the catalog facts into host paths for an explicit suite or standalone source, without checking the filesystem. `FeatureRuntime` loads their backends through literal imports. `EmbeddedFeatureHost` supplies the suite surface, and suite/standalone contexts remain thin adapters that supply roots, product-owned preload/renderer paths, and data directories.
 
 `acquireFeatureSurface` handles their suite-versus-standalone primary surface. Suite mode uses a stable renderer target supplied by `EmbeddedFeatureHost`; the target detaches when Menu Bar mode destroys the shell window and follows the next shell renderer without restarting feature backends. Standalone mode creates a product window from catalog facts. Moirasia's preload and renderer expose only the Amove, Bonded, and Shout bridges and panels.
 
@@ -24,7 +24,9 @@ The shared `@moirasia/desktop-shell/native-feature-adapter` owns the structural 
 
 `ShellWindowLifecycle` owns each primary-window generation, its shell IPC authorization, polling, navigation guards, and renderer loading. Closing in Menu Bar mode destroys that generation while keeping installed feature controllers and runtime leases alive. A replacement renderer fetches fresh snapshots when Moirasia reopens. Amove's shelf is a separate window: a visible shelf and its global shortcuts continue working while the shell renderer is absent, while hidden shelf windows are destroyed and recreated on demand.
 
-Suite artifacts are staged under `native/staged/features/<id>` and packaged under `Contents/Resources/features/<id>`. Moirasia's build never builds or packages Exithibition or Orbis.
+The root staging adapter runs the existing Amove, Bonded, and Shout native build commands, builds a deterministic plan from the shared artifact facet, and cleans only `native/staged/features` before copying. Suite artifacts are staged under `native/staged/features/<id>` and the root builder packages that clean tree once under `Contents/Resources/features/<id>`. Standalone product builders remain product-owned: Amove assets stay asar-embedded while native resources use `Resources/native`.
+
+The production Electron native host receives the Shout driver parent directory (`Resources/features/shout/driver`), while the feature context receives `ShoutMic.driver` itself. Direct-launch Swift/debug adapters retain their bundle-path form because the native feature service accepts both. Moirasia's build never builds or packages Exithibition or Orbis.
 
 ## Standalone-only surfaces
 

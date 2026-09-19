@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { FEATURE_IDS, buildCatalog, featureCatalog, isFeatureId, type FeatureCatalogEntry, type FeatureId } from '../packages/desktop-shell/src/feature-catalog'
+import { FEATURE_IDS, buildCatalog, featureCatalog, isFeatureId, type FeatureArtifact, type FeatureCatalogEntry, type FeatureId } from '../packages/desktop-shell/src/feature-catalog'
 
 const amoveEntry = featureCatalog.get('amove')
 const shoutEntry = featureCatalog.get('shout')
@@ -93,6 +93,29 @@ describe('feature catalog', () => {
     for (const [label, overrides] of broken) {
       expect(() => buildCatalog([validSeed(overrides)]), label).toThrow(/standalone window/)
     }
+  })
+
+  it('rejects malformed artifact data at the catalog input seam', () => {
+    const bondedArtifact = featureCatalog.get('bonded').artifacts[0]!
+    const amoveArtifacts = featureCatalog.get('amove').artifacts
+    const broken: Array<[string, unknown]> = [
+      ['unsupported kind', { ...bondedArtifact, kind: 'unknown' }],
+      ['empty build output', { ...bondedArtifact, buildOutput: '' }],
+      ['invalid suite source', { ...bondedArtifact, suiteDevSource: 'other' }],
+      ['unsupported build placeholder', { ...bondedArtifact, buildOutput: 'native/{other}' }],
+      ['absolute build output', { ...bondedArtifact, buildOutput: '/tmp/helper' }],
+      ['traversal staged destination', { ...bondedArtifact, staged: 'native/../outside' }],
+      ['missing filename', { ...bondedArtifact, file: undefined }],
+      ['nested filename', { ...bondedArtifact, file: 'nested/helper' }],
+      ['native filename with extension', { ...amoveArtifacts[0]!, file: 'amove-native.node' }],
+      ['assets filename', { ...amoveArtifacts[1]!, file: 'assets' }]
+    ]
+
+    for (const [label, artifact] of broken) {
+      expect(() => buildCatalog([validSeed({ artifacts: [artifact as FeatureArtifact] })]), label).toThrow(/artifact/)
+    }
+    expect(() => buildCatalog([validSeed({ artifacts: [bondedArtifact, bondedArtifact] })])).toThrow(/duplicate artifact name/)
+    expect(() => buildCatalog([validSeed({ artifacts: undefined as never })])).toThrow(/artifact data must be an array/)
   })
 
   it('throws on unknown ids and freezes the catalog against mutation', () => {
