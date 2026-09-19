@@ -1,6 +1,6 @@
 # Moirasia
 
-Moirasia is a macOS controller for Amove, Vox, Bonded, and Shout, and an embedded feature host for Amove, Bonded, and Shout. Its Applications menu discovers those four standalone bundles and opens or focuses them. In Menu Bar mode, closing Moirasia destroys its primary renderer to release memory while feature backends and a visible Amove shelf keep running; reopening creates a fresh renderer. Exithibition and Orbis are standalone-only repositories under `apps/standalone`; they share Moirasia's UI packages but have no controller or embedded runtime integration.
+Moirasia is a macOS controller for Amove, Vox, Bonded, and Shout, and an embedded feature host for Amove, Bonded, and Shout. Its Applications menu discovers those four standalone bundles and opens or focuses them. On macOS with native artifacts, the feature service owns persistent Bonded, Shout, and Amove background state while Electron owns the UI and Amove shelf. Closing the final shell and shelf window lets Electron exit; reopening reconnects to the native host. Builds without native artifacts keep the existing Electron controllers. Exithibition and Orbis are standalone-only repositories under `apps/standalone`; they share Moirasia's UI packages but have no controller or embedded runtime integration.
 
 ## Development
 
@@ -124,7 +124,7 @@ Each controlled standalone bundle accepts one headless command without creating 
 
 Moirasia and its controlled applications use `Application Support/Moirasia/appearance.json`. Standalone-only Exithibition and Orbis store appearance in their own Electron data directories. All applications use the same appearance controls and visual tokens from the shared desktop-shell packages.
 
-In-suite features use the Moirasia bundle's macOS permissions. Standalone apps keep their own bundle identity and permissions. Orbis therefore owns any Full Disk Access grant, while Vox owns its microphone, accessibility, and shortcut grants.
+In native suite mode, `MoirasiaFeatureService.app` owns the microphone and Accessibility operations performed by Shout and Amove. Electron displays the service state and sends the user commands. Local mode keeps the existing Electron permission helpers. Standalone apps keep their own bundle identity and permissions. Orbis therefore owns any Full Disk Access grant, while Vox owns its microphone, accessibility, and shortcut grants.
 
 Vox no longer runs inside Moirasia. On first standalone launch after leaving the suite, Vox reverse-migrates the suite's data: it snapshots `Application Support/Moirasia/features/vox/vox.sqlite`, merges it into `Application Support/Vox/vox.sqlite` (entity rows union by id with the suite row winning the rare collision, daily aggregate counters taking the per-day maximum, settings resolving per key in the suite's favor except launch-at-login), backs up the standalone store first, records the outcome in a marker, and removes the suite copy. A failed merge retries on the next launch and leaves both stores untouched. Downloaded models under `Application Support/Vox/Models` and provider credentials in the `com.moirasia.vox.providers` Keychain service stay shared. A transitional lease keeps the microphone, global shortcuts, and shared model store owned by one Vox host at a time while stale pre-move Moirasia builds that still embed Vox may exist.
 

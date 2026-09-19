@@ -32,7 +32,7 @@ public func bondedApplicationRuleIdentity(path: String, bundleIdentifier: String
 
 public func bondedApplicationRuleForTarget(_ target: BondedApplicationRuleTarget, selectedAt: String = ISO8601DateFormatter().string(from: Date())) -> BondedStoredRule {
     let identity = bondedApplicationRuleIdentity(path: target.path, bundleIdentifier: target.bundleIdentifier)
-    return BondedStoredRule(id: bondedOpaqueId(prefix: "app", value: identity), path: target.path, displayName: target.displayName, targetKind: target.targetKind, bundleIdentifier: target.bundleIdentifier, selectedAt: selectedAt)
+    return BondedStoredRule(id: bondedOpaqueId(prefix: "rule", value: identity), path: target.path, displayName: target.displayName, targetKind: target.targetKind, bundleIdentifier: target.bundleIdentifier, selectedAt: selectedAt)
 }
 
 public func bondedMatchesApplicationRule(target: BondedApplicationRuleTarget, rule: BondedStoredRule) -> Bool {

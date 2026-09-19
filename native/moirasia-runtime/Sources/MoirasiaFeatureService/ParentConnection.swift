@@ -1,8 +1,10 @@
+import Darwin
 import Foundation
 import MoirasiaProtocol
 
 /// Reads framed requests from the parent via an event-driven stdin reader.
-/// EOF (parent death) triggers a clean shutdown.
+/// EOF (parent death) terminates the feature service instead of leaving a
+/// detached owner behind.
 final class ParentConnection {
     private let input: FileHandle
     private let writer: FramedWriter
@@ -10,34 +12,48 @@ final class ParentConnection {
     private let runtime: FeatureRuntime
     private var closed = false
     private let lock = NSLock()
+    private let stateQueue = DispatchQueue(label: "com.moirasia.feature-service.state")
 
-    init(runtime: FeatureRuntime) {
+    init(runtime: FeatureRuntime, writer: FramedWriter) {
         self.input = FileHandle.standardInput
-        self.writer = FramedWriter(handle: .standardOutput)
+        self.writer = writer
         self.runtime = runtime
     }
 
     func start() {
-        // The parent may send requests while startup is still in flight; the
-        // reader is installed first so requests buffer and get answered.
-        // POSIX drain: FileHandle's availableData raises at EOF (parent death).
+        // Install the reader before starting modules. Requests are serialized
+        // behind startInstalled on the same queue, so no module can race its
+        // initial lease or settings load.
         SafeIO.makeNonBlocking(input.fileDescriptor)
         input.readabilityHandler = { [weak self] incoming in
             guard let self else { incoming.readabilityHandler = nil; return }
             guard let result = SafeIO.drain(descriptor: incoming.fileDescriptor) else { return }
             if !result.data.isEmpty { self.process(result.data) }
-            if result.ended { self.stop() }
+            if result.ended { self.parentEnded() }
         }
-        DispatchQueue.global(qos: .userInitiated).async { [weak self] in self?.runtime.startInstalled() }
+        stateQueue.async { [weak self] in self?.runtime.startInstalled() }
     }
 
     func stop() {
+        guard markClosed() else { return }
+        stateQueue.async { [runtime] in runtime.stopAll() }
+    }
+
+    private func parentEnded() {
+        guard markClosed() else { return }
+        stateQueue.async { [runtime] in
+            runtime.stopAll()
+            Darwin.exit(0)
+        }
+    }
+
+    private func markClosed() -> Bool {
         lock.lock()
         defer { lock.unlock() }
-        guard !closed else { return }
+        guard !closed else { return false }
         closed = true
         input.readabilityHandler = nil
-        runtime.stopAll()
+        return true
     }
 
     private func process(_ data: Data) {
@@ -45,14 +61,21 @@ final class ParentConnection {
         guard !stopped else { return }
         do {
             for message in try decoder.append(data) {
-                guard case .request(let request) = message else { continue }
-                let response = runtime.handle(request)
-                try writer.send(.response(response))
+                guard case .request(let request) = message else { throw ProtocolError.invalidEnvelope }
+                stateQueue.async { [weak self] in
+                    guard let self else { return }
+                    self.lock.lock(); let active = !self.closed; self.lock.unlock()
+                    guard active else { return }
+                    do { try self.writer.send(.response(self.runtime.handle(request))) }
+                    catch {
+                        fputs("MoirasiaFeatureService output error: \(error)\n", stderr)
+                        self.parentEnded()
+                    }
+                }
             }
         } catch {
             fputs("MoirasiaFeatureService protocol error: \(error)\n", stderr)
-            stop()
-            exit(0)
+            parentEnded()
         }
     }
 }

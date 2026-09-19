@@ -361,6 +361,25 @@ describe('FeatureRuntime', () => {
       expect(runtime.statuses()[0]).not.toHaveProperty('loadError')
     })
 
+    it('overlays service health without losing installation and replaces it on full recovery', async () => {
+      const fake = fakeFeature()
+      const { client, emitSnapshot } = fakeNativeClient({ features: [{ id: 'amove', installed: true, state: 'running' }] })
+      const runtime = new FeatureRuntime(await settingsWith(undefined), {
+        loaders: { amove: vi.fn(async () => ({ feature: fakeFeature().feature })) },
+        nativeLoaders: { amove: async () => ({ feature: fake.feature }) },
+        context: () => CONTEXT,
+        nativeClient: client
+      })
+
+      await runtime.syncAtLaunch()
+      emitSnapshot({ featureService: { state: 'error', error: 'service exited', restartCount: 1 } })
+      expect(runtime.statuses()[0]).toMatchObject({ installed: true, state: 'error', error: 'service exited', loaded: false })
+
+      emitSnapshot({ features: [{ id: 'amove', installed: true, state: 'running' }] })
+      await vi.waitFor(() => expect(runtime.statuses()[0]).toMatchObject({ installed: true, state: 'running', loaded: true }))
+      expect(runtime.statuses()[0]).not.toHaveProperty('error')
+    })
+
     it('disposes the native adapter when its feature is uninstalled', async () => {
       const fake = fakeFeature()
       const runtime = new FeatureRuntime(await settingsWith(undefined), {

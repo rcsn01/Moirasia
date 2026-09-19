@@ -45,9 +45,9 @@ Implemented. Suspending the Menu Bar shell leaves zero windows and zero `WebCont
 
 Implemented. Closing the Menu Bar shell destroys its renderer instead of hiding it. Within a visible shell, only the active feature panel remains mounted; changing tabs unmounts the prior panel. The Bonded panel test found no immediate physical-footprint reduction after unmounting (165.3 versus 165.5 MiB, within noise), because loaded module code and V8 heap pages remain cached. This still bounds live UI state and subscriptions. Destroying the visible shell is the effective reclaim boundary and saves approximately 48–58 MiB physical footprint in the measured builds.
 
-### Feature sidecars
+### Feature service
 
-Partially implemented. Shout already owns a native audio helper, and the process inventory now reports it separately. Bonded and Shout controllers and Amove's Electron-owned shelf/hotkey coordinator still live in Electron main. Therefore Electron remains resident whenever any integrated feature is installed. Moving these state owners is required before the all-features native-idle mode can be enabled without breaking background behavior.
+Implemented for the macOS native-artifact path. `MoirasiaFeatureService.app` owns Bonded monitoring and firewall state, Shout's audio state and helper, and Amove's hotkeys and window movement. Electron owns the UI adapters and Amove's shelf. When the native host and service are available, Electron can exit after its final shell and shelf window closes. When native artifacts are absent, Electron keeps the existing local controllers and remains resident. A present but unusable native runtime fails startup instead of mixing the two owners.
 
 ### Lazy implementation loading
 
@@ -59,33 +59,37 @@ Already optimal for the current shell. Diagnostics found one default session and
 
 ### Native tray and on-demand Electron
 
-The first production slice is implemented for macOS:
+The native feature-service path is implemented for macOS:
 
-- The existing signed Swift application agent now owns an AppKit status item.
-- A locked, user-local PID file prevents duplicate menu hosts.
-- The host launches or activates the Moirasia app and supports coordinated Quit.
-- Packaged Menu Bar mode uses this native host; the Electron `Tray` remains a development fallback when the helper is unavailable.
-- If no integrated feature is installed, closing the final UI destroys the renderer, shuts down Electron, and deliberately leaves the native host running. Selecting **Show Moirasia** relaunches Electron on demand.
-- If any feature is installed, Electron remains resident until that feature's persistent service has moved to a sidecar.
+- The Swift host owns the AppKit status item, authenticated control socket, Electron launch/activation, and coordinated Quit.
+- A locked, user-local host runtime prevents duplicate menu hosts.
+- One supervised `MoirasiaFeatureService` process owns the installed Bonded, Shout, and Amove background state. It publishes full snapshots and structured health events and can recover from a service exit.
+- Native Shout microphone and Amove Accessibility operations run in the feature-service bundle. Electron displays the returned permission state and sends the existing commands.
+- The Electron process owns BrowserWindows, renderer IPC, native UI adapters, and Amove's shelf. Closing the final shell and shelf window lets Electron exit while the host and service remain.
+- Missing native artifacts use the existing local controllers. Native bootstrap failure does not fall back to a second local owner.
+
+No all-features native-idle memory sample is recorded here yet. The lifecycle and service smoke tests cover authentication, snapshots, mutations, service startup, and clean shutdown. Benchmark the native feature-enabled combinations before publishing a new memory number.
 
 ## Target process architecture
 
-The final macOS architecture has three boundaries:
+The macOS architecture has three process roles:
 
-1. **Native menu host** — long-lived AppKit status item, global shortcut registration, Electron launch/activation, and coordinated quit. It must not import Electron or Node.
-2. **Feature services** — long-lived, individually restartable processes for installed features that require background work. Bonded owns network monitoring/firewall synchronization; Shout owns audio state and its audio helper; Amove owns hotkeys and window movement. Services expose authenticated user-local Unix sockets and write state only in their existing feature data directories.
-3. **Electron UI client** — owns BrowserWindows, renderer IPC validation, TCC prompts that require the app bundle, and the Amove shelf renderer. It connects to services on demand and exits after its final UI closes.
+1. **Native menu host.** The long-lived AppKit process owns the status item, Electron launch/activation, and coordinated Quit. It does not import Electron or Node.
+2. **Native feature service.** One supervised process owns installed-feature background state, runtime leases, and the existing feature data directories. The host forwards authenticated requests and service events.
+3. **Electron UI client.** Electron owns BrowserWindows, renderer IPC validation, native UI adapters, and the Amove shelf. It connects to the host when a shell or shelf is needed and can exit after its final UI closes.
 
-Socket directories must be mode `0700`, socket files mode `0600`, messages length-prefixed and schema-validated, and peers rejected unless their effective UID matches. Each service remains the single owner of its mutable controller state. Electron proxies renderer requests rather than duplicating that state.
+Socket directories use mode `0700`, socket files use mode `0600`, messages are length-prefixed and schema-validated, and peers are rejected unless their effective UID matches. Local mode remains an in-process fallback only when native artifacts are absent.
 
 ## Implementation sequence and safety gates
 
-1. Extract controller interfaces from Bonded and Shout IPC registration so local and RPC-backed controllers implement the same contract.
-2. Add the authenticated Unix-socket protocol and lifecycle manager, then move Bonded. Verify monitoring and firewall rollback across Electron exit/relaunch.
-3. Move Shout. Keep the microphone permission prompt in Electron and pass only the resulting permission state to the service. Verify audio continuity and helper cleanup.
-4. Move Amove's hotkey/window-movement owner to the native host or a native service. Keep the shelf BrowserWindow in on-demand Electron and add a native `show-shelf` launch command.
-5. Allow all installed-feature combinations to use final-window Electron exit only after their services pass crash recovery, upgrade, explicit quit, and stale-socket tests.
-6. Benchmark every combination again. Do not retain the native host alongside resident Electron as a memory optimization; that measured variant costs about 11–14 MiB more physical memory.
+The current safety gates are:
+
+1. Select native mode only after authenticated protocol-v1 bootstrap and a complete strict host snapshot.
+2. Keep native and local ownership mutually exclusive. Reconnect or restart the native host after a native connection loss; never load a local controller in its place.
+3. Keep product persistence, migration, backups, rollback, and snapshot size limits valid in the native modules. Preserve the existing data directories and wire method names.
+4. Keep Shout microphone and Amove Accessibility requests in the feature-service process. Local mode retains Electron's existing permission helpers.
+5. Verify supervisor restart, stale-client cleanup, explicit Quit, Electron exit/relaunch, and the packaged flow before treating a native memory measurement as final.
+6. Benchmark each installed-feature combination again. The existing featureless native sample is not evidence for the all-features case.
 
 ## Ranking
 
@@ -94,4 +98,4 @@ Socket directories must be mode `0700`, socket files mode `0600`, messages lengt
 3. **Uninstall/lazy-load feature backends: about 8–14 MiB idle physical reduction across all three features.** Useful, but much smaller than eliminating Electron.
 4. **Session changes: no opportunity found.** The application already uses one default session.
 
-The all-features target cannot honestly be reported as native-only yet. Until the sidecar migration is complete, terminating Electron would terminate Bonded monitoring, Shout control, and Amove hotkey/shelf ownership.
+The all-features native path is now wired, but this document does not claim a new memory result for it. The service smoke and host end-to-end checks show that feature state survives the native service boundary. Run the packaged benchmark for the installed-feature combinations before changing the measured tables above.

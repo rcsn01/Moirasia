@@ -7,8 +7,9 @@
 import { spawn, spawnSync } from 'node:child_process'
 import { createConnection } from 'node:net'
 import { randomUUID, createHash } from 'node:crypto'
-import { existsSync, readFileSync, realpathSync } from 'node:fs'
+import { existsSync, readFileSync } from 'node:fs'
 import { mkdtemp, rm } from 'node:fs/promises'
+import { realpathSync } from 'node:fs'
 import { join, resolve } from 'node:path'
 import { tmpdir } from 'node:os'
 
@@ -17,10 +18,10 @@ const executable = join(root, 'release', 'mac-arm64', 'Moirasia.app', 'Contents'
 if (!existsSync(executable)) { console.error('Packaged app missing; run pnpm package:mac first.'); process.exit(1) }
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
-const userData = await mkdtemp(join(tmpdir(), 'moirasia-packaged-'))
-const nativeProcessLines = () => {
+const userData = realpathSync(await mkdtemp(join(tmpdir(), 'moirasia-packaged-')))
+const nativeProcessLines = (scope) => {
   const output = spawnSync('pgrep', ['-lf', 'Moirasia'], { encoding: 'utf8' }).stdout
-  return output.split('\n').filter((line) => line.includes('MoirasiaHost.app/Contents/MacOS/MoirasiaHost') || line.includes('MoirasiaFeatureService.app/Contents/MacOS/MoirasiaFeatureService'))
+  return output.split('\n').filter((line) => line.includes(scope) && (line.includes('MoirasiaHost.app/Contents/MacOS/MoirasiaHost') || line.includes('MoirasiaFeatureService.app/Contents/MacOS/MoirasiaFeatureService')))
 }
 const waitNativeExit = (pids, timeoutMs) => new Promise(async (resolve) => {
   const started = Date.now()
@@ -46,13 +47,14 @@ const waitNativeSurvive = (pids, timeoutMs) => new Promise(async (resolve) => {
 })
 
 let electronProcesses = []
+let nativeProcesses = []
 try {
   // The host publishes its socket in the per-user temp dir keyed by a SHA-256
   // hash of the userData path (mirrors moirasiaHostSocketPath in src/main).
-  // Electron resolves the userData path (e.g. /var → /private/var) before
-  // hashing, so the script must hash the resolved path too.
-  const resolvedUserData = realpathSync(userData)
-  const socketPath = join(tmpdir().replace(/\/+$/, ''), `moirasia-host-${createHash('sha256').update(resolvedUserData, 'utf8').digest('hex').slice(0, 16)}.sock`)
+  // Canonicalize the temporary directory before launch. Electron resolves its
+  // user-data path on macOS (for example /var to /private/var), and the native
+  // protocol and Electron then derive this endpoint from the same path.
+  const socketPath = join(tmpdir().replace(/\/+$/, ''), `moirasia-host-${createHash('sha256').update(userData, 'utf8').digest('hex').slice(0, 16)}.sock`)
   const tokenPath = join(userData, 'runtime', 'client.token')
 
   // Phase 1: launch, verify layout, then quitSuite over the socket.
@@ -96,7 +98,8 @@ try {
   const reply = await requestOnSocket('host.getSnapshot', {})
   console.log('authenticated =', reply.ok === true)
 
-  electronProcesses = nativeProcessLines().map((line) => Number(line.split(' ')[0]))
+  electronProcesses = nativeProcessLines(userData).map((line) => Number(line.split(' ')[0]))
+  nativeProcesses = [...new Set([...nativeProcesses, ...electronProcesses])]
   await requestOnSocket('host.quitSuite', {}).catch((error) => console.log('quitSuiteError =', String(error)))
   console.log('quitSuiteStopsSuite =', await waitNativeExit(electronProcesses, 10_000))
   console.log('electronExitPhase1 =', child.exitCode, child.signalCode)
@@ -113,17 +116,16 @@ try {
   for (let i = 0; i < 200 && !ready; i += 1) { ready = existsSync(socketPath) && existsSync(tokenPath); if (!ready) await sleep(100) }
   console.log('relaunchEndpoint =', ready)
   if (!ready) throw new Error(stderr.slice(0, 800) || 'relaunch never became ready')
-  electronProcesses = nativeProcessLines().map((line) => Number(line.split(' ')[0]))
+  electronProcesses = nativeProcessLines(userData).map((line) => Number(line.split(' ')[0]))
+  nativeProcesses = [...new Set([...nativeProcesses, ...electronProcesses])]
   child.kill('SIGKILL')
   console.log('suiteSurvivesElectronDeath =', await waitNativeSurvive(electronProcesses, 6000))
-  const hostPid = nativeProcessLines().map((line) => Number(line.split(' ')[0])).find((pid) => { try { process.kill(pid, 0); return true } catch { return false } })
+  const hostPid = nativeProcessLines(userData).map((line) => Number(line.split(' ')[0])).find((pid) => { try { process.kill(pid, 0); return true } catch { return false } })
   if (hostPid) process.kill(hostPid, 'SIGTERM')
   console.log('hostSigtermStopsSuite =', await waitNativeExit(electronProcesses, 10_000))
   console.log('electronStderr =', stderr.trim().slice(0, 600) || '(empty)')
 } finally {
-  for (const pid of electronProcesses) { try { process.kill(pid, 'SIGKILL') } catch { /* already gone */ } }
-  spawnSync('pkill', ['-f', 'MoirasiaHost.app/Contents/MacOS/MoirasiaHost'], { stdio: 'ignore' })
-  spawnSync('pkill', ['-f', 'MoirasiaFeatureService.app/Contents/MacOS/MoirasiaFeatureService'], { stdio: 'ignore' })
+  for (const pid of [...new Set([...electronProcesses, ...nativeProcesses])]) { try { process.kill(pid, 'SIGKILL') } catch { /* already gone */ } }
   await rm(userData, { recursive: true, force: true })
 }
 process.exit(process.exitCode ?? 0)

@@ -3,7 +3,7 @@ import { isFeatureId, type FeatureContext, type FeatureId, type MoirasiaFeature 
 import type { ApplicationId, FeatureStatus } from '../../shared/contracts'
 import type { EmbeddedFeatureHost } from './embedded-host'
 import type { ShellSettingsStore } from '../settings'
-import type { NativeHostClientLike } from '../../shared/native-host-contracts'
+import { isNativeHostHealth, isNativeHostSnapshot, type NativeHostClientLike, type NativeHostConnectionEvent } from '../../shared/native-host-contracts'
 import { suiteFeatureContext } from './suite-context'
 
 export { suiteFeatureContext }
@@ -41,7 +41,11 @@ export class FeatureRuntime {
   readonly #host: EmbeddedFeatureHost | undefined
   readonly #nativeClient: NativeHostClientLike | undefined
   readonly #nativeStatuses = new Map<FeatureId, { installed: boolean; state: 'stopped' | 'starting' | 'running' | 'error'; error?: string }>()
+  #nativeServiceState: 'starting' | 'running' | 'error' | 'stopped' | undefined
+  #nativeServiceError: string | undefined
   #unsubscribeNative: (() => void) | undefined
+  #unsubscribeNativeConnection: (() => void) | undefined
+  #nativeRecovery: Promise<void> | undefined
 
   constructor(
     private readonly settings: ShellSettingsStore,
@@ -59,10 +63,17 @@ export class FeatureRuntime {
   statuses(): readonly FeatureStatus[] {
     return (Object.keys(this.#loaders) as FeatureId[]).map((id) => {
       const native = this.#nativeStatuses.get(id)
+      const nativeMode = this.#nativeClient !== undefined
       const installed = native?.installed ?? this.isInstalledFromSettings(id)
-      const loaded = native ? native.state === 'running' : this.#loadedThisSession.has(id)
-      const loadError = native?.error ?? this.#loadErrors.get(id)
-      return { id, installed, ...(native ? { state: native.state, ...(native.error ? { error: native.error } : {}) } : {}), loaded, restartPending: loaded && !installed, ...(loadError ? { loadError } : {}) }
+      const serviceError = installed ? this.#nativeServiceError : undefined
+      const state = nativeMode
+        ? (this.#nativeServiceState === 'starting' ? 'starting' : serviceError ? 'error' : native?.state ?? 'stopped')
+        : undefined
+      const loadError = native?.error ?? serviceError ?? this.#loadErrors.get(id)
+      const loaded = nativeMode
+        ? (serviceError === undefined && (this.#instances.has(id) || (native?.state === 'running' && this.#nativeServiceState !== 'starting')))
+        : this.#loadedThisSession.has(id)
+      return { id, installed, ...(state ? { state, ...(loadError ? { error: loadError } : {}) } : {}), loaded, restartPending: loaded && !installed, ...(loadError ? { loadError } : {}) }
     })
   }
 
@@ -75,8 +86,9 @@ export class FeatureRuntime {
   async syncAtLaunch(): Promise<void> {
     if (this.#nativeClient) {
       await this.#nativeClient.connect()
+      this.#unsubscribeNative = this.#nativeClient.subscribe('host.snapshotChanged', (payload) => { this.#handleNativeSnapshotChanged(payload) })
+      this.#unsubscribeNativeConnection = this.#nativeClient.subscribeConnection?.((event) => { this.#handleNativeConnection(event) })
       await this.#refreshNativeSnapshot()
-      this.#unsubscribeNative = this.#nativeClient.subscribe('host.snapshotChanged', (payload) => { this.#applyNativeSnapshot(payload); this.#loadRunningNativeAdapters(); this.#emitNativeStatus() })
       // Feature panels invoke feature IPC the moment they mount, so every
       // installed feature's adapter (and its ipcMain handlers) must exist
       // before the shell renderer can navigate to its page.
@@ -94,7 +106,9 @@ export class FeatureRuntime {
     const featureId = narrow(id)
     if (this.#nativeClient) {
       if (!installed && this.#active === featureId) this.setActive(undefined)
-      await this.#nativeClient.request('host.setFeatureInstalled', { id: featureId, installed })
+      const current = this.#nativeStatuses.get(featureId)
+      const retry = installed && current?.installed === true && (current.state === 'error' || this.#nativeServiceError !== undefined)
+      await this.#nativeClient.request(retry ? 'host.retryFeature' : 'host.setFeatureInstalled', { id: featureId, ...(retry ? {} : { installed }) })
       await this.#refreshNativeSnapshot()
       const instance = this.#instances.get(featureId)
       if (instance && !installed) {
@@ -192,6 +206,7 @@ export class FeatureRuntime {
   async disposeAll(): Promise<void> {
     await Promise.all([...this.#operations.values()].map((operation) => operation.catch(() => undefined)))
     this.#unsubscribeNative?.(); this.#unsubscribeNative = undefined
+    this.#unsubscribeNativeConnection?.(); this.#unsubscribeNativeConnection = undefined
     this.setActive(undefined)
     const instances = [...this.#instances.values()]
     this.#instances.clear()
@@ -210,7 +225,7 @@ export class FeatureRuntime {
    * without one yet — covers a first load attempt that lost the race with a
    * still-starting feature service. */
   #loadRunningNativeAdapters(): void {
-    if (!this.#nativeClient) return
+    if (!this.#nativeClient || this.#nativeServiceError) return
     for (const id of Object.keys(this.#loaders) as FeatureId[]) {
       if (this.#instances.has(id) || this.#nativeStatuses.get(id)?.state !== 'running') continue
       void this.#enqueue(id, async () => { await this.#loadNative(id) })
@@ -247,19 +262,80 @@ export class FeatureRuntime {
   async #refreshNativeSnapshot(): Promise<void> {
     if (!this.#nativeClient) return
     const snapshot = await this.#nativeClient.request<unknown>('host.getSnapshot')
-    this.#applyNativeSnapshot(snapshot)
+    if (this.#applyNativeSnapshot(snapshot)) {
+      this.#loadRunningNativeAdapters()
+      this.#emitNativeStatus()
+    }
   }
 
-  #applyNativeSnapshot(value: unknown): void {
-    if (!value || typeof value !== 'object') return
-    const features = (value as { features?: unknown }).features
-    if (!Array.isArray(features)) return
-    for (const entry of features) {
-      if (!entry || typeof entry !== 'object') continue
-      const item = entry as { id?: unknown; installed?: unknown; state?: unknown; error?: unknown }
-      if (!isFeatureId(item.id) || typeof item.installed !== 'boolean' || !['stopped', 'starting', 'running', 'error'].includes(String(item.state))) continue
-      this.#nativeStatuses.set(item.id, { installed: item.installed, state: item.state as 'stopped' | 'starting' | 'running' | 'error', ...(typeof item.error === 'string' ? { error: item.error } : {}) })
+  #handleNativeSnapshotChanged(value: unknown): void {
+    if (this.#applyNativeHealth(value)) {
+      this.#emitNativeStatus()
+      return
     }
+    if (this.#applyNativeSnapshot(value)) {
+      this.#loadRunningNativeAdapters()
+      this.#emitNativeStatus()
+    }
+  }
+
+  #handleNativeConnection(event: NativeHostConnectionEvent): void {
+    if (event.state === 'disconnected') {
+      this.#nativeServiceState = 'error'
+      this.#nativeServiceError = event.error?.message ?? 'Native host disconnected.'
+      this.#emitNativeStatus()
+      return
+    }
+    if (event.state !== 'reconnected') return
+    this.#nativeServiceState = 'starting'
+    this.#nativeServiceError = 'Native host is reconnecting.'
+    this.#emitNativeStatus()
+    if (!this.#nativeRecovery) {
+      this.#nativeRecovery = this.#refreshNativeSnapshot().catch((error) => {
+        this.#nativeServiceState = 'error'
+        this.#nativeServiceError = errorMessage(error)
+        this.#emitNativeStatus()
+      }).finally(() => { this.#nativeRecovery = undefined })
+    }
+  }
+
+  #applyNativeHealth(value: unknown): boolean {
+    let payload: unknown = value
+    if (value && typeof value === 'object' && 'featureService' in value && (value as { featureService?: unknown }).featureService === 'error') {
+      payload = { featureService: { state: 'error', error: 'MoirasiaFeatureService is unavailable.', restartCount: 0 } }
+    }
+    if (!isNativeHostHealth(payload)) return false
+    const health = payload.featureService
+    this.#nativeServiceState = health.state
+    this.#nativeServiceError = health.state === 'error'
+      ? health.error
+      : health.state === 'starting'
+        ? 'MoirasiaFeatureService is starting.'
+        : health.state === 'stopped'
+          ? 'MoirasiaFeatureService is stopped.'
+          : this.#nativeServiceError
+    return true
+  }
+
+  #applyNativeSnapshot(value: unknown): boolean {
+    const full = isNativeHostSnapshot(value)
+    const features = full ? value.features : value && typeof value === 'object' ? (value as { features?: unknown }).features : undefined
+    if (!Array.isArray(features)) return false
+    const expected = new Set(Object.keys(this.#loaders) as FeatureId[])
+    const known = new Set<FeatureId>(['amove', 'bonded', 'shout'])
+    const next = new Map<FeatureId, { installed: boolean; state: 'stopped' | 'starting' | 'running' | 'error'; error?: string }>()
+    for (const entry of features) {
+      if (!entry || typeof entry !== 'object') return false
+      const item = entry as { id?: unknown; installed?: unknown; state?: unknown; error?: unknown }
+      if (!isFeatureId(item.id) || !known.has(item.id) || next.has(item.id) || typeof item.installed !== 'boolean' || !['stopped', 'starting', 'running', 'error'].includes(String(item.state))) return false
+      if (expected.has(item.id)) next.set(item.id, { installed: item.installed, state: item.state as 'stopped' | 'starting' | 'running' | 'error', ...(typeof item.error === 'string' ? { error: item.error } : {}) })
+    }
+    if (next.size !== expected.size || [...expected].some((id) => !next.has(id))) return false
+    this.#nativeStatuses.clear()
+    for (const [id, status] of next) this.#nativeStatuses.set(id, status)
+    this.#nativeServiceState = 'running'
+    this.#nativeServiceError = undefined
+    return true
   }
 
   #emitNativeStatus(): void { for (const listener of this.#statusListeners) listener() }

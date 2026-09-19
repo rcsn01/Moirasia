@@ -38,7 +38,9 @@ final class BondedModule: BasicFeatureModule {
     private let runtime: BondedRuntime
 
     init(userData: String, helperExecutable: String) {
-        runtime = BondedRuntime(dataDirectory: URL(fileURLWithPath: userData, isDirectory: true).appendingPathComponent("features/bonded").path, helperExecutable: helperExecutable)
+        let featureDirectory = URL(fileURLWithPath: userData, isDirectory: true).appendingPathComponent("features/bonded", isDirectory: true)
+        let legacyDirectory = URL(fileURLWithPath: NSHomeDirectory(), isDirectory: true).appendingPathComponent("Library/Application Support/Bonded", isDirectory: true).path
+        runtime = BondedRuntime(dataDirectory: featureDirectory.path, helperExecutable: helperExecutable, legacyDataDirectories: [legacyDirectory])
         super.init(id: "bonded")
         runtime.onSnapshot = { [weak self] _ in self?.publishHook?() }
     }
@@ -90,7 +92,7 @@ final class ShoutModule: BasicFeatureModule {
         runtime.onSnapshot = { [weak self] _ in self?.publishHook?() }
     }
 
-    override func start() throws { try super.start(); runtime.start(); if runtime.snapshot.boostEnabled && runtime.permission.authorizationStatus() == "granted" { runtime.setBoost(true) } }
+    override func start() throws { try super.start(); runtime.start() }
     override func stop() { runtime.stop(); super.stop() }
 
     override func snapshot() -> JSONValue {
@@ -132,19 +134,24 @@ final class ShoutModule: BasicFeatureModule {
         case "shout.getSnapshot", "shout.snapshot": return snapshot()
         case "shout.setBoost":
             guard let value = request.params["enabled"]?.boolValue else { throw invalidParams() }
-            runtime.setBoost(value, requestPermission: value); return snapshot()
+            try waitForCompletion { completion in runtime.setBoost(value, requestPermission: value, completion: completion) }
+            return snapshot()
         case "shout.setGain":
             guard let value = request.params["db"]?.numberValue, value >= 0, value <= 30 else { throw invalidParams() }
-            runtime.setGain(value); return snapshot()
+            try waitForCompletion { completion in runtime.setGain(value, completion: completion) }
+            return snapshot()
         case "shout.setLimiter":
             guard let value = request.params["enabled"]?.boolValue else { throw invalidParams() }
-            runtime.setLimiter(value); return snapshot()
+            try waitForCompletion { completion in runtime.setLimiter(value, completion: completion) }
+            return snapshot()
         case "shout.setMakeDefaultInput":
             guard let value = request.params["enabled"]?.boolValue else { throw invalidParams() }
-            runtime.setMakeDefaultInput(value); return snapshot()
+            try waitForCompletion { completion in runtime.setMakeDefaultInput(value, completion: completion) }
+            return snapshot()
         case "shout.setSource":
             guard let mode = request.params["mode"]?.stringValue, mode == "follow-default" || mode == "device" else { throw invalidParams() }
-            runtime.setSource(mode: mode, uid: request.params["uid"]?.stringValue); return snapshot()
+            try waitForCompletion { completion in runtime.setSource(mode: mode, uid: request.params["uid"]?.stringValue, completion: completion) }
+            return snapshot()
         case "shout.installDriver":
             try installer.install()
             return snapshot()
@@ -159,6 +166,16 @@ final class ShoutModule: BasicFeatureModule {
         return preferred
     }
 
+    private func waitForCompletion(_ operation: (@escaping (Error?) -> Void) -> Void) throws {
+        let semaphore = DispatchSemaphore(value: 0)
+        var result: Error?
+        operation { error in result = error; semaphore.signal() }
+        guard semaphore.wait(timeout: .now() + 10) == .success else {
+            throw HostError(code: "feature_timeout", message: "Shout did not finish the requested audio operation.")
+        }
+        if let result { throw HostError(code: "feature_failed", message: result.localizedDescription) }
+    }
+
     private func invalidParams() -> HostError { HostError(code: "invalid_params", message: "Invalid Shout request parameters.") }
 }
 
@@ -166,7 +183,9 @@ final class AmoveModule: BasicFeatureModule {
     private let runtime: AmoveRuntime
 
     init(userData: String) {
-        runtime = AmoveRuntime(dataDirectory: URL(fileURLWithPath: userData, isDirectory: true).appendingPathComponent("features/amove").path)
+        let featureDirectory = URL(fileURLWithPath: userData, isDirectory: true).appendingPathComponent("features/amove", isDirectory: true)
+        let legacyDirectory = URL(fileURLWithPath: NSHomeDirectory(), isDirectory: true).appendingPathComponent("Library/Application Support/Amove", isDirectory: true).path
+        runtime = AmoveRuntime(dataDirectory: featureDirectory.path, legacyDataDirectories: [legacyDirectory])
         super.init(id: "amove")
         runtime.onToggleShelf = { [weak self] in self?.eventHook?("ui.toggleShelf") }
         runtime.onSnapshotChanged = { [weak self] in self?.publishHook?() }
@@ -181,7 +200,7 @@ final class AmoveModule: BasicFeatureModule {
     override func snapshot() -> JSONValue {
         let values = runtime.snapshotValues()
         let granted = values.accessibilityGranted
-        return .object([
+        var result: [String: JSONValue] = [
             "hostMode": .string("suite"),
             "platform": .string("darwin"),
             "settings": .object([
@@ -197,7 +216,9 @@ final class AmoveModule: BasicFeatureModule {
             "shelfVisible": .bool(false),
             "accessibility": .object(["required": .bool(true), "granted": .bool(granted), "label": .string(granted ? "Granted" : "Not granted")]),
             "shortcutIssues": .array(runtime.shortcutIssues.compactMap { encodedValue($0) })
-        ])
+        ]
+        if let warning = runtime.migrationWarning { result["migrationWarning"] = .string(warning) }
+        return .object(result)
     }
 
     override func handle(_ request: HostRequest) throws -> JSONValue {

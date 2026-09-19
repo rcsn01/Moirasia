@@ -2,8 +2,9 @@
 // Debug: launch the DEBUG-build host, authenticate, request a snapshot, print traces.
 import { spawn } from 'node:child_process'
 import { createConnection } from 'node:net'
-import { randomUUID } from 'node:crypto'
+import { randomUUID, createHash } from 'node:crypto'
 import { readFile, mkdtemp, rm } from 'node:fs/promises'
+import { realpathSync } from 'node:fs'
 import { existsSync } from 'node:fs'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
@@ -13,7 +14,7 @@ const root = process.cwd()
 const binPath = String(execSync('swift build --package-path native/moirasia-runtime -c debug --show-bin-path', { encoding: 'utf8' })).trim()
 const hostPath = join(binPath, 'MoirasiaHost')
 const servicePath = join(binPath, 'MoirasiaFeatureService')
-const userData = await mkdtemp(join(tmpdir(), 'moirasia-debug-'))
+const userData = realpathSync(await mkdtemp(join(tmpdir(), 'moirasia-debug-')))
 const host = spawn(hostPath, [
   '--host',
   '--application', join(root, 'node_modules/electron/dist/Electron.app/Contents/MacOS/Electron'),
@@ -28,7 +29,8 @@ host.stderr.on('data', (data) => { for (const line of String(data).split('\n')) 
 host.on('exit', (code, signal) => console.log('[host exit]', code, signal))
 
 const runtimeDir = join(userData, 'runtime')
-const socketPath = join(runtimeDir, 'host.sock')
+const socketPath = join(tmpdir(), `moirasia-host-${createHash('sha256').update(userData, 'utf8').digest('hex').slice(0, 16)}.sock`)
+console.log('[paths]', JSON.stringify({ userData, socketPath, tmpdir: tmpdir(), TMPDIR: process.env.TMPDIR }))
 const tokenPath = join(runtimeDir, 'client.token')
 for (let i = 0; i < 60; i += 1) {
   if (existsSync(socketPath) && existsSync(tokenPath)) break

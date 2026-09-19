@@ -99,6 +99,7 @@ final class ClientConnection: @unchecked Sendable {
     private var authenticated = false
     private var requestIDs = Set<String>()
     private var closed = false
+    private var disconnectedNotified = false
     private let lock = NSLock()
 
     init(descriptor: Int32, handler: @escaping ControlServer.RequestHandler, disconnected: @escaping (ClientConnection) -> Void) {
@@ -119,32 +120,40 @@ final class ClientConnection: @unchecked Sendable {
             guard result.ended else { return }
             incoming.readabilityHandler = nil
             self.close()
-            self.disconnected(self)
         }
     }
 
     func send(_ message: HostMessage) {
-        lock.lock(); defer { lock.unlock() }
-        guard !closed else { return }
-        do { try writer.send(message) } catch { closed = true; handle.readabilityHandler = nil; try? handle.close() }
+        lock.lock()
+        guard !closed else { lock.unlock(); return }
+        do {
+            try writer.send(message)
+            lock.unlock()
+        } catch {
+            lock.unlock()
+            close()
+        }
     }
 
     func close() {
         lock.lock()
-        defer { lock.unlock() }
-        guard !closed else { return }
+        guard !closed else { lock.unlock(); return }
         closed = true
         handle.readabilityHandler = nil
         try? handle.close()
+        let shouldNotify = !disconnectedNotified
+        disconnectedNotified = true
+        lock.unlock()
+        if shouldNotify { disconnected(self) }
     }
 
     func authenticate(token: String, expected: String) -> Bool {
         guard token == expected else { return false }
-        authenticated = true
+        lock.lock(); authenticated = true; lock.unlock()
         return true
     }
 
-    func isAuthenticated() -> Bool { authenticated }
+    func isAuthenticated() -> Bool { lock.lock(); defer { lock.unlock() }; return authenticated }
 
     /// Readability callbacks are serialized per file handle; decoder and
     /// request bookkeeping live on that single queue, `closed` is shared.

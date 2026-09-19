@@ -107,7 +107,13 @@ export class ShellWindowLifecycle {
     const onFocus = (): void => { void this.options.controller.refresh().catch(console.error) }
     const onShow = (): void => updatePolling()
     const onHide = (): void => updatePolling()
-    const onRenderProcessGone = (): void => { if (!this.#quitting) void this.suspend().catch(console.error) }
+    const onRenderProcessGone = (): void => {
+      if (this.#quitting) return
+      void this.#enqueue(async () => {
+        await this.#suspendCurrent()
+        this.options.onMenuBarWindowClosed?.()
+      }).catch(console.error)
+    }
 
     let disposeIpc: (() => void) | undefined
     try {

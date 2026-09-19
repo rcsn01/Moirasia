@@ -1,3 +1,5 @@
+import AppKit
+import CoreGraphics
 import Foundation
 import MoirasiaProtocol
 
@@ -18,6 +20,7 @@ public final class BondedRuntime {
     private let blocker = ObservedIpBlocker()
     private var excludedPids: Set<Int>
     private var ownApplicationPath: String?
+    private var iconCache: [String: String] = [:]
     private var disposed = false
     private let dataDirectory: URL
 
@@ -27,9 +30,9 @@ public final class BondedRuntime {
     private var snapshotScheduled = false
     private var firewallSyncScheduled = false
 
-    public init(dataDirectory: String, helperExecutable: String) {
+    public init(dataDirectory: String, helperExecutable: String, legacyDataDirectories: [String] = []) {
         self.dataDirectory = URL(fileURLWithPath: dataDirectory, isDirectory: true)
-        settingsStore = BondedSettingsStore(directory: dataDirectory)
+        settingsStore = BondedSettingsStore(directory: dataDirectory, legacyDataDirectories: legacyDataDirectories)
         firewall = FirewallClient(helperExecutable: helperExecutable)
         excludedPids = [Int(getpid())]
         ownApplicationPath = bondedContainingApplication(Bundle.main.executablePath ?? "")
@@ -130,17 +133,19 @@ public final class BondedRuntime {
             guard bondedIsOpaqueApplicationId(applicationId), let resolved = history.target(applicationId) else { throw BondedRuntimeError("The observed application is no longer available") }
             let previousState = blocker.exportState()
             let previousTargets = enforcedTargets()
+            let previousSettings = settings
             let existing = settings.applicationRules.first { bondedMatchesApplicationRule(target: resolved.target, rule: $0) }
             let rule = existing ?? bondedApplicationRuleForTarget(BondedApplicationRuleTarget(path: resolved.target.path, displayName: resolved.target.displayName, targetKind: resolved.target.targetKind, bundleIdentifier: resolved.target.bundleIdentifier))
             do {
                 _ = try blocker.addRule(rule, addresses: history.addresses(applicationId))
                 if existing == nil { settings.applicationRules.append(rule) }
                 try syncEnforcement(previousTargets: previousTargets)
-                try? settingsStore.save(settings)
+                try settingsStore.save(settings)
                 publishSnapshot()
                 return snapshot()
             } catch {
                 blocker.restore(previousState)
+                settings = previousSettings
                 throw error
             }
         }
@@ -151,16 +156,18 @@ public final class BondedRuntime {
             guard let index = settings.applicationRules.firstIndex(where: { $0.id == ruleId }) else { throw BondedRuntimeError("Application rule not found") }
             let previousState = blocker.exportState()
             let previousTargets = enforcedTargets()
+            let previousSettings = settings
             settings.applicationRules.remove(at: index)
             blocker.removeRule(ruleId)
             if settings.blockingEnabled && blocker.targets().isEmpty { settings.blockingEnabled = false }
             do {
                 try syncEnforcement(previousTargets: previousTargets)
-                try? settingsStore.save(settings)
+                try settingsStore.save(settings)
                 publishSnapshot()
                 return snapshot()
             } catch {
                 blocker.restore(previousState)
+                settings = previousSettings
                 throw error
             }
         }
@@ -191,6 +198,7 @@ public final class BondedRuntime {
             let observed = blocker.observe(target: BondedApplicationRuleTarget(path: target.path, displayName: target.displayName, targetKind: target.targetKind, bundleIdentifier: target.bundleIdentifier), rawAddress: sample.remoteAddress)
             if observed.added && settings.blockingEnabled { scheduleFirewallSync() }
             if result.added {
+                if let icon = applicationIconDataURL(target.path) { history.setIcon(target.id, iconDataUrl: icon) }
                 dns.resolve(sample.remoteAddress) { [weak self] host in
                     self?.queue.async { self?.history.updateHost(target.id, result.flowId, host: host); self?.scheduleSnapshot() }
                 }
@@ -274,6 +282,7 @@ public final class BondedRuntime {
         let rulesJSON: [JSONValue] = rules.map { rule in
             var value: [String: JSONValue] = ["id": .string(rule.id), "path": .string(rule.path), "displayName": .string(rule.displayName), "targetKind": .string(rule.targetKind), "selectedAt": .string(rule.selectedAt), "learnedAddresses": .array(rule.learnedAddresses.map { .string($0) }), "state": .string(rule.state)]
             if let bundleIdentifier = rule.bundleIdentifier { value["bundleIdentifier"] = .string(bundleIdentifier) }
+            if let iconDataUrl = applicationIconDataURL(rule.path) { value["iconDataUrl"] = .string(iconDataUrl) }
             return .object(value)
         }
         var statusObject: [String: JSONValue] = ["state": .string(monitor.status.state), "message": .string(monitor.status.message)]
@@ -281,7 +290,7 @@ public final class BondedRuntime {
         if let retryAt = monitor.status.retryAt { statusObject["retryAt"] = .string(retryAt) }
         var firewallJSON: [String: JSONValue] = ["state": .string(firewallStatus.state), "message": .string(firewallStatus.message), "helperInstalled": .bool(firewallStatus.helperInstalled)]
         if let ruleCount = firewallStatus.ruleCount { firewallJSON["ruleCount"] = .number(Double(ruleCount)) }
-        return .object([
+        var result: [String: JSONValue] = [
             "version": .number(3),
             "monitoringEnabled": .bool(settings.monitoringEnabled),
             "blockingEnabled": .bool(enforced),
@@ -292,7 +301,60 @@ public final class BondedRuntime {
             "learnedAddressCount": .number(Double(learnedAddressCount)),
             "addressLimitReached": .bool(blocker.addressLimitReached),
             "capability": .object(["backend": .string("pf"), "scope": .string("system-destination"), "perApplication": .bool(false), "reason": .string("IP addresses learned from selected applications are blocked for every application while Bonded is running.")])
-        ])
+        ]
+        if let migrationNotice = settingsStore.migrationNotice { result["migrationNotice"] = .string(migrationNotice) }
+        enforceSnapshotBudget(&result)
+        return .object(result)
+    }
+
+    private func enforceSnapshotBudget(_ result: inout [String: JSONValue]) {
+        let budget = 768 * 1024
+        guard case .array(let applications) = result["applications"] else { return }
+        var flowLimit = 200
+        while flowLimit > 0 {
+            let bounded = applications.compactMap { value -> JSONValue? in
+                guard case .object(var object) = value else { return nil }
+                if case .array(let flows) = object["flows"], flows.count > flowLimit {
+                    object["flows"] = .array(Array(flows.prefix(flowLimit)))
+                    object["recentFlowCount"] = .number(Double(flowLimit))
+                }
+                return .object(object)
+            }
+            result["applications"] = .array(bounded)
+            if let data = try? JSONEncoder().encode(JSONValue.object(result)), data.count <= budget { return }
+            flowLimit /= 2
+        }
+        result["applications"] = .array([])
+        guard let rules = result["applicationRules"], case .array(let ruleValues) = rules else { return }
+        let rulesWithoutIcons = ruleValues.compactMap { value -> JSONValue? in
+            guard case .object(var object) = value else { return nil }
+            object.removeValue(forKey: "iconDataUrl")
+            return .object(object)
+        }
+        result["applicationRules"] = .array(rulesWithoutIcons)
+        if let data = try? JSONEncoder().encode(JSONValue.object(result)), data.count <= budget { return }
+        var ruleLimit = rulesWithoutIcons.count
+        while ruleLimit > 0 {
+            result["applicationRules"] = .array(Array(rulesWithoutIcons.prefix(ruleLimit)))
+            if let data = try? JSONEncoder().encode(JSONValue.object(result)), data.count <= budget { return }
+            ruleLimit /= 2
+        }
+        result["applicationRules"] = .array([])
+    }
+
+    private func applicationIconDataURL(_ path: String) -> String? {
+        if let cached = iconCache[path] { return cached }
+        let image = NSWorkspace.shared.icon(forFile: path)
+        var rect = CGRect(x: 0, y: 0, width: 64, height: 64)
+        guard let source = image.cgImage(forProposedRect: &rect, context: nil, hints: nil),
+              let colorSpace = CGColorSpace(name: CGColorSpace.sRGB),
+              let context = CGContext(data: nil, width: 64, height: 64, bitsPerComponent: 8, bytesPerRow: 0, space: colorSpace, bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue) else { return nil }
+        context.clear(CGRect(x: 0, y: 0, width: 64, height: 64))
+        context.draw(source, in: CGRect(x: 0, y: 0, width: 64, height: 64))
+        guard let resized = context.makeImage(), let data = NSBitmapImageRep(cgImage: resized).representation(using: .png, properties: [:]), data.count <= 128 * 1024 else { return nil }
+        let value = "data:image/png;base64,\(data.base64EncodedString())"
+        iconCache[path] = value
+        return value
     }
 }
 

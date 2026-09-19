@@ -19,8 +19,8 @@ public final class AmoveRuntime {
     /// Fired after a hotkey-driven action mutated state; publishes a snapshot event.
     public var onSnapshotChanged: (() -> Void)?
 
-    public init(dataDirectory: String) {
-        store = AmoveSettingsStore(dataDirectory: dataDirectory)
+    public init(dataDirectory: String, legacyDataDirectories: [String] = []) {
+        store = AmoveSettingsStore(dataDirectory: dataDirectory, legacyDataDirectories: legacyDataDirectories)
         hotkeys = HotkeyRegistry()
         mover = WindowMover()
         settings = store.load()
@@ -28,17 +28,11 @@ public final class AmoveRuntime {
 
     public func start() {
         lock.lock()
-        var migrated = false
-        if settings.migrations["macUserDefaultsV1"] == "pending" {
-            let result = AmoveLegacyMigration.migrateMacUserDefaults(AmoveLegacyMigration.readLegacyPreferences())
-            settings = result.settings
-            migrated = true
-        }
         if settings.shortcutsByPlatform["darwin"] == nil { settings.shortcutsByPlatform["darwin"] = AmoveShortcutDefaults.bindings() }
         let bindings = settings.shortcutsByPlatform["darwin"] ?? [:]
         statusMessage = "Global shortcuts are active in the background."
         lock.unlock()
-        if migrated { try? store.save(settings) }
+        try? store.save(settings)
         hotkeys.onAction = { [weak self] action in self?.perform(action: action) }
         _ = hotkeys.register(bindings)
     }
@@ -84,6 +78,7 @@ public final class AmoveRuntime {
     }
 
     public var shortcutIssues: [AmoveShortcutIssue] { hotkeys.issues }
+    public var migrationWarning: String? { store.warning }
 
     /// Window movement plus status bookkeeping; safe from the request thread or
     /// the Carbon hotkey thread.

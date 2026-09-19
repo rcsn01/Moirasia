@@ -19,6 +19,9 @@ export class AppPresence {
   #mode: AppPresenceMode = 'dock'
   #tray: Tray | undefined
   #nativeHost = false
+  #forceNativeHostStart = false
+  #waitForForcedNativeStart = false
+  #previousNativeToken: string | undefined
   #spawnedHostPid: number | undefined
 
   constructor(private readonly options: { menuBarIconPath: string; open(): void; quit?(): void; nativeHost?: NativeMenuBarHostOptions }) {}
@@ -49,11 +52,23 @@ export class AppPresence {
     if (!this.usesNativeHost) return false
     this.#installNativeHost()
     const host = this.options.nativeHost!
+    const forced = this.#waitForForcedNativeStart
+    const previousToken = this.#previousNativeToken
     const started = Date.now()
     while (Date.now() - started < timeoutMs) {
-      if (host.userData && existsSync(`${host.userData}/runtime/client.token`) && existsSync(moirasiaHostSocketPath(host.userData))) return true
+      if (host.userData && existsSync(`${host.userData}/runtime/client.token`) && existsSync(moirasiaHostSocketPath(host.userData))) {
+        let token: string | undefined
+        try { token = readFileSync(`${host.userData}/runtime/client.token`, 'utf8').trim() } catch { /* The host is between token generations. */ }
+        if (!forced || previousToken === undefined || token !== previousToken || Date.now() - started >= 750) {
+          this.#waitForForcedNativeStart = false
+          this.#previousNativeToken = undefined
+          return true
+        }
+      }
       await new Promise((resolve) => setTimeout(resolve, 50))
     }
+    this.#waitForForcedNativeStart = false
+    this.#previousNativeToken = undefined
     return false
   }
 
@@ -64,16 +79,45 @@ export class AppPresence {
     this.#spawnedHostPid = undefined
   }
 
+  /** Restart the selected native host after its endpoint has become stale. */
+  async restartNativeHost(timeoutMs = 5_000): Promise<boolean> {
+    if (!this.usesNativeHost) return false
+    this.#nativeHost = false
+    this.#forceNativeHostStart = true
+    this.#waitForForcedNativeStart = true
+    try { this.#previousNativeToken = readFileSync(`${this.options.nativeHost!.userData}/runtime/client.token`, 'utf8').trim() } catch { this.#previousNativeToken = undefined }
+    this.#spawnedHostPid = undefined
+    return this.waitForNativeHost(timeoutMs)
+  }
+
+  /** Abort only a native host child created by this bootstrap candidate. */
+  abortNativeBootstrap(): void {
+    if (!this.usesNativeHost) return
+    const spawnedPid = this.#spawnedHostPid
+    this.#spawnedHostPid = undefined
+    this.#nativeHost = false
+    this.#forceNativeHostStart = false
+    this.#waitForForcedNativeStart = false
+    this.#previousNativeToken = undefined
+    if (spawnedPid === undefined) return
+    try { process.kill(spawnedPid, 'SIGTERM') }
+    catch (error) {
+      const code = error instanceof Error && 'code' in error ? error.code : undefined
+      if (code !== 'ESRCH') console.error('Could not abort the native host bootstrap', error)
+    }
+  }
+
   dispose(): void { this.#removeMenuBarPresence() }
 
   #installNativeHost(): boolean {
     const host = this.options.nativeHost
     if (!host || !existsSync(host.executable)) return false
-    if (this.#nativeHost) return true
-    if (this.usesNativeHost && host.userData && existsSync(`${host.userData}/runtime/client.token`) && existsSync(moirasiaHostSocketPath(host.userData))) {
+    if (this.#nativeHost && !this.#forceNativeHostStart) return true
+    if (!this.#forceNativeHostStart && this.usesNativeHost && host.userData && existsSync(`${host.userData}/runtime/client.token`) && existsSync(moirasiaHostSocketPath(host.userData))) {
       this.#nativeHost = true
       return true
     }
+    this.#forceNativeHostStart = false
     const featureArgs = [
       ...(host.bondedHelperPath ? ['--bonded-helper', host.bondedHelperPath] : []),
       ...(host.shoutDriverPath ? ['--shout-driver', host.shoutDriverPath] : [])

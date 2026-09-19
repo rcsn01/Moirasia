@@ -108,6 +108,28 @@ describe('AppPresence', () => {
     expect(kill).not.toHaveBeenCalled()
   })
 
+  it('aborts only a host child spawned for a failed native bootstrap', () => {
+    const kill = vi.spyOn(process, 'kill').mockImplementation(() => true)
+    native.existsSync.mockImplementationOnce(() => true).mockImplementationOnce(() => false)
+    const presence = new AppPresence({
+      menuBarIconPath: '/tmp/trayTemplate.png',
+      open: vi.fn(),
+      nativeHost: {
+        executable: '/tmp/MoirasiaHost',
+        featureServicePath: '/tmp/MoirasiaFeatureService',
+        applicationPath: '/Applications/Moirasia.app',
+        userData: '/tmp/user-data',
+        iconPath: '/tmp/trayTemplate.png',
+        pidPath: '/tmp/menu-host.pid'
+      }
+    })
+
+    presence.apply('menu-bar')
+    presence.abortNativeBootstrap()
+
+    expect(kill).toHaveBeenCalledWith(4321, 'SIGTERM')
+  })
+
   it('restores Dock presence and destroys the menu bar item', () => {
     const presence = new AppPresence({ menuBarIconPath: '/tmp/trayTemplate.png', open: vi.fn() })
     presence.apply('menu-bar')

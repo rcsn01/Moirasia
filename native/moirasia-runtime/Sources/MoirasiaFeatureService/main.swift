@@ -15,17 +15,15 @@ guard arguments.first == "--stdio", let userData = value(after: "--user-data", i
 let bondedHelper = value(after: "--bonded-helper", in: arguments)
 let shoutDriver = value(after: "--shout-driver", in: arguments)
 
-let writeLock = NSLock()
+let writer = FramedWriter(handle: .standardOutput)
 let runtime = FeatureRuntime(userData: userData, bondedHelperExecutable: bondedHelper, shoutDriverDirectory: shoutDriver) { event in
-    writeLock.lock()
-    defer { writeLock.unlock() }
-    do { try FramedWriter(handle: .standardOutput).send(.event(event)) }
+    do { try writer.send(.event(event)) }
     catch { fputs("MoirasiaFeatureService could not publish event: \(error)\n", stderr) }
 }
 let signals = SignalCoordinator { runtime.stopAll(); exit(0) }
 _ = signals
 signal(SIGPIPE, SIG_IGN) // POSIX writes report EPIPE as an error, never as a signal
-let parent = ParentConnection(runtime: runtime)
+let parent = ParentConnection(runtime: runtime, writer: writer)
 parent.start()
 // Carbon global hotkeys (Amove) need a running application event loop; the
 // activation policy keeps the service out of the Dock.

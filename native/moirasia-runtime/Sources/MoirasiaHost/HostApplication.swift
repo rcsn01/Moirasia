@@ -28,6 +28,9 @@ final class HostApplication: NSObject, NSApplicationDelegate {
     private var launcher: ElectronLauncher
     private var statusItem: StatusItemController?
     private var revision: UInt64 = 0
+    private var serviceState: FeatureServiceSupervisor.HealthState = .starting
+    private var serviceError: String?
+    private var serviceRestartCount = 0
     private var shuttingDown = false
     private let stateQueue = DispatchQueue(label: "com.moirasia.host.state")
 
@@ -45,18 +48,23 @@ final class HostApplication: NSObject, NSApplicationDelegate {
     }
 
     func start() throws {
-        try FileManager.default.createDirectory(at: runtimeDirectory, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
-        try acquireLock()
-        settings.load()
-        try writeToken()
-        let supervisor = FeatureServiceSupervisor(executablePath: configuration.featureServicePath, userData: configuration.userData, bondedHelperExecutable: configuration.bondedHelperPath, shoutDriverDirectory: configuration.shoutDriverPath, eventHandler: { [weak self] event in self?.receive(event) }, exitHandler: { [weak self] in self?.featureServiceExited() })
-        self.supervisor = supervisor
-        try supervisor.start()
-        let server = ControlServer(path: socketPath, handler: { [weak self] client, request in self?.handle(client: client, request: request) }, disconnected: { _ in })
-        try server.start()
-        self.server = server
-        launcher.onApplicationExit = { [weak self] in self?.desktopApplicationExited() }
-        launcher.observeTermination()
+        do {
+            try FileManager.default.createDirectory(at: runtimeDirectory, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
+            try acquireLock()
+            settings.load()
+            try writeToken()
+            let server = ControlServer(path: socketPath, handler: { [weak self] client, request in self?.handle(client: client, request: request) }, disconnected: { _ in })
+            try server.start()
+            self.server = server
+            let supervisor = FeatureServiceSupervisor(executablePath: configuration.featureServicePath, userData: configuration.userData, bondedHelperExecutable: configuration.bondedHelperPath, shoutDriverDirectory: configuration.shoutDriverPath, eventHandler: { [weak self] event in self?.receive(event) }, exitHandler: {}, healthHandler: { [weak self] state, error, restartCount in self?.receiveHealth(state: state, error: error, restartCount: restartCount) })
+            self.supervisor = supervisor
+            try supervisor.start()
+            launcher.onApplicationExit = { [weak self] in self?.desktopApplicationExited() }
+            launcher.observeTermination()
+        } catch {
+            cleanup()
+            throw error
+        }
     }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
@@ -165,10 +173,22 @@ final class HostApplication: NSObject, NSApplicationDelegate {
         stateQueue.async { [weak self] in
             guard let self else { return }
             self.revision = max(self.revision + 1, event.revision)
-            let rewritten = HostEvent(event: event.event, revision: self.revision, payload: event.payload)
+            let payload = event.event == "host.snapshotChanged" ? self.withSettings(event.payload) : event.payload
+            let rewritten = HostEvent(event: event.event, revision: self.revision, payload: payload)
             self.server?.broadcast(rewritten)
             if event.event == "ui.openShell" { self.launcher.show(arguments: ["--moirasia-open=shell"]) }
             if event.event == "ui.toggleShelf", self.server?.hasAuthenticatedClient() != true { self.launcher.show(arguments: ["--moirasia-open=shelf"]) }
+        }
+    }
+
+    private func receiveHealth(state: FeatureServiceSupervisor.HealthState, error: String?, restartCount: Int) {
+        stateQueue.async { [weak self] in
+            guard let self else { return }
+            self.serviceState = state
+            self.serviceError = error
+            self.serviceRestartCount = restartCount
+            self.revision += 1
+            self.server?.broadcast(HostEvent(event: "host.snapshotChanged", revision: self.revision, payload: self.healthPayload()))
         }
     }
 
@@ -181,17 +201,32 @@ final class HostApplication: NSObject, NSApplicationDelegate {
         }
     }
 
-    private func featureServiceExited() {
-        stateQueue.async { [weak self] in
-            guard let self, !self.shuttingDown else { return }
-            self.revision += 1
-            self.server?.broadcast(HostEvent(event: "host.snapshotChanged", revision: self.revision, payload: .object(["featureService": .string("error")])))
+    private func publishSnapshotChanged() {
+        let request = HostRequest(id: UUID().uuidString, method: "host.getSnapshot")
+        forward(request) { [weak self] response in
+            guard let self else { return }
+            self.stateQueue.async {
+                guard response.ok, let result = response.result else { return }
+                self.revision += 1
+                self.server?.broadcast(HostEvent(event: "host.snapshotChanged", revision: self.revision, payload: self.withSettings(result)))
+            }
         }
     }
 
-    private func publishSnapshotChanged() {
-        revision += 1
-        server?.broadcast(HostEvent(event: "host.snapshotChanged", revision: revision, payload: settings.snapshot()))
+    private func withSettings(_ value: JSONValue) -> JSONValue {
+        guard case .object(var object) = value else { return value }
+        if object["featureService"] != nil && object["features"] == nil { return value }
+        object["settings"] = settings.snapshot()
+        return .object(object)
+    }
+
+    private func healthPayload() -> JSONValue {
+        var health: [String: JSONValue] = [
+            "state": .string(serviceState.rawValue),
+            "restartCount": .number(Double(serviceRestartCount))
+        ]
+        if let serviceError { health["error"] = .string(serviceError) }
+        return .object(["featureService": .object(health)])
     }
 
     private func updateStatusItem(mode: String?) {

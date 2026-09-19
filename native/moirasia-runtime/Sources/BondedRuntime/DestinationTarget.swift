@@ -13,14 +13,14 @@ public struct DestinationTarget: Codable, Equatable, Hashable, Sendable {
         var v4 = in_addr(); var v6 = in6_addr()
         if String(address).withCString({ inet_pton(AF_INET, $0, &v4) == 1 }) {
             let bytes = withUnsafeBytes(of: &v4) { Array($0) }
-            let prefix = try Self.prefix(pieces.last, maximum: 32, input: input)
+            let prefix = try Self.prefix(pieces.count == 2 ? pieces.last : nil, maximum: 32, input: input)
             let masked = Self.mask(bytes, prefix: prefix)
             canonical = "\(masked.map(String.init).joined(separator: "."))\(prefix == 32 ? "" : "/\(prefix)")"
             family = 4; prefixLength = prefix; self.bytes = masked; return
         }
         if String(address).withCString({ inet_pton(AF_INET6, $0, &v6) == 1 }) {
             let bytes = withUnsafeBytes(of: &v6) { Array($0) }
-            let prefix = try Self.prefix(pieces.last, maximum: 128, input: input)
+            let prefix = try Self.prefix(pieces.count == 2 ? pieces.last : nil, maximum: 128, input: input)
             let masked = Self.mask(bytes, prefix: prefix)
             canonical = "\(Self.format6(masked))\(prefix == 128 ? "" : "/\(prefix)")"
             family = 6; prefixLength = prefix; self.bytes = masked; return
@@ -44,7 +44,7 @@ public struct DestinationTarget: Codable, Equatable, Hashable, Sendable {
         for index in output.indices {
             let remaining = prefix - index * 8
             if remaining <= 0 { output[index] = 0 }
-            else if remaining < 8 { output[index] &= UInt8(0xff << (8 - remaining)) }
+            else if remaining < 8 { output[index] &= UInt8(truncatingIfNeeded: 0xff << (8 - remaining)) }
         }
         return output
     }

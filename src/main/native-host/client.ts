@@ -6,10 +6,12 @@ import {
   encodeNativeHostMessage,
   isNativeHostEvent,
   isNativeHostResponse,
+  isNativeHostSnapshot,
   nativeHostRequest,
+  normalizeNativeHostSnapshotChangedPayload,
   type NativeHostClientLike,
+  type NativeHostConnectionEvent,
   type NativeHostMethod,
-  type NativeHostResponse,
   type NativeHostMessage
 } from '../../shared/native-host-contracts'
 
@@ -32,10 +34,13 @@ export class NativeHostClient implements NativeHostClientLike {
   #buffer = ''
   #nextRequest = new Map<string, PendingRequest>()
   #listeners = new Map<string, Set<(payload: unknown, revision: number) => void>>()
+  #connectionListeners = new Set<(event: NativeHostConnectionEvent) => void>()
   #connecting: Promise<void> | undefined
   #closed = false
   #authenticated = false
   #revision = 0
+  #generation = 0
+  #awaitingFullSnapshot = false
   readonly #timeoutMs: number
 
   constructor(private readonly options: NativeHostClientOptions) {
@@ -53,10 +58,14 @@ export class NativeHostClient implements NativeHostClientLike {
   }
 
   close(): void {
+    if (this.#closed) return
     this.#closed = true
-    this.#socket?.destroy()
+    const socket = this.#socket
     this.#socket = undefined
     this.#authenticated = false
+    this.#buffer = ''
+    this.#awaitingFullSnapshot = false
+    socket?.destroy()
     this.#rejectPending(new Error('Native host client closed'))
   }
 
@@ -83,17 +92,30 @@ export class NativeHostClient implements NativeHostClientLike {
     }
   }
 
+  subscribeConnection(listener: (event: NativeHostConnectionEvent) => void): () => void {
+    this.#connectionListeners.add(listener)
+    return () => this.#connectionListeners.delete(listener)
+  }
+
+  /** Alias for callers that prefer an event-style name. */
+  onConnectionState(listener: (event: NativeHostConnectionEvent) => void): () => void {
+    return this.subscribeConnection(listener)
+  }
+
   async #connect(): Promise<void> {
     const token = (await readFile(this.options.tokenPath, 'utf8')).trim()
     if (!token || token.length > 512) throw new Error('Native host authentication token is unavailable')
     const socket = createConnection(this.options.socketPath)
+    const generation = ++this.#generation
     this.#socket = socket
     this.#buffer = ''
     this.#authenticated = false
+    this.#revision = 0
+    this.#awaitingFullSnapshot = true
     socket.setEncoding('utf8')
-    socket.on('data', (chunk: string) => this.#acceptData(chunk))
-    socket.once('error', (error) => this.#handleDisconnect(error))
-    socket.once('close', () => this.#handleDisconnect(new Error('Native host connection closed')))
+    socket.on('data', (chunk: string) => this.#acceptData(chunk, socket))
+    socket.once('error', (error) => this.#handleDisconnect(socket, error))
+    socket.once('close', () => this.#handleDisconnect(socket, new Error('Native host connection closed')))
     await new Promise<void>((resolve, reject) => {
       const timer = setTimeout(() => { socket.destroy(); reject(new Error('Native host connection timed out')) }, this.#timeoutMs)
       socket.once('connect', () => { clearTimeout(timer); resolve() })
@@ -104,7 +126,9 @@ export class NativeHostClient implements NativeHostClientLike {
       socket.destroy()
       throw new Error('Native host authentication failed')
     }
+    if (this.#socket !== socket || this.#closed) throw new Error('Native host disconnected during authentication')
     this.#authenticated = true
+    this.#emitConnection({ state: generation === 1 ? 'connected' : 'reconnected', generation })
   }
 
   #requestOnce<T>(method: string, params: Record<string, unknown>): Promise<T> {
@@ -126,29 +150,29 @@ export class NativeHostClient implements NativeHostClientLike {
     })
   }
 
-  #acceptData(chunk: string): void {
+  #acceptData(chunk: string, socket: Socket): void {
+    if (this.#closed || this.#socket !== socket) return
     this.#buffer += chunk
     if (new TextEncoder().encode(this.#buffer).byteLength > 2 * 1024 * 1024) {
-      this.#socket?.destroy(new Error('Native host input buffer exceeded the limit'))
+      socket.destroy(new Error('Native host input buffer exceeded the limit'))
       return
     }
     let newline = this.#buffer.indexOf('\n')
     while (newline >= 0) {
       const line = this.#buffer.slice(0, newline).replace(/\r$/, '')
       this.#buffer = this.#buffer.slice(newline + 1)
-      if (line.length > 0) this.#acceptLine(line)
+      if (line.length > 0) this.#acceptLine(line, socket)
       newline = this.#buffer.indexOf('\n')
     }
   }
 
-  #acceptLine(line: string): void {
+  #acceptLine(line: string, socket: Socket): void {
+    if (this.#closed || this.#socket !== socket) return
     let message: NativeHostMessage
     try { message = decodeNativeHostMessage(line) }
-    catch (error) { this.#socket?.destroy(error instanceof Error ? error : new Error(String(error))); return }
+    catch (error) { socket.destroy(error instanceof Error ? error : new Error(String(error))); return }
     if (isNativeHostEvent(message)) {
-      if (message.revision < this.#revision) return
-      this.#revision = message.revision
-      for (const listener of this.#listeners.get(message.event) ?? []) listener(message.payload, message.revision)
+      this.#acceptEvent(message)
       return
     }
     if (!isNativeHostResponse(message)) return
@@ -156,16 +180,55 @@ export class NativeHostClient implements NativeHostClientLike {
     if (!pending) return
     clearTimeout(pending.timer)
     this.#nextRequest.delete(message.id)
-    if (message.ok) pending.resolve(message.result)
-    else pending.reject(new Error(`${message.error.code}: ${message.error.message}`))
+    if (message.ok) {
+      if (pending.method === 'host.getSnapshot' && isNativeHostSnapshot(message.result)) {
+        this.#awaitingFullSnapshot = false
+        this.#revision = Math.max(this.#revision, message.result.revision)
+      }
+      pending.resolve(message.result)
+    } else pending.reject(new Error(`${message.error.code}: ${message.error.message}`))
   }
 
-  #handleDisconnect(error: Error): void {
-    if (this.#socket && !this.#socket.destroyed) return
+  #acceptEvent(message: Extract<NativeHostMessage, { event: string }>): void {
+    let payload = message.payload
+    let fullSnapshot = false
+    let health = false
+    if (message.event === 'host.snapshotChanged') {
+      try { payload = normalizeNativeHostSnapshotChangedPayload(payload) }
+      catch (error) {
+        this.#socket?.destroy(error instanceof Error ? error : new Error(String(error)))
+        return
+      }
+      fullSnapshot = isNativeHostSnapshot(payload)
+      health = !fullSnapshot
+    }
+    if (this.#awaitingFullSnapshot && !fullSnapshot) {
+      if (health) this.#notify(message.event, payload, message.revision)
+      return
+    }
+    if (message.revision < this.#revision) return
+    this.#revision = message.revision
+    if (fullSnapshot) this.#awaitingFullSnapshot = false
+    this.#notify(message.event, payload, message.revision)
+  }
+
+  #notify(event: string, payload: unknown, revision: number): void {
+    for (const listener of this.#listeners.get(event) ?? []) listener(payload, revision)
+  }
+
+  #handleDisconnect(socket: Socket, error: Error): void {
+    if (this.#socket !== socket) return
+    const wasAuthenticated = this.#authenticated
     this.#socket = undefined
     this.#authenticated = false
     this.#buffer = ''
+    this.#awaitingFullSnapshot = false
     this.#rejectPending(error)
+    if (wasAuthenticated && !this.#closed) this.#emitConnection({ state: 'disconnected', generation: this.#generation, error })
+  }
+
+  #emitConnection(event: NativeHostConnectionEvent): void {
+    for (const listener of this.#connectionListeners) listener(event)
   }
 
   #rejectPending(error: Error): void {
@@ -181,6 +244,8 @@ export class NativeHostClient implements NativeHostClientLike {
     this.#socket = undefined
     this.#authenticated = false
     this.#buffer = ''
+    this.#revision = 0
+    this.#awaitingFullSnapshot = false
     await new Promise((resolve) => setImmediate(resolve))
   }
 }

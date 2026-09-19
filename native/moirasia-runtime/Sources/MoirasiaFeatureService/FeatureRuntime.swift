@@ -79,7 +79,8 @@ final class FeatureRuntime {
             do { try startOrThrow(id: id); installed[id] = true }
             catch {
                 installed[id] = false
-                emitStatus(id: id, error: errorMessage(error))
+                moduleErrors[id] = errorMessage(error)
+                publishSnapshot()
                 throw HostError(code: "feature_start_failed", message: errorMessage(error))
             }
         } else {
@@ -97,13 +98,18 @@ final class FeatureRuntime {
             throw HostError(code: "invalid_params", message: "A known feature id is required.")
         }
         do { try startOrThrow(id: id); installed[id] = true; publishSnapshot(); return status(id: id) }
-        catch { emitStatus(id: id, error: errorMessage(error)); throw HostError(code: "feature_start_failed", message: errorMessage(error)) }
+        catch {
+            moduleErrors[id] = errorMessage(error)
+            publishSnapshot()
+            throw HostError(code: "feature_start_failed", message: errorMessage(error))
+        }
     }
 
     private func status(id: String) -> JSONValue {
         guard let module = modules[id] else { return .object([:]) }
-        var object: [String: JSONValue] = ["id": .string(id), "installed": .bool(installed[id] ?? false), "state": .string(moduleErrors[id] == nil ? (module.isRunning ? "running" : "stopped") : "error")]
-        if let error = moduleErrors[id] ?? module.error { object["error"] = .string(error) }
+        let error = moduleErrors[id] ?? module.error
+        var object: [String: JSONValue] = ["id": .string(id), "installed": .bool(installed[id] ?? false), "state": .string(error == nil ? (module.isRunning ? "running" : "stopped") : "error")]
+        if let error { object["error"] = .string(error) }
         return .object(object)
     }
 
@@ -135,10 +141,6 @@ final class FeatureRuntime {
         emit(HostEvent(event: name, revision: revision, payload: .object(["feature": .string(id)])))
     }
 
-    private func emitStatus(id: String, error: String) {
-        revision += 1
-        emit(HostEvent(event: "host.snapshotChanged", revision: revision, payload: .object(["feature": .string(id), "error": .string(error)])))
-    }
 
     private func loadSettings() {
         let path = URL(fileURLWithPath: userData, isDirectory: true).appendingPathComponent("settings.json")
@@ -163,8 +165,14 @@ final class FeatureRuntime {
             let lockName = id == "bonded" ? "bonded-runtime.lock" : id == "shout" ? "shout-runtime.lock" : "amove-runtime.lock"
             leases[id] = try FeatureRuntimeLease(appData: appDataDirectory, lockName: lockName, host: "Moirasia")
         }
-        try module.start()
-        moduleErrors[id] = nil
+        do {
+            try module.start()
+            moduleErrors[id] = nil
+        } catch {
+            leases[id]?.release()
+            leases[id] = nil
+            throw error
+        }
     }
 
     private var appDataDirectory: String {

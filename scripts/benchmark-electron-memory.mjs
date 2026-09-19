@@ -64,7 +64,7 @@ try {
   } else if (nativeIdle) {
     await waitForExit(child, 12_000)
     // The feature services are native now: measure the resident host + service.
-    const nativePids = nativeSuitePids()
+    const nativePids = nativeSuitePids(directory)
     if (nativePids.length === 0) throw new Error('No resident MoirasiaHost/MoirasiaFeatureService processes were found after the UI exited.')
     const idleRss = processRss(nativePids[0], nativePids)
     const idleFootprint = physicalFootprint(idleRss.pids)
@@ -100,7 +100,7 @@ try {
     process.stdout.write(text)
   }
 } finally {
-  for (const pid of nativeSuitePids()) { try { process.kill(pid, 'SIGTERM') } catch { /* already gone */ } }
+  for (const pid of nativeSuitePids(directory)) { try { process.kill(pid, 'SIGTERM') } catch { /* already gone */ } }
   child.kill('SIGTERM')
   await Promise.race([new Promise((resolveExit) => child.once('exit', resolveExit)), delay(3_000)])
   if (child.exitCode === null) child.kill('SIGKILL')
@@ -124,9 +124,11 @@ function roundBytes(bytes) { return Math.round((bytes / 1024 / 1024) * 10) / 10 
 function delay(ms) { return new Promise((resolveDelay) => setTimeout(resolveDelay, ms)) }
 function valueArgument(prefix) { return process.argv.find((argument) => argument.startsWith(prefix))?.slice(prefix.length) }
 
-function nativeSuitePids() {
-  const result = spawnSync('pgrep', ['-f', 'MoirasiaHost.app/Contents/MacOS/MoirasiaHost|MoirasiaFeatureService.app/Contents/MacOS/MoirasiaFeatureService'], { encoding: 'utf8' })
-  return result.status === 0 ? result.stdout.trim().split('\n').filter(Boolean).map(Number) : []
+function nativeSuitePids(scope) {
+  const result = spawnSync('pgrep', ['-lf', 'MoirasiaHost.app/Contents/MacOS/MoirasiaHost|MoirasiaFeatureService.app/Contents/MacOS/MoirasiaFeatureService'], { encoding: 'utf8' })
+  return result.status === 0
+    ? result.stdout.split('\n').filter((line) => line.includes(scope)).map((line) => Number(line.trim().split(/\s+/, 1)[0])).filter(Number.isInteger)
+    : []
 }
 
 async function waitForExit(child, timeout) {

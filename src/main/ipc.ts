@@ -4,7 +4,7 @@ import { isFeatureId } from '@moirasia/desktop-shell/feature'
 import { sendToRenderer } from '@moirasia/desktop-shell/main'
 import { IPC, isApplicationId, isAppPresenceMode, isControllerPage, type AppPresenceMode } from '../shared/contracts'
 import type { ApplicationController } from './application-controller'
-import type { NativeHostClientLike } from '../shared/native-host-contracts'
+import { nativeHostSnapshotSchema, type NativeHostClientLike } from '../shared/native-host-contracts'
 import type { ShellSettingsStore } from './settings'
 
 export function registerControllerIpc(options: { window: BrowserWindow; controller: ApplicationController; settings: ShellSettingsStore; applyShellAppearance(): void; applyAppPresence(mode: AppPresenceMode): void; nativeClient?: NativeHostClientLike }): () => void {
@@ -56,12 +56,9 @@ export function registerControllerIpc(options: { window: BrowserWindow; controll
 }
 
 function cacheNativeSettings(store: ShellSettingsStore, snapshot: unknown): void {
-  if (!snapshot || typeof snapshot !== 'object') return
-  const value = (snapshot as { settings?: unknown }).settings
-  if (!value || typeof value !== 'object') return
-  const candidate = value as Record<string, unknown>
-  if (candidate.version !== 4 || typeof candidate.launchAtLogin !== 'boolean' || (candidate.appPresence !== 'dock' && candidate.appPresence !== 'menu-bar')) return
-  store.setCached(value as Parameters<ShellSettingsStore['setCached']>[0])
+  const parsed = nativeHostSnapshotSchema.safeParse(snapshot)
+  if (!parsed.success) return
+  store.setCached(parsed.data.settings as Parameters<ShellSettingsStore['setCached']>[0])
 }
 
 function appSetLoginItem(openAtLogin: boolean): void {

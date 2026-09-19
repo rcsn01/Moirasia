@@ -1,4 +1,5 @@
 import XCTest
+import Foundation
 import MoirasiaProtocol
 import ShoutAudioCore
 @testable import AmoveRuntime
@@ -27,12 +28,101 @@ final class NativeRuntimeTests: XCTestCase {
         XCTAssertNil(parser.parse("42,Demo,tcp,127.0.0.1:1234,127.0.0.1:443,Established"))
     }
 
+    func testBondedNativeRulesUseNativeRuleIdentifiers() {
+        let target = BondedApplicationRuleTarget(path: "/Applications/Mail.app", displayName: "Mail", targetKind: "application", bundleIdentifier: "com.apple.mail")
+        XCTAssertTrue(bondedApplicationRuleForTarget(target).id.hasPrefix("rule_"))
+    }
+
+    func testBondedDestinationTargetAcceptsBareAddressesAndPartialCidrs() throws {
+        XCTAssertEqual(try DestinationTarget("100.116.6.9").canonical, "100.116.6.9")
+        XCTAssertEqual(try DestinationTarget("2001:db8::1").canonical, "2001:db8::1")
+        XCTAssertEqual(try DestinationTarget("100.116.6.9/25").canonical, "100.116.6.0/25")
+    }
+
+    func testBondedBlockerLearnsBareDestinationAddresses() throws {
+        let target = BondedApplicationRuleTarget(path: "/Applications/Mail.app", displayName: "Mail", targetKind: "application", bundleIdentifier: "com.apple.mail")
+        let blocker = ObservedIpBlocker()
+        let rule = bondedApplicationRuleForTarget(target)
+        try blocker.addRule(rule, addresses: ["100.116.6.9"])
+        XCTAssertEqual(blocker.targets(), ["100.116.6.9"])
+    }
+
+    func testBondedSettingsMigrateLegacyApplicationRuleIdentifiers() throws {
+        let directory = temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let target = BondedApplicationRuleTarget(path: "/Applications/Mail.app", displayName: "Mail", targetKind: "application", bundleIdentifier: "com.apple.mail")
+        let rule = BondedStoredRule(id: bondedOpaqueId(prefix: "app", value: bondedApplicationRuleIdentity(path: target.path, bundleIdentifier: target.bundleIdentifier)), path: target.path, displayName: target.displayName, targetKind: target.targetKind, bundleIdentifier: target.bundleIdentifier, selectedAt: "2026-09-20T00:00:00Z")
+        let store = BondedSettingsStore(directory: directory.path)
+        try JSONEncoder().encode(BondedSettings(version: 3, monitoringEnabled: true, blockingEnabled: false, applicationRules: [rule])).write(to: store.path)
+        let loaded = store.load()
+        XCTAssertTrue(loaded.applicationRules[0].id.hasPrefix("rule_"))
+        let persisted = String(decoding: try Data(contentsOf: store.path), as: UTF8.self)
+        XCTAssertFalse(persisted.contains("\"id\":\"app_"))
+    }
+
+    func testBondedMonitorKeepsSuccessfulBoundedProcessRunning() {
+        let runningAgain = expectation(description: "successful bounded monitor cycle")
+        var runningUpdates = 0
+        var retried = false
+        let monitor = NetworkMonitor(executablePath: "/usr/bin/true", arguments: [], sampleInterval: 0.02)
+        monitor.onStatus = { status in
+            if status.state == "retrying" { retried = true }
+            guard status.state == "running" else { return }
+            runningUpdates += 1
+            if runningUpdates == 2 { runningAgain.fulfill() }
+        }
+        monitor.start()
+        wait(for: [runningAgain], timeout: 0.75)
+        monitor.stop()
+        XCTAssertFalse(retried)
+    }
+
     func testShoutRuntimeDoesNotEnableBoostWithoutExplicitPermissionRequest() {
         let provider = TestPermissionProvider(status: "not-determined")
         let runtime = ShoutRuntime(dataDirectory: NSTemporaryDirectory() + UUID().uuidString, permission: provider)
         runtime.setBoost(true)
         XCTAssertFalse(runtime.snapshot.boostActive)
         XCTAssertEqual(provider.requestCount, 0)
+    }
+
+    func testShoutSettingsUseLocalDefaultsAndRecoverFromBackup() throws {
+        let directory = temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let store = ShoutSettingsStore(dataDirectory: directory.path)
+        var first = ShoutControlSettings()
+        first.gainDb = 7
+        try store.save(first)
+        var second = first
+        second.gainDb = 11
+        try store.save(second)
+        XCTAssertEqual(store.load().gainDb, 11)
+        try Data("{broken".utf8).write(to: store.path)
+        XCTAssertEqual(store.load().gainDb, 7)
+        XCTAssertEqual(store.load().makeDefaultInput, false)
+    }
+
+    func testBondedSettingsMigrateUnsafeRulesToVersionThree() throws {
+        let directory = temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let store = BondedSettingsStore(directory: directory.path)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        let legacy = "{\"version\":2,\"monitoringEnabled\":false,\"blockingEnabled\":true,\"rules\":[{\"target\":\"192.0.2.1\"}]}"
+        try Data(legacy.utf8).write(to: store.path)
+        let settings = store.load()
+        XCTAssertEqual(settings.version, 3)
+        XCTAssertFalse(settings.blockingEnabled)
+        XCTAssertTrue(settings.applicationRules.isEmpty)
+        XCTAssertTrue(store.migratedFromVersionTwo)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: store.versionTwoBackupPath.path))
+    }
+
+    func testAmoveFirstSaveDoesNotRequireAnExistingFile() throws {
+        let directory = temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let store = AmoveSettingsStore(dataDirectory: directory.path)
+        let settings = store.load()
+        try store.save(settings)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: store.path.path))
     }
 
     func testShoutEnginePublishesInitialDeviceList() {
@@ -149,6 +239,12 @@ final class NativeRuntimeTests: XCTestCase {
         XCTAssertEqual(result.settings.presenceMode, "background")
         XCTAssertEqual(result.settings.migrations["macUserDefaultsV1"], "completed-with-warnings")
     }
+}
+
+private func temporaryDirectory() -> URL {
+    let directory = URL(fileURLWithPath: NSTemporaryDirectory(), isDirectory: true).appendingPathComponent("moirasia-native-test-\(UUID().uuidString)", isDirectory: true)
+    try! FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+    return directory
 }
 
 private final class TestPermissionProvider: MicrophonePermissionProvider {

@@ -10,6 +10,7 @@ import { installMemoryDiagnostics } from './memory-diagnostics'
 import { installApplicationMenu } from './menu'
 import { applicationAgentPath, moirasiaFeatureServicePath, moirasiaHostPath, moirasiaHostSocketPath, moirasiaNativeFeaturePaths } from './paths'
 import { NativeHostClient } from './native-host/client'
+import { nativeHostSnapshotSchema } from '../shared/native-host-contracts'
 import { ShellWindowLifecycle } from './shell-window'
 import { ShellSettingsStore } from './settings'
 import { UiCommandRouter, parseUiIntent } from './ui-command-router'
@@ -38,39 +39,62 @@ async function createApplication(): Promise<void> {
 
   const menuBarIconPath = app.isPackaged ? join(process.resourcesPath, 'tray', 'trayTemplate.png') : join(app.getAppPath(), 'build', 'trayTemplate.png')
   const nativeRuntimeAvailable = process.platform === 'darwin' && existsSync(moirasiaHostPath()) && existsSync(moirasiaFeatureServicePath())
-  let shellWindow: ShellWindowLifecycle
-  let presence: AppPresence
-  let openShell: (page?: import('../shared/contracts').ControllerPage) => Promise<void>
-  const nativeClient = nativeRuntimeAvailable ? new NativeHostClient({ socketPath: moirasiaHostSocketPath(app.getPath('userData')), tokenPath: join(app.getPath('userData'), 'runtime', 'client.token') }) : undefined
   const nativeFeaturePaths = nativeRuntimeAvailable ? moirasiaNativeFeaturePaths() : undefined
-  presence = new AppPresence({
-    menuBarIconPath,
-    open: () => void openShell().catch(console.error),
-    ...(process.platform === 'darwin' ? { nativeHost: nativeRuntimeAvailable ? {
-      executable: moirasiaHostPath(),
-      featureServicePath: moirasiaFeatureServicePath(),
-      applicationPath: resolve(process.execPath, '../../..'),
-      userData: app.getPath('userData'),
-      iconPath: menuBarIconPath,
-      pidPath: join(app.getPath('userData'), 'menu-host.pid'),
-      bondedHelperPath: nativeFeaturePaths!.bondedHelperPath,
-      shoutDriverPath: nativeFeaturePaths!.shoutDriverPath
-    } : {
-      executable: applicationAgentPath(),
-      applicationPath: resolve(process.execPath, '../../..'),
-      pidPath: join(app.getPath('userData'), 'menu-host.pid')
-    } } : {})
-  })
-  presence.apply(settings.get().appPresence)
-  if (nativeClient) {
-    if (!await presence.waitForNativeHost() || !await connectNativeHost(nativeClient)) {
-      if (app.isPackaged) throw new Error('MoirasiaHost.app did not become ready.')
-      console.warn('MoirasiaHost is unavailable; using the development feature runtime.')
+  const nativeHostOptions = nativeRuntimeAvailable ? {
+    executable: moirasiaHostPath(),
+    featureServicePath: moirasiaFeatureServicePath(),
+    applicationPath: resolve(process.execPath, '../../..'),
+    userData: app.getPath('userData'),
+    iconPath: menuBarIconPath,
+    pidPath: join(app.getPath('userData'), 'menu-host.pid'),
+    bondedHelperPath: nativeFeaturePaths!.bondedHelperPath,
+    shoutDriverPath: nativeFeaturePaths!.shoutDriverPath
+  } : undefined
+  const localHostOptions = process.platform === 'darwin' ? {
+    executable: applicationAgentPath(),
+    applicationPath: resolve(process.execPath, '../../..'),
+    pidPath: join(app.getPath('userData'), 'menu-host.pid')
+  } : undefined
+
+  let shellWindow: ShellWindowLifecycle
+  let openShell: (page?: import('../shared/contracts').ControllerPage) => Promise<void>
+  let presence: AppPresence
+  let nativeClient: NativeHostClient | undefined
+  let nativeSelected = false
+
+  if (nativeRuntimeAvailable && nativeHostOptions) {
+    const candidate = new AppPresence({
+      menuBarIconPath,
+      open: () => void openShell().catch(console.error),
+      nativeHost: nativeHostOptions
+    })
+    nativeClient = new NativeHostClient({
+      socketPath: moirasiaHostSocketPath(app.getPath('userData')),
+      tokenPath: join(app.getPath('userData'), 'runtime', 'client.token')
+    })
+    try {
+      candidate.apply(settings.get().appPresence)
+      if (!await candidate.waitForNativeHost() || !await connectNativeHost(nativeClient)) throw new Error('MoirasiaHost.app did not become ready.')
+      presence = candidate
+      nativeSelected = true
+    } catch (error) {
+      candidate.abortNativeBootstrap()
+      nativeClient.close()
+      console.error('Native Moirasia bootstrap failed; local ownership was not selected.', error)
+      throw error
     }
+  } else {
+    presence = new AppPresence({
+      menuBarIconPath,
+      open: () => void openShell().catch(console.error),
+      ...(localHostOptions ? { nativeHost: localHostOptions } : {})
+    })
+    presence.apply(settings.get().appPresence)
   }
 
   const host = new EmbeddedFeatureHost()
-  const features = new FeatureRuntime(settings, { host, context: (id) => suiteFeatureContext(id, host.surface(id)), ...(nativeClient?.isConnected() ? { nativeClient } : {}) })
+  const featureOptions = nativeSelected && nativeClient ? { nativeClient } : {}
+  const features = new FeatureRuntime(settings, { host, context: (id) => suiteFeatureContext(id, host.surface(id)), ...featureOptions })
   await features.syncAtLaunch()
   const controller = new ApplicationController(appearances, settings, features)
 
@@ -83,17 +107,39 @@ async function createApplication(): Promise<void> {
     appearance: () => appearances.get().values.moirasia,
     presenceMode: () => presence.mode,
     applyAppPresence: (mode) => presence.apply(mode),
-    ...(nativeClient?.isConnected() ? { nativeClient } : {}),
+    ...(nativeSelected && nativeClient ? { nativeClient } : {}),
     onMenuBarWindowClosed: () => uiLifetime.shellClosed(),
     ...(process.env.ELECTRON_RENDERER_URL ? { rendererUrl: process.env.ELECTRON_RENDERER_URL } : {})
   })
   openShell = async (page) => { await shellWindow.open(page); uiLifetime.shellOpened() }
-  uiLifetime = new UiLifetime({ mode: () => presence.mode, onFinalWindowGone: () => { preserveNativeMenuHost = true; app.quit() } })
+  uiLifetime = new UiLifetime({
+    mode: () => presence.mode,
+    canExitToNativeHost: () => nativeSelected && nativeClient?.isConnected() === true,
+    onFinalWindowGone: () => {
+      preserveNativeMenuHost = nativeSelected && nativeClient?.isConnected() === true
+      app.quit()
+    }
+  })
   const commandRouter = new UiCommandRouter({ openShell, openShelf: () => features.openShelf(), toggleShelf: () => features.toggleShelf() })
   const stopNavigation = host.subscribeNavigation((feature) => { if (feature) void openShell(feature).catch(console.error) })
   let nativeWillQuit = false
-  const stopNativeWillQuit = nativeClient?.isConnected() ? nativeClient.subscribe('host.willQuit', () => { nativeWillQuit = true }) : () => undefined
-  const stopNativeUi = nativeClient?.isConnected() ? [
+  let reconnecting: Promise<void> | undefined
+  const reconnectNativeHost = async (): Promise<void> => {
+    if (!nativeSelected || !nativeClient || nativeWillQuit || reconnecting) return reconnecting
+    reconnecting = (async () => {
+      if (!await presence.restartNativeHost()) return
+      await nativeClient.connect()
+    })().catch((error) => { console.error('Could not reconnect to MoirasiaHost', error) }).finally(() => { reconnecting = undefined })
+    return reconnecting
+  }
+  const stopNativeConnection = nativeSelected && nativeClient?.subscribeConnection
+    ? nativeClient.subscribeConnection((event) => {
+      uiLifetime.nativeHostAvailabilityChanged()
+      if (event.state === 'disconnected') void reconnectNativeHost()
+    })
+    : () => undefined
+  const stopNativeWillQuit = nativeSelected && nativeClient ? nativeClient.subscribe('host.willQuit', () => { nativeWillQuit = true }) : () => undefined
+  const stopNativeUi = nativeSelected && nativeClient ? [
     nativeClient.subscribe('ui.openShell', () => commandRouter.route({ kind: 'shell' })),
     nativeClient.subscribe('ui.toggleShelf', () => commandRouter.route({ kind: 'toggle-shelf' })),
     nativeClient.subscribe('host.uiStateChanged', (payload) => {
@@ -135,19 +181,21 @@ async function createApplication(): Promise<void> {
     nativeTheme.removeListener('updated', updateSystemAppearance)
     disposeMemoryDiagnostics()
     stopNavigation()
+    stopNativeConnection()
     stopNativeUi.forEach((stop) => stop())
     stopNativeWillQuit()
     commandRouter.dispose()
-    if (preserveNativeMenuHost) presence.preserveNativeHost()
+    if (preserveNativeMenuHost && nativeSelected && nativeClient?.isConnected()) presence.preserveNativeHost()
     presence.dispose()
     const finish = async (): Promise<void> => {
       await shellWindow.dispose()
       controller.close()
       await features.disposeAll()
       host.dispose()
+      nativeClient?.close()
       app.quit()
     }
-    const shouldStopNativeRuntime = Boolean(nativeClient?.isConnected() && !preserveNativeMenuHost && !nativeWillQuit)
+    const shouldStopNativeRuntime = Boolean(nativeSelected && nativeClient?.isConnected() && !preserveNativeMenuHost && !nativeWillQuit)
     if (shouldStopNativeRuntime) void nativeClient!.request('host.quitSuite').catch((error) => console.error('Could not coordinate native suite quit', error)).finally(() => void finish())
     else void finish()
   })
@@ -162,6 +210,7 @@ function setLoginItemSettings(openAtLogin: boolean): void {
 async function connectNativeHost(client: NativeHostClient): Promise<boolean> {
   try {
     await client.connect()
+    nativeHostSnapshotSchema.parse(await client.request('host.getSnapshot'))
     return true
   } catch (error) {
     console.error('Could not connect to MoirasiaHost', error)

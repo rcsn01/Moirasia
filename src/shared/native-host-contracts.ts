@@ -1,10 +1,6 @@
 import { z } from 'zod'
 import type { AppPresenceMode, ControllerPage, ShellSettings } from './contracts'
-import type { AppearanceSnapshot } from '@moirasia/desktop-shell'
 import type { FeatureId } from '@moirasia/desktop-shell/feature'
-import type { BondedSnapshot } from '../../apps/integrated/Bonded/src/shared/contracts'
-import type { ShoutSnapshot } from '../../apps/integrated/Shout/src/shared/contracts'
-import type { MainState as AmoveMainState } from '../../apps/integrated/Amove/src/shared/contracts'
 
 export const NATIVE_PROTOCOL_VERSION = 1 as const
 export const NATIVE_MAX_MESSAGE_BYTES = 1024 * 1024
@@ -20,17 +16,60 @@ export const nativeFeatureStatusSchema = z.object({
 }).strict()
 export type NativeFeatureStatus = z.infer<typeof nativeFeatureStatusSchema>
 
+const nativeShellSettingsSchema = z.object({
+  version: z.literal(4),
+  launchAtLogin: z.boolean(),
+  appPresence: z.enum(['dock', 'menu-bar']),
+  pendingLoginItems: z.record(z.string(), z.literal(true)),
+  features: z.record(z.string(), z.boolean())
+}).strict()
+
+const completeNativeFeatureStatusSchema = z.array(nativeFeatureStatusSchema).superRefine((features, context) => {
+  const expected = new Set(['amove', 'bonded', 'shout'])
+  const seen = new Set<string>()
+  for (const feature of features) {
+    if (seen.has(feature.id)) context.addIssue({ code: z.ZodIssueCode.custom, message: `Duplicate feature status '${feature.id}'.` })
+    seen.add(feature.id)
+  }
+  for (const id of expected) {
+    if (!seen.has(id)) context.addIssue({ code: z.ZodIssueCode.custom, message: `Missing feature status '${id}'.` })
+  }
+})
+
+/** Strict host bootstrap envelope. Product snapshots remain opaque here and are decoded by product adapters. */
 export const nativeHostSnapshotSchema = z.object({
   version: z.literal(NATIVE_PROTOCOL_VERSION),
   revision: z.number().int().nonnegative(),
-  settings: z.custom<ShellSettings>(),
-  appearances: z.custom<AppearanceSnapshot>(),
-  features: z.array(nativeFeatureStatusSchema),
-  bonded: z.custom<BondedSnapshot>().optional(),
-  shout: z.custom<ShoutSnapshot>().optional(),
-  amove: z.custom<AmoveMainState>().optional()
+  settings: nativeShellSettingsSchema,
+  features: completeNativeFeatureStatusSchema,
+  bonded: z.unknown().optional(),
+  shout: z.unknown().optional(),
+  amove: z.unknown().optional()
 }).strict()
-export type NativeHostSnapshot = z.infer<typeof nativeHostSnapshotSchema>
+export type NativeHostSnapshot = z.infer<typeof nativeHostSnapshotSchema> & { readonly settings: ShellSettings }
+
+export const nativeFeatureServiceStateSchema = z.enum(['starting', 'running', 'error', 'stopped'])
+export type NativeFeatureServiceState = z.infer<typeof nativeFeatureServiceStateSchema>
+
+export const nativeFeatureServiceHealthSchema = z.object({
+  state: nativeFeatureServiceStateSchema,
+  error: z.string().max(4_096).optional(),
+  restartCount: z.number().int().nonnegative()
+}).strict().superRefine((health, context) => {
+  if (health.state === 'error' && health.error === undefined) context.addIssue({ code: z.ZodIssueCode.custom, path: ['error'], message: 'Error health state requires an error message.' })
+  if (health.state !== 'error' && health.error !== undefined) context.addIssue({ code: z.ZodIssueCode.custom, path: ['error'], message: 'Only error health state may include an error message.' })
+})
+export type NativeFeatureServiceHealth = z.infer<typeof nativeFeatureServiceHealthSchema>
+
+const nativeLegacyFeatureServiceHealthSchema = z.object({ featureService: z.literal('error') }).strict()
+const nativeStructuredFeatureServiceHealthSchema = z.object({ featureService: nativeFeatureServiceHealthSchema }).strict()
+
+export const nativeHostSnapshotChangedPayloadSchema = z.union([
+  nativeHostSnapshotSchema,
+  nativeStructuredFeatureServiceHealthSchema,
+  nativeLegacyFeatureServiceHealthSchema
+])
+export type NativeHostSnapshotChangedPayload = z.infer<typeof nativeHostSnapshotChangedPayloadSchema>
 
 export const nativeHostErrorSchema = z.object({
   code: z.string().min(1).max(128),
@@ -59,6 +98,11 @@ export const nativeHostEventSchema = z.object({
   payload: z.unknown()
 }).strict()
 export type NativeHostEvent = z.infer<typeof nativeHostEventSchema>
+
+export const nativeHostSnapshotChangedEventSchema = nativeHostEventSchema.extend({
+  event: z.literal('host.snapshotChanged'),
+  payload: nativeHostSnapshotChangedPayloadSchema
+})
 
 export const nativeHostMessageSchema = z.union([nativeHostRequestSchema, nativeHostResponseSchema, nativeHostEventSchema])
 export type NativeHostMessage = z.infer<typeof nativeHostMessageSchema>
@@ -104,11 +148,19 @@ export type NativeHostMutationMethod =
   | 'amove.cancelShelf'
 export type NativeHostMethod = NativeHostReadMethod | NativeHostMutationMethod
 
+export type NativeHostConnectionState = 'connected' | 'reconnected' | 'disconnected'
+export interface NativeHostConnectionEvent {
+  readonly state: NativeHostConnectionState
+  readonly generation: number
+  readonly error?: Error
+}
+
 export interface NativeHostClientLike {
   connect(): Promise<void>
   close(): void
   request<T = unknown>(method: NativeHostMethod | string, params?: Record<string, unknown>): Promise<T>
   subscribe(event: string, listener: (payload: unknown, revision: number) => void): () => void
+  subscribeConnection?(listener: (event: NativeHostConnectionEvent) => void): () => void
   isConnected(): boolean
 }
 
@@ -125,7 +177,15 @@ export function encodeNativeHostMessage(message: NativeHostRequest | NativeHostR
 
 export function decodeNativeHostMessage(line: string): NativeHostMessage {
   if (new TextEncoder().encode(line).byteLength > NATIVE_MAX_MESSAGE_BYTES) throw new RangeError('Native host message exceeds the 1 MiB limit')
-  return nativeHostMessageSchema.parse(JSON.parse(line))
+  const message = nativeHostMessageSchema.parse(JSON.parse(line))
+  if (isNativeHostEvent(message) && message.event === 'host.snapshotChanged') nativeHostSnapshotChangedEventSchema.parse(message)
+  return message
+}
+
+export function normalizeNativeHostSnapshotChangedPayload(value: unknown): NativeHostSnapshotChangedPayload {
+  const payload = nativeHostSnapshotChangedPayloadSchema.parse(value)
+  if (isLegacyFeatureServiceHealth(payload)) return { featureService: { state: 'error', error: 'MoirasiaFeatureService is unavailable.', restartCount: 0 } }
+  return payload
 }
 
 export function isNativeHostEvent(message: NativeHostMessage): message is NativeHostEvent {
@@ -134,6 +194,18 @@ export function isNativeHostEvent(message: NativeHostMessage): message is Native
 
 export function isNativeHostResponse(message: NativeHostMessage): message is NativeHostResponse {
   return 'ok' in message
+}
+
+export function isNativeHostSnapshot(value: unknown): value is NativeHostSnapshot {
+  return nativeHostSnapshotSchema.safeParse(value).success
+}
+
+export function isNativeHostHealth(value: unknown): value is { readonly featureService: NativeFeatureServiceHealth } {
+  return nativeStructuredFeatureServiceHealthSchema.safeParse(value).success
+}
+
+function isLegacyFeatureServiceHealth(value: NativeHostSnapshotChangedPayload): value is { readonly featureService: 'error' } {
+  return 'featureService' in value && value.featureService === 'error'
 }
 
 export type NativeHostUiState = {

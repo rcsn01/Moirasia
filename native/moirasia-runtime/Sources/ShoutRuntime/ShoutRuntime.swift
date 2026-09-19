@@ -26,9 +26,9 @@ public struct ShoutRuntimeSnapshot: Codable, Equatable, Sendable {
     public var version = 1
     public var boostEnabled = false
     public var boostActive = false
-    public var gainDb = 12.0
+    public var gainDb = 0.0
     public var limiterEnabled = true
-    public var makeDefaultInput = true
+    public var makeDefaultInput = false
     public var sourceMode = "follow-default"
     public var sourceUid: String?
     public var activeSourceUid: String?
@@ -49,21 +49,34 @@ public final class ShoutRuntime {
     public private(set) var snapshot: ShoutRuntimeSnapshot
     public let permission: MicrophonePermissionProvider
     private let directory: URL
+    private let settingsStore: ShoutSettingsStore
     private var engine: ShoutEngine?
     public var onSnapshot: ((ShoutRuntimeSnapshot) -> Void)?
 
     public init(dataDirectory: String, permission: MicrophonePermissionProvider = NativeMicrophonePermissionProvider()) {
         directory = URL(fileURLWithPath: dataDirectory, isDirectory: true)
+        settingsStore = ShoutSettingsStore(dataDirectory: dataDirectory)
         self.permission = permission
-        snapshot = (try? JSONDecoder().decode(ShoutRuntimeSnapshot.self, from: Data(contentsOf: directory.appendingPathComponent("settings.json")))) ?? ShoutRuntimeSnapshot()
+        let controls = settingsStore.load()
+        snapshot = ShoutRuntimeSnapshot()
+        snapshot.boostEnabled = controls.boostEnabled
+        snapshot.gainDb = controls.gainDb
+        snapshot.limiterEnabled = controls.limiterEnabled
+        snapshot.makeDefaultInput = controls.makeDefaultInput
+        snapshot.sourceMode = controls.sourceMode
+        snapshot.sourceUid = controls.sourceUid
         snapshot.permissionState = permission.authorizationStatus()
     }
 
     public func start() {
         guard engine == nil else { publish(); return }
+        let controls = storedControls()
+        let resumeBoost = controls.boostEnabled && permission.authorizationStatus() == "granted"
         let runtime = ShoutEngine(dataDirectory: directory) { [weak self] event in self?.consume(event) }
         engine = runtime
         runtime.start()
+        applyStoredControls(controls)
+        if resumeBoost { setBoost(true) }
         publish()
     }
 
@@ -82,29 +95,90 @@ public final class ShoutRuntime {
             permission.requestAccess { [weak self] granted in
                 guard let self else { return }
                 self.snapshot.permissionState = granted ? "granted" : "denied"
-                guard granted else { self.snapshot.boostEnabled = false; self.snapshot.boostActive = false; self.snapshot.captureState = "blocked"; self.publish(); completion?(ShoutRuntimeError.permissionDenied); return }
+                guard granted else {
+                    self.snapshot.boostEnabled = false
+                    self.snapshot.boostActive = false
+                    self.snapshot.captureState = "blocked"
+                    self.snapshot.error = ShoutRuntimeError.permissionDenied.localizedDescription
+                    self.publish()
+                    completion?(ShoutRuntimeError.permissionDenied)
+                    return
+                }
                 self.send(.setBoost, enabled: true, completion: completion)
             }
             return
         }
-        if enabled && snapshot.permissionState != "granted" { snapshot.boostEnabled = false; snapshot.boostActive = false; snapshot.captureState = "blocked"; publish(); completion?(ShoutRuntimeError.permissionDenied); return }
+        if enabled && snapshot.permissionState != "granted" {
+            snapshot.boostEnabled = false
+            snapshot.boostActive = false
+            snapshot.captureState = "blocked"
+            snapshot.error = ShoutRuntimeError.permissionDenied.localizedDescription
+            publish()
+            completion?(ShoutRuntimeError.permissionDenied)
+            return
+        }
         send(.setBoost, enabled: enabled, completion: completion)
     }
 
-    public func setGain(_ db: Double, completion: ((Error?) -> Void)? = nil) { send(.setGain, db: db, completion: completion) }
-    public func setLimiter(_ enabled: Bool, completion: ((Error?) -> Void)? = nil) { send(.setLimiter, enabled: enabled, completion: completion) }
-    public func setMakeDefaultInput(_ enabled: Bool, completion: ((Error?) -> Void)? = nil) { send(.setDefaultInput, enabled: enabled, completion: completion) }
+    public func setGain(_ db: Double, completion: ((Error?) -> Void)? = nil) {
+        send(.setGain, db: db) { [weak self] error in
+            if error == nil { self?.snapshot.gainDb = db; self?.publish() }
+            completion?(error)
+        }
+    }
+    public func setLimiter(_ enabled: Bool, completion: ((Error?) -> Void)? = nil) {
+        send(.setLimiter, enabled: enabled) { [weak self] error in
+            if error == nil { self?.snapshot.limiterEnabled = enabled; self?.publish() }
+            completion?(error)
+        }
+    }
+    public func setMakeDefaultInput(_ enabled: Bool, completion: ((Error?) -> Void)? = nil) {
+        send(.setDefaultInput, enabled: enabled) { [weak self] error in
+            if error == nil { self?.snapshot.makeDefaultInput = enabled; self?.publish() }
+            completion?(error)
+        }
+    }
     public func setSource(mode: String, uid: String?, completion: ((Error?) -> Void)? = nil) {
         guard let mode = SourceMode(rawValue: mode) else { completion?(ShoutRuntimeError.invalidSource); return }
-        send(.setSource, mode: mode, uid: uid, completion: completion)
+        send(.setSource, mode: mode, uid: uid) { [weak self] error in
+            if error == nil { self?.snapshot.sourceMode = mode.rawValue; self?.snapshot.sourceUid = mode == .device ? uid : nil; self?.publish() }
+            completion?(error)
+        }
+    }
+
+    private func storedControls() -> ShoutControlSettings {
+        var controls = ShoutControlSettings()
+        controls.boostEnabled = snapshot.boostEnabled
+        controls.gainDb = snapshot.gainDb
+        controls.limiterEnabled = snapshot.limiterEnabled
+        controls.makeDefaultInput = snapshot.makeDefaultInput
+        controls.sourceMode = snapshot.sourceMode
+        controls.sourceUid = snapshot.sourceUid
+        return controls
+    }
+
+    private func applyStoredControls(_ controls: ShoutControlSettings) {
+        setGain(controls.gainDb)
+        setLimiter(controls.limiterEnabled)
+        setSource(mode: controls.sourceMode, uid: controls.sourceUid)
+        setMakeDefaultInput(controls.makeDefaultInput)
     }
 
     private func send(_ type: HelperCommandType, enabled: Bool? = nil, db: Double? = nil, mode: SourceMode? = nil, uid: String? = nil, completion: ((Error?) -> Void)?) {
-        guard let engine else { completion?(ShoutRuntimeError.engine("Shout audio engine is not running.")); return }
+        guard let engine else {
+            let error = ShoutRuntimeError.engine("Shout audio engine is not running.")
+            snapshot.error = error.localizedDescription
+            publish()
+            completion?(error)
+            return
+        }
         let request = HelperRequest(id: Int.random(in: 1...Int.max), type: type, enabled: enabled, db: db, mode: mode, uid: uid)
         engine.handle(request) { [weak self] response in
             if let state = response.state { self?.consume(state) }
-            completion?(response.ok ? nil : ShoutRuntimeError.engine(response.error ?? "Shout audio engine rejected the request."))
+            let error = response.ok ? nil : ShoutRuntimeError.engine(response.error ?? "Shout audio engine rejected the request.")
+            self?.snapshot.error = error?.localizedDescription
+            if error != nil { self?.publish() }
+            completion?(error)
         }
     }
 
@@ -138,7 +212,7 @@ public final class ShoutRuntime {
     }
 
     private func publish() { writeSettings(); onSnapshot?(snapshot) }
-    private func writeSettings() { try? FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700]); try? JSONEncoder().encode(snapshot).write(to: directory.appendingPathComponent("settings.json"), options: .atomic) }
+    private func writeSettings() { try? settingsStore.save(storedControls()) }
     private func writeRecovery(restored: Bool) { let value = ["restored": restored, "timestamp": ISO8601DateFormatter().string(from: Date())] as [String: Any]; if let data = try? JSONSerialization.data(withJSONObject: value) { try? data.write(to: directory.appendingPathComponent("default-input-recovery.json"), options: .atomic) } }
 }
 

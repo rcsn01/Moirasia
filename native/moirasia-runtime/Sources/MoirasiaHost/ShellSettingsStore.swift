@@ -66,7 +66,7 @@ final class ShellSettingsStore {
             "version": .number(4),
             "launchAtLogin": .bool(launchAtLogin),
             "appPresence": .string(presence),
-            "pendingLoginItems": .object(object(source["pendingLoginItems"])),
+            "pendingLoginItems": .object(validPending(source["pendingLoginItems"])),
             "features": .object(validFeatures(source["features"]))
         ]
         if version == nil, let legacy = object(source["autoStart"]) as [String: JSONValue]? {
@@ -75,6 +75,11 @@ final class ShellSettingsStore {
             result["pendingLoginItems"] = .object(pending)
         }
         return result
+    }
+
+    private func validPending(_ value: JSONValue?) -> [String: JSONValue] {
+        let source = object(value)
+        return source.filter { ["amove", "bonded", "shout"].contains($0.key) && $0.value.boolValue == true }
     }
 
     private func validFeatures(_ value: JSONValue?) -> [String: JSONValue] {

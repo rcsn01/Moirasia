@@ -3,8 +3,9 @@
 // authenticate (positive + negative), read snapshots, mutate, and shut down.
 import { spawn } from 'node:child_process'
 import { createConnection } from 'node:net'
-import { randomUUID } from 'node:crypto'
+import { randomUUID, createHash } from 'node:crypto'
 import { readFile, mkdtemp, rm } from 'node:fs/promises'
+import { realpathSync } from 'node:fs'
 import { existsSync } from 'node:fs'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
@@ -18,7 +19,7 @@ if (!existsSync(hostPath) || !existsSync(servicePath)) {
   process.exit(1)
 }
 
-const userData = await mkdtemp(join(tmpdir(), 'moirasia-smoke-'))
+const userData = realpathSync(await mkdtemp(join(tmpdir(), 'moirasia-smoke-')))
 const host = spawn(hostPath, [
   '--host',
   '--application', join(root, 'node_modules/electron/dist/Electron.app/Contents/MacOS/Electron'),
@@ -28,7 +29,7 @@ const host = spawn(hostPath, [
 ], { stdio: ['ignore', 'inherit', 'inherit'] })
 
 const runtimeDir = join(userData, 'runtime')
-const socketPath = join(runtimeDir, 'host.sock')
+const socketPath = join(tmpdir(), `moirasia-host-${createHash('sha256').update(userData, 'utf8').digest('hex').slice(0, 16)}.sock`)
 const tokenPath = join(runtimeDir, 'client.token')
 for (let i = 0; i < 100; i += 1) {
   if (existsSync(socketPath) && existsSync(tokenPath)) break
@@ -111,5 +112,6 @@ console.log('installOn.ok =', installOn.ok)
 host.kill('SIGTERM')
 const code = await new Promise((resolve) => host.once('exit', resolve))
 await rm(userData, { recursive: true, force: true })
+try { await rm(socketPath, { force: true }) } catch { /* Host cleanup normally removes it. */ }
 console.log('host exit =', code)
 process.exit(code === 0 || code === null ? 0 : 1)

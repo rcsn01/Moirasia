@@ -114,4 +114,16 @@ describe('ShellWindowLifecycle', () => {
     expect(fakes.BrowserWindow.instances).toHaveLength(1)
     expect(fakes.sendToRenderer).toHaveBeenCalledWith(fakes.BrowserWindow.instances[0]!.webContents, 'controller:navigate', 'features')
   })
+
+  it('notifies the final-window boundary after renderer-process loss releases the shell', async () => {
+    const { lifecycle, onMenuBarWindowClosed } = setup('menu-bar')
+    await lifecycle.open()
+    const window = fakes.BrowserWindow.instances[0]!
+
+    window.webContents.emit('render-process-gone')
+    await lifecycle.suspend()
+
+    expect(window.destroy).toHaveBeenCalled()
+    await vi.waitFor(() => expect(onMenuBarWindowClosed).toHaveBeenCalledOnce())
+  })
 })

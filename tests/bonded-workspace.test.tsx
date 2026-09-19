@@ -12,10 +12,10 @@ const snapshot: BondedSnapshot = {
   monitorStatus: { state: 'running', message: 'Watching live network activity.' },
   firewallStatus: { state: 'disabled', message: 'Blocking is off.', helperInstalled: true },
   capability: { backend: 'pf', scope: 'system-destination', perApplication: false, reason: 'Observed IPs affect every app.' },
-  applicationRules: [{ id: 'app_0123456789abcdef', path: '/Applications/Mail.app', displayName: 'Mail', targetKind: 'application', selectedAt: '2026-08-08T00:00:00.000Z', learnedAddresses: ['93.184.216.34'], state: 'learning' }],
+  applicationRules: [{ id: 'app_0123456789abcdef', iconDataUrl: 'data:image/png;base64,mail', path: '/Applications/Mail.app', displayName: 'Mail', targetKind: 'application', selectedAt: '2026-08-08T00:00:00.000Z', learnedAddresses: ['93.184.216.34'], state: 'learning' }],
   learnedAddressCount: 1,
   addressLimitReached: false,
-  applications: [{ id: 'app_aaaaaaaaaaaaaaaa', displayName: 'Safari', recentFlowCount: 1, selected: false, flows: [] }]
+  applications: [{ id: 'app_aaaaaaaaaaaaaaaa', displayName: 'Safari', iconDataUrl: 'data:image/png;base64,safari', recentFlowCount: 1, selected: false, flows: [] }]
 }
 
 function api(): BondedApi {
@@ -36,6 +36,16 @@ beforeEach(() => vi.spyOn(window, 'confirm').mockReturnValue(true))
 afterEach(() => { cleanup(); vi.restoreAllMocks() })
 
 describe('Bonded application workspace', () => {
+  it('renders proper icons for observed and blocked applications', async () => {
+    const bridge = api()
+    render(<BondedPanel bridge={bridge} appearance="light" />)
+
+    const observedIcon = await screen.findByTestId('observed-application-app_aaaaaaaaaaaaaaaa')
+    const blockedIcon = screen.getByTestId('blocked-application-app_0123456789abcdef')
+    expect(observedIcon.querySelector('img')).toHaveAttribute('src', 'data:image/png;base64,safari')
+    expect(blockedIcon.querySelector('img')).toHaveAttribute('src', 'data:image/png;base64,mail')
+  })
+
   it('shows observed and blocked applications together without tab navigation', async () => {
     const bridge = api()
     render(<BondedPanel bridge={bridge} appearance="light" />)
