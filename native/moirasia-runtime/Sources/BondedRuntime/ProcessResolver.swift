@@ -16,8 +16,8 @@ public struct BondedProcessTarget {
 
 public func bondedContainingApplication(_ executablePath: String) -> String? {
     guard let match = executablePath.range(of: "^(.+?\\.app)(?:/|$)", options: [.regularExpression, .caseInsensitive]) else { return nil }
-    return String(executablePath[match.lowerBound ..< match.upperBound])
-        .trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+    let value = String(executablePath[match.lowerBound ..< match.upperBound])
+    return value.hasSuffix("/") ? String(value.dropLast()) : value
 }
 
 public func bondedOpaqueId(prefix: String, value: String) -> String {

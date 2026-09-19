@@ -344,7 +344,7 @@ public final class BondedRuntime {
 
     private func applicationIconDataURL(_ path: String) -> String? {
         if let cached = iconCache[path] { return cached }
-        let image = NSWorkspace.shared.icon(forFile: path)
+        let image = NSWorkspace.shared.icon(forFile: bondedContainingApplication(path) ?? path)
         var rect = CGRect(x: 0, y: 0, width: 64, height: 64)
         guard let source = image.cgImage(forProposedRect: &rect, context: nil, hints: nil),
               let colorSpace = CGColorSpace(name: CGColorSpace.sRGB),

@@ -33,6 +33,11 @@ final class NativeRuntimeTests: XCTestCase {
         XCTAssertTrue(bondedApplicationRuleForTarget(target).id.hasPrefix("rule_"))
     }
 
+    func testBondedApplicationIconLookupCanUseTheContainingBundle() {
+        XCTAssertEqual(bondedContainingApplication("/Applications/Mail.app/Contents/MacOS/Mail"), "/Applications/Mail.app")
+        XCTAssertNil(bondedContainingApplication("/usr/bin/curl"))
+    }
+
     func testBondedDestinationTargetAcceptsBareAddressesAndPartialCidrs() throws {
         XCTAssertEqual(try DestinationTarget("100.116.6.9").canonical, "100.116.6.9")
         XCTAssertEqual(try DestinationTarget("2001:db8::1").canonical, "2001:db8::1")
