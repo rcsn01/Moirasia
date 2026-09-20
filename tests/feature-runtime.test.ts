@@ -3,7 +3,7 @@ import { mkdtemp, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import type { FeatureContext, MoirasiaFeature } from '../packages/desktop-shell/src/feature'
+import type { FeatureContext, FeatureId, MoirasiaFeature } from '../packages/desktop-shell/src/feature'
 
 const electron = vi.hoisted(() => ({ app: { relaunch: vi.fn(), exit: vi.fn((code?: number) => code) } }))
 vi.mock('electron', () => electron)
@@ -11,7 +11,7 @@ vi.mock('electron', () => electron)
 import { EmbeddedFeatureHost } from '../src/main/features/embedded-host'
 import { FeatureRuntime } from '../src/main/features/runtime'
 import { ShellSettingsStore } from '../src/main/settings'
-import type { NativeHostClientLike } from '../src/shared/native-host-contracts'
+import type { NativeHostClientLike, NativeHostConnectionEvent } from '../src/shared/native-host-contracts'
 
 class FakeShellWindow extends EventEmitter {
   webContents = {}
@@ -129,6 +129,7 @@ describe('FeatureRuntime', () => {
     await expect(runtime.setInstalled('amove', false)).rejects.toThrow('native process did not stop')
     expect(settings.get().features.amove).toBe(true)
     expect(runtime.isLoaded('amove')).toBe(true)
+    expect(runtime.statuses()[0]).toMatchObject({ installed: true, loaded: true })
 
     await runtime.setInstalled('amove', false)
     expect(fake.dispose).toHaveBeenCalledTimes(2)
@@ -270,24 +271,90 @@ describe('FeatureRuntime', () => {
     expect(electron.app.exit).toHaveBeenCalledWith(0)
   })
 
+  it('falls back locally when shelf methods are missing', async () => {
+    const activate = vi.fn()
+    const openShelf = vi.fn(async () => {})
+    const shelfFeature: MoirasiaFeature = { id: 'amove', register: vi.fn(), dispose: vi.fn(), activate, openShelf }
+    const shelfRuntime = new FeatureRuntime(await settingsWith(undefined), { loaders: { amove: async () => ({ feature: shelfFeature }) }, context: () => CONTEXT })
+    await shelfRuntime.syncAtLaunch()
+
+    await shelfRuntime.toggleShelf()
+
+    expect(openShelf).toHaveBeenCalledTimes(1)
+    expect(activate).not.toHaveBeenCalled()
+
+    const bareFeature: MoirasiaFeature = { id: 'amove', register: vi.fn(), dispose: vi.fn(), activate }
+    const bareRuntime = new FeatureRuntime(await settingsWith(undefined), { loaders: { amove: async () => ({ feature: bareFeature }) }, context: () => CONTEXT })
+    await bareRuntime.syncAtLaunch()
+
+    await bareRuntime.openShelf()
+
+    expect(activate).toHaveBeenCalledTimes(1)
+  })
+
+  it('delegates local activation to the embedded host and rejects unloaded features', async () => {
+    const window = new FakeShellWindow()
+    const host = new EmbeddedFeatureHost(window as never)
+    const navigated: Array<FeatureId | undefined> = []
+    host.subscribeNavigation((feature) => { navigated.push(feature) })
+    const feature: MoirasiaFeature = { id: 'amove', register: vi.fn(), dispose: vi.fn() }
+    const runtime = new FeatureRuntime(await settingsWith(undefined), { host, loaders: { amove: async () => ({ feature }) }, context: () => CONTEXT })
+    await runtime.syncAtLaunch()
+
+    runtime.activate('amove')
+
+    expect(navigated).toContain('amove')
+
+    const unloadedRuntime = new FeatureRuntime(await settingsWith({ amove: false }), {
+      host: new EmbeddedFeatureHost(new FakeShellWindow() as never),
+      loaders: { amove: async () => ({ feature }) },
+      context: () => CONTEXT
+    })
+    await unloadedRuntime.syncAtLaunch()
+
+    expect(() => unloadedRuntime.activate('amove')).toThrow('Feature is not loaded. Relaunch or reinstall it.')
+  })
+
   describe('native adapters', () => {
-    function fakeNativeClient(snapshot: unknown = { features: [] }): { client: NativeHostClientLike; requests: string[]; emitSnapshot: (payload: unknown) => void } {
+    function fakeNativeClient(snapshot: unknown = { features: [] }): {
+      client: NativeHostClientLike
+      requests: string[]
+      requestCalls: Array<{ method: string; params: Record<string, unknown> | undefined }>
+      unsubscribes: string[]
+      emitSnapshot: (payload: unknown) => void
+      emitConnection: (event: NativeHostConnectionEvent) => void
+    } {
       const requests: string[] = []
+      const requestCalls: Array<{ method: string; params: Record<string, unknown> | undefined }> = []
+      const unsubscribes: string[] = []
       const snapshotListeners = new Set<(payload: unknown, revision: number) => void>()
+      const connectionListeners = new Set<(event: NativeHostConnectionEvent) => void>()
       const client: NativeHostClientLike = {
         connect: async () => undefined,
         close: () => undefined,
-        request: async <T,>(method: string): Promise<T> => {
+        request: async <T,>(method: string, params?: Record<string, unknown>): Promise<T> => {
           requests.push(String(method))
+          requestCalls.push({ method: String(method), params })
           return (method === 'host.getSnapshot' ? snapshot : undefined) as T
         },
         subscribe: (event, listener) => {
           if (event === 'host.snapshotChanged') snapshotListeners.add(listener)
-          return () => snapshotListeners.delete(listener)
+          return () => { unsubscribes.push(event); snapshotListeners.delete(listener) }
+        },
+        subscribeConnection: (listener) => {
+          connectionListeners.add(listener)
+          return () => { unsubscribes.push('host.connection'); connectionListeners.delete(listener) }
         },
         isConnected: () => true
       }
-      return { client, requests, emitSnapshot: (payload) => { for (const listener of snapshotListeners) listener(payload, 0) } }
+      return {
+        client,
+        requests,
+        requestCalls,
+        unsubscribes,
+        emitSnapshot: (payload) => { for (const listener of snapshotListeners) listener(payload, 0) },
+        emitConnection: (event) => { for (const listener of connectionListeners) listener(event) }
+      }
     }
 
     it('loads native adapters for installed features at launch instead of the legacy feature', async () => {
@@ -373,11 +440,11 @@ describe('FeatureRuntime', () => {
 
       await runtime.syncAtLaunch()
       emitSnapshot({ featureService: { state: 'error', error: 'service exited', restartCount: 1 } })
-      expect(runtime.statuses()[0]).toMatchObject({ installed: true, state: 'error', error: 'service exited', loaded: false })
+      expect(runtime.statuses()[0]).toMatchObject({ installed: true, state: 'error', loadError: 'service exited', loaded: false })
 
       emitSnapshot({ features: [{ id: 'amove', installed: true, state: 'running' }] })
       await vi.waitFor(() => expect(runtime.statuses()[0]).toMatchObject({ installed: true, state: 'running', loaded: true }))
-      expect(runtime.statuses()[0]).not.toHaveProperty('error')
+      expect(runtime.statuses()[0]).not.toHaveProperty('loadError')
     })
 
     it('disposes the native adapter when its feature is uninstalled', async () => {
@@ -391,6 +458,81 @@ describe('FeatureRuntime', () => {
 
       expect(fake.dispose).toHaveBeenCalledTimes(1)
       expect(runtime.isLoaded('amove')).toBe(false)
+    })
+
+    it('reports connection loss and recovers snapshot state after reconnect', async () => {
+      const fake = fakeFeature()
+      const { client, emitConnection } = fakeNativeClient({ features: [{ id: 'amove', installed: true, state: 'running' }] })
+      const runtime = new FeatureRuntime(await settingsWith(undefined), {
+        loaders: { amove: vi.fn(async () => ({ feature: fakeFeature().feature })) }, nativeLoaders: { amove: async () => ({ feature: fake.feature }) }, context: () => CONTEXT, nativeClient: client
+      })
+      await runtime.syncAtLaunch()
+
+      emitConnection({ state: 'disconnected', generation: 1, error: new Error('socket closed') })
+      expect(runtime.statuses()[0]).toMatchObject({ installed: true, state: 'error', loadError: 'socket closed' })
+
+      emitConnection({ state: 'reconnected', generation: 2 })
+      await vi.waitFor(() => expect(runtime.statuses()[0]).toMatchObject({ installed: true, state: 'running', loaded: true }))
+      expect(runtime.statuses()[0]).not.toHaveProperty('loadError')
+    })
+
+    it('requests host.retryFeature when reinstalling over a failed native state', async () => {
+      const fake = fakeFeature()
+      const { client, requests } = fakeNativeClient({ features: [{ id: 'amove', installed: true, state: 'error', error: 'feature crashed' }] })
+      const runtime = new FeatureRuntime(await settingsWith(undefined), {
+        loaders: { amove: vi.fn(async () => ({ feature: fakeFeature().feature })) }, nativeLoaders: { amove: async () => ({ feature: fake.feature }) }, context: () => CONTEXT, nativeClient: client
+      })
+      await runtime.syncAtLaunch()
+
+      await runtime.setInstalled('amove', false)
+      await runtime.setInstalled('amove', true)
+
+      expect(requests.filter((method) => method !== 'host.getSnapshot')).toEqual(['host.setFeatureInstalled', 'host.retryFeature'])
+    })
+
+    it('issues host.setUiState with the active page and clears it to general', async () => {
+      const fake = fakeFeature()
+      const { client, requestCalls } = fakeNativeClient({ features: [{ id: 'amove', installed: true, state: 'running' }] })
+      const runtime = new FeatureRuntime(await settingsWith(undefined), {
+        loaders: { amove: vi.fn(async () => ({ feature: fakeFeature().feature })) }, nativeLoaders: { amove: async () => ({ feature: fake.feature }) }, context: () => CONTEXT, nativeClient: client
+      })
+      await runtime.syncAtLaunch()
+
+      await runtime.activate('amove')
+      expect(requestCalls.some(({ method, params }) => method === 'host.setUiState' && params?.page === 'amove')).toBe(true)
+
+      runtime.setActive(undefined)
+      expect(requestCalls.some(({ method, params }) => method === 'host.setUiState' && params?.page === 'general')).toBe(true)
+    })
+
+    it('clears the active feature when the host uninstalls it', async () => {
+      const fake = fakeFeature()
+      const { client } = fakeNativeClient({ features: [{ id: 'amove', installed: true, state: 'running' }] })
+      const runtime = new FeatureRuntime(await settingsWith(undefined), {
+        loaders: { amove: vi.fn(async () => ({ feature: fakeFeature().feature })) }, nativeLoaders: { amove: async () => ({ feature: fake.feature }) }, context: () => CONTEXT, nativeClient: client
+      })
+      await runtime.syncAtLaunch()
+      await runtime.activate('amove')
+      expect(runtime.activeFeature).toBe('amove')
+
+      await runtime.setInstalled('amove', false)
+
+      expect(runtime.activeFeature).toBeUndefined()
+      expect(fake.dispose).toHaveBeenCalledTimes(1)
+    })
+
+    it('unsubscribes the native subscriptions exactly once and is idempotent', async () => {
+      const fake = fakeFeature()
+      const { client, unsubscribes } = fakeNativeClient({ features: [{ id: 'amove', installed: true, state: 'running' }] })
+      const runtime = new FeatureRuntime(await settingsWith(undefined), {
+        loaders: { amove: vi.fn(async () => ({ feature: fakeFeature().feature })) }, nativeLoaders: { amove: async () => ({ feature: fake.feature }) }, context: () => CONTEXT, nativeClient: client
+      })
+      await runtime.syncAtLaunch()
+
+      await runtime.disposeAll()
+      await runtime.disposeAll()
+
+      expect(unsubscribes).toEqual(['host.snapshotChanged', 'host.connection'])
     })
   })
 })

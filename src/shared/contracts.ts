@@ -25,7 +25,6 @@ export interface FeatureStatus {
   readonly installed: boolean
   /** Native runtime state. Legacy local runtimes expose the derived value. */
   readonly state?: 'stopped' | 'starting' | 'running' | 'error'
-  readonly error?: string
   /** Kept for standalone/development compatibility while the migration rolls out. */
   readonly loaded: boolean
   readonly restartPending: boolean
