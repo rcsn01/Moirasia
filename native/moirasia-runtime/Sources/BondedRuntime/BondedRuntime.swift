@@ -12,7 +12,8 @@ public final class BondedRuntime {
     private let queueMarker: UInt8 = 7
     private let settingsStore: BondedSettingsStore
     private var settings = BondedSettings()
-    private let resolver = BondedProcessResolver()
+    private let classifier: BondedApplicationClassifier
+    private let resolver: BondedProcessResolver
     private let dns = DNSResolver()
     private let history = FlowHistory()
     private let monitor = NetworkMonitor()
@@ -33,6 +34,8 @@ public final class BondedRuntime {
     public init(dataDirectory: String, helperExecutable: String, legacyDataDirectories: [String] = []) {
         self.dataDirectory = URL(fileURLWithPath: dataDirectory, isDirectory: true)
         settingsStore = BondedSettingsStore(directory: dataDirectory, legacyDataDirectories: legacyDataDirectories)
+        classifier = BondedApplicationClassifier()
+        resolver = BondedProcessResolver(classifier: classifier)
         firewall = FirewallClient(helperExecutable: helperExecutable)
         excludedPids = [Int(getpid())]
         ownApplicationPath = bondedContainingApplication(Bundle.main.executablePath ?? "")
@@ -135,7 +138,7 @@ public final class BondedRuntime {
             let previousTargets = enforcedTargets()
             let previousSettings = settings
             let existing = settings.applicationRules.first { bondedMatchesApplicationRule(target: resolved.target, rule: $0) }
-            let rule = existing ?? bondedApplicationRuleForTarget(BondedApplicationRuleTarget(path: resolved.target.path, displayName: resolved.target.displayName, targetKind: resolved.target.targetKind, bundleIdentifier: resolved.target.bundleIdentifier))
+            let rule = existing ?? bondedApplicationRuleForTarget(BondedApplicationRuleTarget(path: resolved.target.path, displayName: resolved.target.displayName, targetKind: resolved.target.targetKind, bundleIdentifier: resolved.target.bundleIdentifier, classification: resolved.target.classification))
             do {
                 _ = try blocker.addRule(rule, addresses: history.addresses(applicationId))
                 if existing == nil { settings.applicationRules.append(rule) }
@@ -194,8 +197,9 @@ public final class BondedRuntime {
         guard let target = resolver.resolve(pid: sample.pid, processName: sample.processName), target.path != ownApplicationPath else { return }
         queue.async { [self] in
             guard !disposed else { return }
-            let result = history.add(targetId: target.id, target: BondedApplicationRuleTarget(path: target.path, displayName: target.displayName, targetKind: target.targetKind, bundleIdentifier: target.bundleIdentifier), sample: sample)
-            let observed = blocker.observe(target: BondedApplicationRuleTarget(path: target.path, displayName: target.displayName, targetKind: target.targetKind, bundleIdentifier: target.bundleIdentifier), rawAddress: sample.remoteAddress)
+            let ruleTarget = BondedApplicationRuleTarget(path: target.path, displayName: target.displayName, targetKind: target.targetKind, bundleIdentifier: target.bundleIdentifier, classification: target.classification)
+            let result = history.add(targetId: target.id, target: ruleTarget, sample: sample)
+            let observed = blocker.observe(target: ruleTarget, rawAddress: sample.remoteAddress)
             if observed.added && settings.blockingEnabled { scheduleFirewallSync() }
             if result.added {
                 if let icon = applicationIconDataURL(target.path) { history.setIcon(target.id, iconDataUrl: icon) }
@@ -277,11 +281,14 @@ public final class BondedRuntime {
                 })
             ]
             if let iconDataUrl = application.iconDataUrl { value["iconDataUrl"] = .string(iconDataUrl) }
+            if let classification = application.target.classification { value["classification"] = classificationJSON(classification) }
             return .object(value)
         }
         let rulesJSON: [JSONValue] = rules.map { rule in
             var value: [String: JSONValue] = ["id": .string(rule.id), "path": .string(rule.path), "displayName": .string(rule.displayName), "targetKind": .string(rule.targetKind), "selectedAt": .string(rule.selectedAt), "learnedAddresses": .array(rule.learnedAddresses.map { .string($0) }), "state": .string(rule.state)]
             if let bundleIdentifier = rule.bundleIdentifier { value["bundleIdentifier"] = .string(bundleIdentifier) }
+            let classification = classifier.classify(path: rule.path, targetKind: rule.targetKind, bundleIdentifier: rule.bundleIdentifier)
+            value["classification"] = classificationJSON(classification)
             if let iconDataUrl = applicationIconDataURL(rule.path) { value["iconDataUrl"] = .string(iconDataUrl) }
             return .object(value)
         }
@@ -305,6 +312,10 @@ public final class BondedRuntime {
         if let migrationNotice = settingsStore.migrationNotice { result["migrationNotice"] = .string(migrationNotice) }
         enforceSnapshotBudget(&result)
         return .object(result)
+    }
+
+    private func classificationJSON(_ classification: BondedApplicationClassification) -> JSONValue {
+        .object(["category": .string(classification.category.rawValue), "confidence": .string(classification.confidence.rawValue)])
     }
 
     private func enforceSnapshotBudget(_ result: inout [String: JSONValue]) {

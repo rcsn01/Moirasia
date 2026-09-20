@@ -12,6 +12,16 @@ public struct BondedProcessTarget {
     public let displayName: String
     public let targetKind: String
     public let bundleIdentifier: String?
+    public let classification: BondedApplicationClassification
+
+    public init(id: String, path: String, displayName: String, targetKind: String, bundleIdentifier: String?, classification: BondedApplicationClassification) {
+        self.id = id
+        self.path = path
+        self.displayName = displayName
+        self.targetKind = targetKind
+        self.bundleIdentifier = bundleIdentifier
+        self.classification = classification
+    }
 }
 
 public func bondedContainingApplication(_ executablePath: String) -> String? {
@@ -30,8 +40,12 @@ public final class BondedProcessResolver: @unchecked Sendable {
     private var cache: [Int: CacheEntry] = [:]
     private let lock = NSLock()
     private let ttl: TimeInterval
+    private let classifier: BondedApplicationClassifier
 
-    public init(ttl: TimeInterval = 30) { self.ttl = ttl }
+    public init(ttl: TimeInterval = 30, classifier: BondedApplicationClassifier = BondedApplicationClassifier()) {
+        self.ttl = ttl
+        self.classifier = classifier
+    }
 
     public func resolve(pid: Int, processName: String? = nil, now: Date = Date()) -> BondedProcessTarget? {
         lock.lock()
@@ -56,8 +70,10 @@ public final class BondedProcessResolver: @unchecked Sendable {
         let application = bondedContainingApplication(path)
         let bundleIdentifier = application.flatMap(Self.readBundleIdentifier)
         let displayName = Self.displayName(path: path, application: application)
+        let targetKind = application == nil ? "executable" : "application"
+        let classification = classifier.classify(pid: pid, executablePath: path, applicationPath: application, bundleIdentifier: bundleIdentifier)
         let identity = bundleIdentifier.map { "bundle:\($0)|path:\(path)" } ?? "path:\(path)"
-        return BondedProcessTarget(id: bondedOpaqueId(prefix: "app", value: identity), path: path, displayName: displayName, targetKind: application == nil ? "executable" : "application", bundleIdentifier: bundleIdentifier)
+        return BondedProcessTarget(id: bondedOpaqueId(prefix: "app", value: identity), path: path, displayName: displayName, targetKind: targetKind, bundleIdentifier: bundleIdentifier, classification: classification)
     }
 
     static func readBundleIdentifier(_ applicationPath: String) -> String? {

@@ -8,6 +8,15 @@ public struct BondedApplicationRuleTarget: Equatable, Sendable {
     public let displayName: String
     public let targetKind: String
     public let bundleIdentifier: String?
+    public let classification: BondedApplicationClassification?
+
+    public init(path: String, displayName: String, targetKind: String, bundleIdentifier: String? = nil, classification: BondedApplicationClassification? = nil) {
+        self.path = path
+        self.displayName = displayName
+        self.targetKind = targetKind
+        self.bundleIdentifier = bundleIdentifier
+        self.classification = classification
+    }
 }
 
 public struct BondedRuleState {

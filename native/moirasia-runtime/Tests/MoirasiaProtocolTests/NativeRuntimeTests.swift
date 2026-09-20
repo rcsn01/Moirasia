@@ -33,6 +33,28 @@ final class NativeRuntimeTests: XCTestCase {
         XCTAssertTrue(bondedApplicationRuleForTarget(target).id.hasPrefix("rule_"))
     }
 
+    func testBondedApplicationClassifierRequiresValidatedAppleEvidence() {
+        let classifier = BondedApplicationClassifier()
+        let platform = classifier.classify(path: "/usr/libexec/demo", targetKind: "executable", bundleIdentifier: nil, evidence: BondedSigningEvidence(isValid: true, platformIdentifier: "macOS-15", hasCertificates: true, requirements: "anchor apple"))
+        XCTAssertEqual(platform.category, .applePlatform)
+        XCTAssertEqual(platform.confidence, .verified)
+
+        let appleApp = classifier.classify(path: "/Applications/Mail.app", targetKind: "application", bundleIdentifier: "com.apple.mail", evidence: BondedSigningEvidence(isValid: true, hasCertificates: true, requirements: "identifier \"com.apple.mail\" and anchor apple"))
+        XCTAssertEqual(appleApp.category, .appleSigned)
+
+        let ambiguousAppleSigner = classifier.classify(path: "/Applications/Unknown.app", targetKind: "application", bundleIdentifier: "com.example.unknown", evidence: BondedSigningEvidence(isValid: true, hasCertificates: true, requirements: "anchor apple"))
+        XCTAssertEqual(ambiguousAppleSigner.category, .unknown)
+
+        let external = classifier.classify(path: "/Applications/Browser.app", targetKind: "application", bundleIdentifier: "com.example.browser", evidence: BondedSigningEvidence(isValid: true, teamIdentifier: "TEAM123", hasCertificates: true, requirements: "anchor apple generic"))
+        XCTAssertEqual(external.category, .thirdParty)
+
+        let spoofedAppleIdentifier = classifier.classify(path: "/Applications/Fake.app", targetKind: "application", bundleIdentifier: "com.apple.fake", evidence: BondedSigningEvidence(isValid: true, teamIdentifier: "TEAM123", hasCertificates: true, requirements: "anchor apple generic"))
+        XCTAssertEqual(spoofedAppleIdentifier.category, .unknown)
+
+        let unsigned = classifier.classify(path: "/tmp/demo", targetKind: "executable", bundleIdentifier: nil, evidence: BondedSigningEvidence(isValid: false))
+        XCTAssertEqual(unsigned.category, .unknown)
+    }
+
     func testBondedApplicationIconLookupCanUseTheContainingBundle() {
         XCTAssertEqual(bondedContainingApplication("/Applications/Mail.app/Contents/MacOS/Mail"), "/Applications/Mail.app")
         XCTAssertNil(bondedContainingApplication("/usr/bin/curl"))
