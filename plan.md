@@ -1,125 +1,139 @@
-# Implementation plan: the Application identity module
+# Implementation plan: the Enforcement policy module
 
 ## Decision
 
-Architecture-review candidate 1, finalized. One deep module owns every definition of "the same application" in Bonded: identity-key construction, rule matching, bundle containment, display-name derivation, and opaque-id seeding. Today those five facts live in four modules with three different key formats and one live divergence between the stored identity key and runtime matching. After this change there is one interface with one test surface, and identity bugs have locality.
+Architecture-review candidate 1 (Enforcement policy), finalized. One deep module owns the blocking-state transitions in Bonded: the startup reconciliation of a stale persisted blocking flag, applying selections to the PF firewall, failing open when the helper is unavailable, rolling back settings/firewall/learned addresses on failure, and keeping the firewall's target list in sync with newly learned addresses. Today those five transition shapes live inline in the Controller across nine sites with three different persist-or-swallow policies and two hand-rolled rollback layers. After this change there is one interface with one test surface, and enforcement bugs have locality.
 
-Terminology follows `CONTEXT.md` and the codebase-design vocabulary: the new module is the **Application identity module**; `settings-store`, `observed-ip-blocker`, and `process-resolver` become thin **adapters** over it. `application-classifier` does not become an adapter — it consumes nothing from the new module (its cache key stays internal, see "What deliberately stays out"); the module only documents the key-format distinction once. No new seam is invented: the module is in-process, and its two real adapters (persisted `StoredApplicationRule` vs freshly resolved `ProcessTarget`) already exist on either side of it.
+Terminology follows `CONTEXT.md` and the codebase-design vocabulary: the new module is the **Enforcement policy module**; the Controller remains the wiring (mutation-queue ordering, snapshot publishing, monitor lifecycle) and the firewall adapter, settings-store, and Observed-IP blocker stay exactly where they are. No new seam is invented: the module is in-process, and its two real adapters at the firewall seam (the `FakeFirewallClient` that e2e selects via `BONDED_FAKE_FIREWALL=1` and that the new module tests will use, vs the real `FirewallClient` in prod) already exist on either side of it.
 
 ## Verified baseline
 
-Repository root: `/Users/mac/Syncthing/Projects/Moirasia`. Nested Bonded repo: `apps/integrated/Bonded`, branch `main`, tip `475d4a0 feat: sort Apple apps last`; root tip `af28a24 feat: add native Bonded application classification`. Both worktrees are clean as of this plan. `plan.md` in the repository root was the previous (completed) native-feature-state plan and has been deleted per instruction; this file replaces it.
+Repository root: `/Users/mac/Syncthing/Projects/Moirasia`, tip `c92f425 docs: plan the Application identity module`. Nested Bonded repo: `apps/integrated/Bonded`, branch `main`, tip `fa73046 fix: match bundle-keyed rules by bundle identity`. Both worktrees clean as of this plan apart from this file itself (`plan.md` is modified — it is this document, replacing the committed Application identity plan in place). The Application identity module (`src/main/application-identity.ts`) is freshly landed and deep; this plan does not re-litigate it and does not touch it. `plan.md` in the repository root held the completed Application identity plan and has been replaced in place by this file.
 
-Vocabulary sources read: root `CONTEXT.md` (domain glossary; no Bonded-specific "Application identity" term exists yet — this plan adds one, see "CONTEXT.md update"). No ADR directory exists at root or under `apps/integrated/Bonded`; no ADR conflicts. `docs/architecture/standalone-applications.md` was not re-litigated: this plan touches no launch/mode/lease decisions.
+Vocabulary sources read: root `CONTEXT.md` (no "Enforcement" term exists yet — this plan adds one, see "CONTEXT.md update"); no ADR directory exists at root or under `apps/integrated/Bonded`; no ADR conflicts. `docs/architecture/standalone-applications.md` is untouched: this plan moves no launch/mode/lease decision. Native mode is unaffected: the native feature service (`native-feature.ts`) owns its own state in native mode, and `feature.ts` wires `BondedController` only for the embedded/local host — the Enforcement module is therefore local-mode only by construction.
 
-## The five scattered definitions (evidence)
+Vitest baseline at `fa73046`: 90 passed / 1 skipped across 23 files (the skipped file is `tests/real-nettop.integration.test.ts`); playwright 2 passed / 2 packaged skipped.
 
-| # | Location | Format / behavior |
-|---|----------|-------------------|
-| 1 | `settings-store.ts:26` `applicationRuleIdentity` | `bundle:<id>\|path:<path>` or `path:<path>` when no bundle id |
-| 2 | `observed-ip-blocker.ts:54` `matchesApplicationRule` | both have bundle id ⇒ bundle **and** path must match; otherwise **path only** — accepts a same-path/different-bundle-id target the store would reject as a distinct identity |
-| 3 | `application-classifier.ts` `classify` cache key | `path\0targetKind\0bundleIdentifier` — a *different* key for the same concept (intentionally: classification is per-path evidence), but stated ad hoc |
-| 4 | `process-resolver.ts:37` `containingApplication` | regex extracting `…​.app` from an executable path |
-| 5 | `process-resolver.ts:108` | `opaqueId('app', path)` — seeds the opaque id from **path only**, so the same `.app` path under a different bundle identifier (app replaced in place, or a bundle-id read that flaps) keeps one observed id across bundle identities while the strict matching branch treats such a pair as different apps, and a bundled app's observed id ignores the bundle identifier its persisted rule id uses |
+## The scattered transitions (evidence)
 
-Also related: `observed-ip-blocker.ts:38` `applicationIdentityKey` is a pure re-export alias of definition 1; `settings-store.ts:190` `addApplicationIfMissing` dedupes by id **or** identity; `observed-ip-blocker.ts:70` (`load`) dedupes by identity only while `observed-ip-blocker.ts:155` (`findRule`, backing `addRule`) dedupes by id **or** identity. Path-only and not touched by this plan: `controller.ts:269` excludes the host's own app by comparing `containingApplication` outputs.
+| # | Site | Behavior |
+|---|------|----------|
+| 1 | `controller.ts:55–66` (`start`) | stale persisted blocking cleared and **required-persisted** (:58–61); firewall initialized, then an *active* firewall reconfigured to `(false, [])` (:63) |
+| 2 | `controller.ts:127–138` (`uninstallFirewallHelper`) | sync canceled (:129), hard `configure(false, [])` (:130), disable + **required-persisted** save (:131–132), then helper uninstall |
+| 3 | `controller.ts:147` (`setBlocking` → `commitSettings`) | cancel sync, configure **only if enforcement changed**, save, adopt; on failure: reconfigure previous targets, on second failure disable previous + **best-effort** save, restore settings, rethrow |
+| 4 | `controller.ts:153–175` (`selectObservedApplication`) and `:176–196` (`removeApplicationRule`) | hand-rolled `exportState()`/`restore()` around the mutation plus `previousTargets` captured pre-mutation, feeding `commitSettings`; the catch restores the blocker **after** commitSettings has already restored settings + firewall |
+| 5 | `controller.ts:252–258` (`acceptFirewallStatus`) | helper no longer active while `blockingEnabled` ⇒ disable + **best-effort** persist, then scheduleSnapshot |
+| 6 | `controller.ts:230–250` (`commitSettings`), `:284–299` (`scheduleFirewallSync`/`cancelFirewallSync`), `:301–311` (`reconfigureAfterObservation`) | the debounced (150 ms) reconfigure to current blocker targets; on failure `configure(false, [])` swallowed, then **unconditional** disable + best-effort save |
+| 7 | `controller.ts:212–228` (`stop`) | in-memory disable, `disconnect` (error surfaced last), best-effort save, `clearLearned` — disposal orchestration |
 
-Divergence consequence today: a rule persisted as `bundle:com.a|path:/App.app` and a later process target with the same path but a **missing** bundle id (a failed bundle-id read) match by path in `matchesApplicationRule` — an unidentified process silently adopts the bundle-keyed rule and its learned addresses — while the two sides produce different identity strings in `applicationRuleIdentity`. A target with the same path but a **different** bundle id does **not** match today (the strict branch requires bundle equality) yet still collides on the observed id, which is seeded from the path alone. Re-selection always reuses the existing rule through the path fallback, and the blocker's `findRule` hits the persisted rule by id, so this divergence never inserts a duplicate rule — it manifests as lenient adoption plus the id-seed inconsistency of definition 5. No test pins the one-sided-bundle case: `tests/observed-ip-blocker.test.ts` covers only both-present and both-absent pairs.
+Also related: `controller.ts:105–117` (`setMonitoring`) and `:198–210` (`restartMonitor`) persist settings without touching enforcement — deliberately **not** routed through the transaction today (no `cancelFirewallSync`, no configure); routing them through `apply` would change behavior (a pending sync would be canceled) for no benefit. `tests/controller.test.ts` has 2 tests (startup stale-clear + snapshot metadata); no unit test exercises `commitSettings`, `acceptFirewallStatus`, the selection rollback, or the sync debounce. e2e (with `BONDED_FAKE_FIREWALL=1`) reaches the happy-path dances — selection, blocking toggle, the debounced sync, shutdown disable — but the fake firewall never rejects, so no automated test exercises any failure path; the rollback dances are covered by the new module tests only.
+
+Divergence consequence today: the "disable and persist" fact exists in six sites with two persistence strengths (required at :60 and :132; best-effort at :243–244 rollback-internal, :255–256, :307–309, and stop's :219/:222) — this plan consolidates four of them (:60, :243–244, :255–256, :307–309) and deliberately keeps the uninstall teardown and stop's disposal; the rollback ordering exists in three sites (commitSettings internal, two selection catches). A bug in any one copy stays invisible until a firewall failure, and the fix must be re-derived at each site.
 
 ## The deepened module
 
-**New file:** `apps/integrated/Bonded/src/main/application-identity.ts`
+**New file:** `apps/integrated/Bonded/src/main/enforcement.ts`
 
 ```
-Interface (all exports; pure, no Electron, no fs, no clock):
-  interface ApplicationTargetLike { path: string; targetKind: 'application' | 'executable'; bundleIdentifier?: string; displayName?: string }
-  identityKey(target | rule): string          // the single key format, replaces definitions 1+2
-  matchesRule(target, rule): boolean          // defined in terms of identityKey
-  ruleForTarget(target, selectedAt?): StoredApplicationRule   // moved from observed-ip-blocker.ts
-  containingApplication(executablePath): string | undefined   // moved from process-resolver.ts
-  applicationId(target): string                 // opaqueId('app', seed); seed = `bundle:<id>|path:<path>` when the target's bundle id was read, else the raw path
-  displayNameForPath(path): string            // basename/extension logic moved from process-resolver.perform
+Interface (all exports; no Electron, no fs, no clock of its own — timers via the runtime):
+  interface EnforcementOptions {
+    firewall: FirewallClientLike
+    store: { save(settings: BondedSettings): Promise<void> }        // structural: the real SettingsStore fits
+    blocker: ObservedIpBlocker
+    getSettings: () => BondedSettings                               // the Controller keeps owning the settings object
+    setSettings: (next: BondedSettings) => void                     // adopt-after-commit hook
+    enqueue: <T>(operation: () => Promise<T>) => Promise<T>         // the Controller's mutation queue
+  }
+  class Enforcement {
+    constructor(options: EnforcementOptions)
+    reconcile(): Promise<void>
+    apply(next: BondedSettings, mutateBlocker?: (blocker: ObservedIpBlocker) => void): Promise<void>
+    failOpen(): Promise<void>
+    scheduleSync(): void
+    cancelSync(): void
+    dispose(): void
+  }
 ```
 
 Interface invariants (these *are* the depth; all hidden from callers):
 
-- One key format: `bundle:<id>|path:<path>` when a bundle identifier exists on **either** side being compared, else `path:<path>`. `matchesRule` compares computed keys, so the fallback divergence becomes structurally impossible.
-- `identityKey` is total, pure, and cheap; no normalization beyond trimming nothing (paths arrive canonical: `realpath` output or `Info.plist`-adjacent app path — the resolver's job, unchanged).
-- `applicationId` stays `opaqueId('app', seed)` — see "id-seed migration" below for the exact seed policy (raw path unless a bundle id was read, so executable ids do not churn).
-- No persistence, no cache, no I/O: depth comes from the *decision* (what makes two references the same application), not from machinery.
+- `apply` is a transaction. It captures the settings clone, the blocker's `exportState()`, and `blocker.targets()` **before** running `mutateBlocker`; it then cancels the pending sync, configures the firewall only when enforcement changed (`previous.blockingEnabled || next.blockingEnabled` — exact call `configure(next.blockingEnabled, next.blockingEnabled ? blocker.targets() : [])`, targets from the post-mutation blocker), saves, and adopts the new settings **last**. On any failure — blocker mutation, configure, or save — the blocker state, the previous firewall configuration (captured targets, not post-mutation ones), and the previous settings are restored in that order, and the original error is rethrown. A blocker-mutation failure rolls back before anything is configured or persisted. The firewall restore and its fail-open fallback run **only when the forward path configured the firewall** (enforcement changed), with the exact call `configure(previous.blockingEnabled, previous.blockingEnabled ? capturedTargets : [])` — a save-only failure with unchanged enforcement restores the blocker and settings and issues **no** firewall call, as today's catch does (`:239` gate).
+- If the firewall rollback itself fails, the transaction fails open: blocking is disabled in settings and persisted **best-effort** before the error rethrows. This is today's nested catch in `commitSettings`, unchanged. In all three fail-open shapes — this nested catch, `failOpen()`, and the sync kernel — the disabled settings end up adopted **regardless of the save outcome** (today `:243–244`, `:254–256`, `:307–309` all leave the disabled settings in `this.settings` whether or not the save succeeded). Adopting only after a successful save would leave `blockingEnabled` true in memory while the helper is unreachable, and blocking would resume the next time the status listener saw `active` — a behavior change.
+- `failOpen` is the status-driven shape: it acts only when `firewall.status().state !== 'active'` and blocking is enabled. The sync-failure path uses the **unconditional** internal kernel `disablePersistBestEffort()` instead — today's `reconfigureAfterObservation` catch disables regardless of the reported status, and a `configure` that throws before updating its status must still fail open. Merging these two gates would be a behavior change; the plan pins them apart.
+- `reconcile` = startup reconciliation: clear a stale persisted `blockingEnabled` and **required-persist** the save (errors propagate, as today), then `firewall.initialize()`, then configure an *active* firewall to `(false, [])` — that configure's errors also propagate (today's `:63` is an uncaught `await`; a failure fails `start()` and the feature registration). Calling it replaces the two start-up dances; the Controller keeps load/monitor/publish.
+- `scheduleSync` debounces (150 ms, as today) a reconfigure to the blocker's current targets through the injected `enqueue`; on failure it configures `(false, [])` swallowed and then runs the unconditional disable kernel (adopt the disabled settings, then persist best-effort and swallow — today's `reconfigureAfterObservation` catch). `cancelSync` is idempotent; `dispose()` = `cancelSync` + stop scheduling for the module's lifetime. The timer is a real `setTimeout`; tests use fake timers.
+- No I/O beyond the injected collaborators, no snapshot scheduling, no Electron.
 
-**Deletion test:** delete this module and the five definitions reappear across four files, plus the divergence bug reappears as an unowned gap between two of them. Complexity concentrates — it earns its keep.
+**Deletion test:** delete this module and the seven sites above reappear in the Controller, plus two rollback owners (commit-internal and selection-catch) whose ordering contract lives only in a comment. Complexity concentrates — it earns its keep.
 
-**Seam placement:** the seam sits between *resolved process targets* (produced by `process-resolver`, consumed live) and *persisted rules* (produced by `settings-store`, consumed at load). The module's interface is the only crossing point. Both adapter types are real and both are exercised in tests through the same interface.
+**Seam placement:** the seam sits between the Controller's *decisions* (when to block, when to reselect) and the *transitions* (how blocking state lands on the firewall, disk, and blocker). The firewall seam is real — two adapters already exist (real helper client in prod, `FakeFirewallClient` in e2e and the new module tests). The store and blocker are in-process collaborators, injected, not seam-justified on their own.
 
-**What deliberately stays out:** classification cache-keying (definition 3 stays inside `application-classifier` — classification is a property of *evidence per path*, not of identity; the module only guarantees the key format is documented once, in `identityKey`), `readBundleIdentifier` (I/O, stays in `process-resolver`), and `MAX_APPLICATION_RULES` (capacity policy stays with the store/blocker).
+**What deliberately stays out:** helper install/uninstall (`controller.ts:119–138` — the uninstall site keeps its own dance: single site, uninstall-specific ordering, required persistence, and the firewalled-`state === 'active'` condition that `apply` would not reproduce); `stop()`'s disposal orchestration (`:212–228` — error-surfacing ordering is shutdown-specific); `setMonitoring`/`restartMonitor` saves (routing them through `apply` would cancel a pending sync — a behavior change with no payoff); the mutation queue itself (injected); snapshot publishing; sample ingest (architecture-review candidate 3); the native adapter; `firewall-client.ts` itself (its status/retry semantics are already owned there).
+
+## Behavior-preservation ledger (checked, not assumed)
+
+- **fail-open gating**: `reconfigureAfterObservation`'s catch disables unconditionally; `acceptFirewallStatus` gates on `state !== 'active'`. Verified distinct: a `configure` throw can occur before the client updates its status (e.g. socket connect failure), leaving a stale `'active'` status — a merged gate would skip the disable. The plan keeps an internal unconditional kernel for the sync-failure path and the gated `failOpen()` for the status listener.
+- **setMonitoring/restartMonitor** are *not* migrated: `apply` would cancel a pending sync they do not cancel today. Plain saves stay plain.
+- **uninstall** is *not* migrated: its save is required (not best-effort) and its configure is gated on `settings.blockingEnabled || firewall.status().state === 'active'` — conditions `apply` does not express. Only its `cancelFirewallSync()` becomes `cancelSync()`.
+- **pre-commit blocker mutations**: `ObservedIpBlocker.addRule` is throw-clean before mutating (the `MAX_APPLICATION_RULES` throw precedes `rules.set`). `addApplicationIfMissing`'s own MAX throw cannot in fact fire after a successful `addRule` today — settings and blocker rule counts move in lockstep (both deduped from the same parse-validated list, both capped at 256, mutated only in pairs), so a successful `addRule` implies `settings.applicationRules.length < 256`. The boundary must not lean on that invariant: the reachable rollback case is the configure/save failure, which must restore **pre-mutation** blocker state (learned addresses and targets), and the transaction can only guarantee that if it captures state before the mutation runs. Therefore the controller passes the blocker mutation **as the callback**, and `addApplicationIfMissing` runs inside the same closure, preserving today's rollback boundary exactly.
+- **blocker restore is idempotent**: `exportState()`/`restore()` round-trips rules, addresses, and `limitReached`; double-restore (commit-internal + none remaining) is safe — the controller's two `restore()` calls are deleted, not duplicated.
+- **firewall targets on rollback** must be the pre-mutation targets (rolling back to post-mutation targets would leave newly learned addresses blocked while the settings say unselected). Captured inside the transaction at entry — the caller-visible `previousTargets` parameter disappears.
+- **rollback restore order inside `apply` is blocker → firewall → settings**, whereas today's interleaving is firewall → settings inside `commitSettings` with the blocker restored in the caller's catch. Deliberate and observationally equivalent: the blocker restore is synchronous and emits nothing, the rollback configure uses the captured pre-mutation targets rather than the live blocker, and queued operations (status events, the sync timer) cannot run mid-transaction — the only mid-transaction observer is a snapshot from the snapshot timer during the rollback await, which would transiently see pre-mutation targets where today it sees post-mutation ones. End states are identical.
+- **adoption order**: `setSettings(next)` runs after a successful save (today: `this.settings = next` inside the try) — unchanged.
+- **no behavior change elsewhere**: `getSnapshot`, snapshot scheduling, and `setBlocking`'s precondition errors (rules empty / no traffic / helper missing) stay byte-identical.
 
 ## Migration of call sites
 
-1. **`settings-store.ts`** — delete `applicationRuleIdentity`; import `identityKey` from `./application-identity`. `parseApplicationRules` and `addApplicationIfMissing` call `identityKey`; `identityKey` emits the identical string for every single-reference shape (`bundle:<id>|path:<path>` when the rule carries a bundle id, else `path:<path>`), so dedupe behavior is unchanged. The store has no direct test of `applicationRuleIdentity` today; its behavioral `addApplicationIfMissing` dedupe test stays and keeps passing untouched.
-2. **`observed-ip-blocker.ts`** — delete `applicationIdentityKey`, `applicationRuleForTarget`, `matchesApplicationRule`, and the now-consumerless local `ApplicationRuleTarget` interface (nothing outside this file imports it); import `matchesRule` and `identityKey` from `./application-identity` — **not** `ruleForTarget`, which the blocker never calls (only `controller.ts` creates rules) and which would collide with the blocker's own private `ruleForTarget` finder. `load` (line 70) dedupes with `identityKey`; `findRule` (line 155) keeps its id-or-identity shape (`this.rules.get(rule.id)` fast path preserved) with `identityKey` substituted; the private `ruleForTarget`/`ruleIdForTarget` take `ProcessTarget` and call `matchesRule`.
-3. **`process-resolver.ts`** — `containingApplication` and the `displayName = basename(path, extname(path))` line move out; `perform` composes `containingApplication`, `displayNameForPath`, `applicationId(target)`, and keeps `readBundleIdentifier` + classifier delegation as-is. In the same commit, update `controller.ts`'s `containingApplication` import (`./process-resolver` today, line 8; used for `ownApplicationPath` at line 26) to `./application-identity`, or the process-resolver migration commit's `tsc --noEmit` fails.
-4. **`controller.ts`** — imports of `matchesApplicationRule`/`applicationRuleForTarget` come from `./observed-ip-blocker` today; after migration they import from `./application-identity` (or keep re-exports for one commit — decision: re-export **not** kept; controller updates its imports — the identity functions now come from `./application-identity`, `ObservedIpBlocker` stays on `./observed-ip-blocker` — no consumer outside this repo).
+1. **`start()`** (`:55–66`) — replace `:58–61` and `:62–63` with `await this.enforcement.reconcile()` (the module owns `firewall.initialize()`; the Controller keeps load, blocker load, monitor start, publish).
+2. **`setBlocking()`** (`:139–152`) — preconditions stay; the body becomes `await this.enforcement.apply(next)`; publish/return unchanged.
+3. **`selectObservedApplication()`** (`:153–175`) — delete `previousBlocker`/`previousTargets`/try/catch; become `await this.enforcement.apply(next, (blocker) => { blocker.addRule(rule, this.history.addresses(applicationId)); if (!existing) addApplicationIfMissing(next, rule) })`.
+4. **`removeApplicationRule()`** (`:176–196`) — same shape; the splice `next.applicationRules.splice(index, 1)` stays before the call: `apply(next, (blocker) => { blocker.removeRule(applicationRuleId); if (next.blockingEnabled && blocker.targets().length === 0) next.blockingEnabled = false })`.
+5. **`acceptFirewallStatus()`** (`:252–258`) — body becomes `await this.enforcement.failOpen(); this.scheduleSnapshot()`.
+6. **`acceptSample()`** (`:275`) — `this.scheduleFirewallSync()` becomes `this.enforcement.scheduleSync()`; **`scheduleFirewallSync`/`cancelFirewallSync`/`reconfigureAfterObservation`/`commitSettings` deleted** (`:230–250`, `:284–311`); the `firewallSyncTimer` field deleted.
+7. **`stop()`** (`:212–228`) — `cancelFirewallSync()` at `:216` becomes `this.enforcement.dispose()`; everything else unchanged (deliberate).
+8. **`uninstallFirewallHelper()`** (`:127–138`) — only `cancelFirewallSync()` at `:129` becomes `cancelSync()`; the rest stays (deliberate, see ledger).
+9. **Constructor** — one new field `private readonly enforcement: Enforcement`, **assigned in the constructor body** after `this.firewall` and `this.store` exist (a field initializer would run before both): `this.enforcement = new Enforcement({ firewall: this.firewall, store: this.store, blocker: this.observedIpBlocker, getSettings: () => this.settings, setSettings: (next) => { this.settings = next }, enqueue: (operation) => this.queueSettingsMutation(operation) })`.
 
-`opaqueId` in `ids.ts` stays as the low-level hash formatter (mirrors `artifactPath`'s role in the catalog); the identity module is its only application-side caller.
-
-### Id-seed migration (behavior change, deliberate)
-
-`process-resolver` seeds the opaque id from `path` only. Under the unified module the seed becomes: the raw path for executables and for applications whose bundle-id read failed, `bundle:<id>|path:<path>` for applications **when the bundle identifier was read**. This changes `ObservedApplication.id` for bundled apps between sessions. The observed id is derived and never persisted — no `app_*` id derived from an observation reaches any store; the `opaqueId` outputs that **are** persisted are rule ids in `settings.json`, and their seed (`identityKey`, applied at selection time, not observation time) is unchanged by this migration. `isOpaqueId` shape is unchanged. The id-pin risk check is resolved as of this plan: `rg "app_[a-f0-9]{16}"` over the root's `apps/`, `packages/`, `src/`, `scripts/` finds no consumer pinning an observed id across restarts — every hit is a shape-only fixture (`app_0123456789abcdef` in the native/renderer/contract tests, `app_aaaa…` fillers, and `tests/process-resolver.test.ts` matching only `/^app_[a-f0-9]{16}$/`); e2e asserts no observed id. The plan accepts the id churn because it fixes the real inconsistency: today a bundled app's observed id ignores its bundle id while its persisted rule id uses it.
-
-One accepted edge: the bundle-id read can fail intermittently (1s `plutil` timeout), so the same bundle's observed id can flap between the two seeds across resolver-cache expiries within a session. `FlowHistory` is keyed by target id, so a flip adds a second history entry for the same app, and stale renderer-held ids fail selection with 'The observed application is no longer available' until the 15-minute expiry clears them. Rare and self-healing; accepted.
-
-### The divergence fix (behavior change, the point of the work)
-
-`matchesRule` is defined as identity-key equality: `identityKey(target) === identityKey(rule)`. When both sides carry a bundle identifier the key embeds both bundle and path, so **both** must be equal; when neither carries one the key is the path alone; when exactly one side carries a bundle identifier the keys cannot be equal, so there is **no** match — conservative: an unidentified process must not silently adopt a bundle-keyed block. This makes the fallback divergence structurally impossible. Exact table locked in tests:
-
-| rule bundle | target bundle | match on |
-|---|---|---|
-| present, same id | present, same id | bundle + path (identity) |
-| present, different id | present, different id | no match (keys differ) |
-| present | absent | no match |
-| absent | present | no match |
-| absent | absent | path |
-
-This is a deliberate tightening of today's fallback (`target.bundleIdentifier && rule.bundleIdentifier → both; else path`). Today rule-with-bundle + target-same-path-without-bundle matches by path; after this plan it does not. Same-path pairs with bundle ids on both sides already never match today (the strict branch) and keep not matching; both-absent pairs keep matching by path. The fixture monitor's `curl` flows carry no bundle id and rules for executables carry none (verified: the fixture `resolvePath` returns `/usr/bin/curl`, so every e2e target is an executable), so `tests/e2e/app.spec.ts` flow is unaffected; the e2e run after migration re-verifies.
+`setMonitoring`/`restartMonitor` keep their plain saves. The Controller loses ~60 lines and keeps every decision.
 
 ## Tests (new module = new test file)
 
-**New:** `apps/integrated/Bonded/tests/application-identity.test.ts`, table-driven, pure:
+**New:** `apps/integrated/Bonded/tests/enforcement.test.ts`, through the module's interface only — a firewall double — `FakeFirewallClient` from `@main/firewall-client` for happy paths (it cannot reject `configure` on demand), plus a scripted double for the failure-path tests, a stub `{ save }` store whose save can be made to reject, a **real** `ObservedIpBlocker` (pure, in-memory), accessor closures over a local settings variable, and an `enqueue` that just runs the operation (plus a serializing variant to prove ordering):
 
-- identity keys: with/without bundle id, path-only equality, same-path/different-bundle **distinct**, bundle-match/path-mismatch (still distinct — both bundle and path are in the key)
-- `matchesRule` full truth table above, including the tightened row, as a regression pin
-- `ruleForTarget` id stability: same target → same id, twice
-- `containingApplication`: nested `.app` inside `.app` picks the **outermost** bundle — verified against the current regex during plan review (`/Applications/Foo.app/Contents/MacOS/Bar.app/Contents/MacOS/bin` → `/Applications/Foo.app`; the non-greedy prefix stops at the first `.app` followed by `/` or end-of-string, and a trailing bare `Foo.app` also matches). The existing resolver test's expectation `/Applications/Browser.app` for the Helper-inside-Browser case is consistent and is re-asserted here
-- `displayNameForPath`: application strips `.app`, executable keeps basename
-- `applicationId` collides when seeds collide (documents the invariant, guards future seed changes)
+- `apply` happy path: configure called with post-mutation targets when enforcement changes; save called; settings adopted via `setSettings`.
+- `apply` skips configure when enforcement is unchanged (false → false) and still saves.
+- `apply` rollback: first `configure` rejects ⇒ reconfigure with captured pre-mutation targets; settings restored; blocker restored (the selection-flow regression pin); error rethrown.
+- `apply` with unchanged enforcement (false → false) and a rejecting save ⇒ no configure call at all (forward or rollback), blocker state and settings restored, error rethrown.
+- `apply` fail-open: rollback `configure` also rejects ⇒ blocking disabled, **adopted even though the save rejects**, best-effort persisted; original error still rethrown.
+- `apply` with `mutateBlocker` throwing ⇒ blocker restored, no configure, no save, no settings adoption, error rethrown.
+- `failOpen`: status inactive + enabled ⇒ disabled, adopted even when the save rejects, best-effort saved; status active ⇒ untouched; save rejection swallowed.
+- `reconcile`: stale persisted `blockingEnabled` cleared and required-persisted; `initialize` awaited; active firewall ⇒ `configure(false, [])` with errors propagating; otherwise untouched.
+- `scheduleSync`/`cancelSync`/`dispose` (vitest fake timers): fires once after 150 ms through `enqueue`; failure path configures `(false, [])` swallowed then adopts the disabled settings and persists best-effort (unconditional, even if the status is stale, even if the save rejects); guards on disabled/enqueued-twice; `cancelSync`/`dispose` prevent the pending fire.
 
-**Updated:** `tests/observed-ip-blocker.test.ts` — the matching assertions in its first test duplicate the identity surface and move to the identity module's tests (the blocker has no identity-key assertions to delete: `applicationIdentityKey` had no test importer); the remaining blocker-behavior tests keep constructing rules via `ruleForTarget` imported from `./application-identity`. `tests/process-resolver.test.ts` — the `containingApplication` test moves to the identity module's tests (no re-export is kept on the resolver); the resolver file keeps its cache, process-name-refresh, and classification cases. `tests/settings-store.test.ts` — untouched: it imports no identity symbol today and its dedupe test passes via the store's unchanged behavior. `tests/controller.test.ts` — no change (verified: it imports no identity symbol and exercises no matching flow).
+**Updated:** `tests/controller.test.ts` — the two existing tests keep passing untouched (they exercise the Controller's interface through a firewall double, unchanged). Add one regression: with blocking enabled on the selected fixture application (its address learned from the fixture sample, `setBlocking(true)` succeeding), a `removeApplicationRule()` whose firewall `configure` rejects must leave the rule, its learned address, and `blockingEnabled: true` intact in the settings file and the snapshot — the transaction rolled the removal back. Constraint to know up front: the fixture resolver resolves every sample to `/usr/bin/curl`, so a controller test can only ever see one application; a *selection* whose `configure` fails while blocking is enabled is therefore reachable only as a re-selection of the already-selected application, whose blocker rollback is observationally a no-op — the removal flow is the reachable one with an observable rollback delta (proves the wiring, not the policy — the policy is pinned in the enforcement tests). The double must reject only the removal's `configure(false, [])` and let the rollback `configure(true, …)` succeed, or the transaction fails open and the assertions change.
 
-**Test surface statement:** every identity fact is tested through the new module's interface; the blocker and store tests stop re-probing the identity-key format directly (the store keeps its behavioral dedupe test through `addApplicationIfMissing`). No test reaches past the interface (no private-state poking).
+**Test surface statement:** transition policy is tested only through the Enforcement module's interface; the Controller tests keep lifecycle wiring plus the one wiring-level rollback regression above. No test reaches past the interface under test.
 
 ## CONTEXT.md update
 
 Add to root `CONTEXT.md` under Terms:
 
-> **Application identity** — `apps/integrated/Bonded/src/main/application-identity.ts`; the single owner of "the same application": identity key (`bundle:<id>|path:<path>` or `path:<path>`), rule matching, bundle containment, and opaque-id seeding for observed applications. Settings, the observed-IP blocker, and the process resolver are adapters over it.
+> **Enforcement** — `apps/integrated/Bonded/src/main/enforcement.ts`; owns the blocking-state transitions: the startup reconciliation, applying selections to the PF firewall, failing open when the helper is unavailable, and rolling back settings, firewall configuration, and learned addresses on failure. The controller decides when transitions happen; Enforcement owns how they land.
 
-## Execution steps (each its own commit, nested repo `apps/integrated/Bonded`)
+## Execution steps (nested repo `apps/integrated/Bonded` unless noted; steps 1–2 share one commit — see Commit messages)
 
-1. **Add the module + table-driven tests, no consumers moved.** `application-identity.ts` + `application-identity.test.ts` green. Verify: `pnpm -C apps/integrated/Bonded exec vitest run tests/application-identity.test.ts`.
-2. **Migrate `process-resolver`** to `containingApplication`/`displayNameForPath`/`applicationId` from the module; delete its local regex and basename logic; move the `containingApplication` test import; update `controller.ts`'s `containingApplication` import (migration item 3). Verify: focused resolver tests + `tsc --noEmit`.
-3. **Migrate `settings-store`** to `identityKey`; delete `applicationRuleIdentity`; settings-store tests keep passing untouched (they exercise the store's interface, which is unchanged).
-4. **Migrate `observed-ip-blocker`** to `matchesRule`/`identityKey`; delete its three local functions and the local `ApplicationRuleTarget` interface; controller import updates in the same commit. Verify: focused blocker + controller tests.
-5. **Tighten matching** per the table (the one behavior change), with its regression test already in place from step 1. Verify: full nested Vitest.
-6. **Update root `CONTEXT.md`** with the Application identity term.
-7. **Full verification:** nested `typecheck`, full `vitest run` (expect 75+ passed / 1 skipped), `build:renderer`, full `playwright test` (2 passed, 2 packaged skipped), root `pnpm typecheck`, root `pnpm test`. If the shared runtime lease is held by a live Moirasia host, ask before terminating it (same environmental blocker as before).
-8. **Status check:** both repos clean after commits; no leftover `applicationRuleIdentity`/`applicationIdentityKey`/`applicationRuleForTarget`/`matchesApplicationRule`/`ApplicationRuleTarget` references (`rg` clean).
+1. **Add the module + tests, no consumers moved.** `enforcement.ts` + `enforcement.test.ts` green. Verify: `pnpm -C apps/integrated/Bonded exec vitest run tests/enforcement.test.ts`.
+2. **Migrate the Controller** per the table; delete the five dance shapes; add the controller-level rollback regression. Verify: `tsc --noEmit -p tsconfig.json` + focused `vitest run tests/controller.test.ts tests/enforcement.test.ts`.
+3. **Full nested check:** `pnpm -C apps/integrated/Bonded typecheck`, full `vitest run` (expect ≥ 100 passed / 1 skipped — +10 enforcement tests, +1 controller regression over the 90 baseline), `build:renderer`, full `playwright test` (2 passed, 2 packaged skipped).
+4. **Update root `CONTEXT.md`** with the Enforcement term. Verify: root `pnpm typecheck`, root `pnpm test` (expect 264 passed).
+5. **Status check:** both repos clean after commits; no leftover `commitSettings`/`reconfigureAfterObservation`/`scheduleFirewallSync`/`cancelFirewallSync`/`firewallSyncTimer` references (`rg` clean; `acceptFirewallStatus` survives by design as the two-line status-listener shim delegating to `failOpen`, so it is deliberately not in this list; `failOpen`-shaped comment swallows live only in the module).
 
-Commit messages: `refactor: own application identity in one module` (steps 2–4 may fold into it if the intermediate states add no review value; step 5 is its own commit: `fix: match bundle-keyed rules by bundle identity`).
+Commit messages: `refactor: own blocking enforcement in one module` (steps 1–2 fold into it: the intermediate state adds no review value for a behavior-preserving move), then root `docs: add Enforcement term`.
 
 ## Out of scope
 
-- The async cache deepening (candidate 2) — the identity module is its future first adapter, not part of this plan.
-- Native (`ApplicationClassifier.swift`) — classification is not identity; the native runtime is untouched.
-- Renderer label/ordering code — already settled in `475d4a0`.
-- Any persistence-format change — `settings.json` v3 keys are untouched; identity keys never hit disk (ids on disk are opaque hashes of pre-existing seeds, and stored rules carry path/bundleIdentifier directly).
+- Architecture-review candidates 2–5 (Snapshot composer, Sample ingest, command contract, single-flight queue) — separate deepenings; the Enforcement module is not their seam.
+- Helper install/uninstall lifecycle and `stop()`'s disposal sequence — single-site orchestration with deliberate error-surfacing order; moving them adds interface without removing duplication.
+- The native feature adapter (`native-feature.ts`) — native mode owns its own state; untouched.
+- `firewall-client.ts` — its status/retry/socket semantics stay; only the *policy* around it deepens.
+- Renderer code — the snapshot contract is untouched.
