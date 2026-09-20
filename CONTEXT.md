@@ -5,6 +5,7 @@ Moirasia is a macOS controller and feature host. This file is the short glossary
 ## Terms
 
 - **Application identity** — `apps/integrated/Bonded/src/main/application-identity.ts`; the single owner of "the same application": identity key (`bundle:<id>|path:<path>` or `path:<path>`), rule matching, bundle containment, and opaque-id seeding for observed applications. Settings, the observed-IP blocker, and the process resolver are adapters over it.
+- **Enforcement** — `apps/integrated/Bonded/src/main/enforcement.ts`; owns the blocking-state transitions: the startup reconciliation, applying selections to the PF firewall, failing open when the helper is unavailable, and rolling back settings, firewall configuration, and learned addresses on failure. The controller decides when transitions happen; Enforcement owns how they land.
 - **Controller** — the Moirasia main-process side that discovers, opens, focuses, and quits Amove, Vox, Bonded, and Shout through the AppKit agent and the `--moirasia-control` protocol.
 - **Feature host** — the native `MoirasiaFeatureService` process that owns persistent Bonded, Shout, and Amove state in native mode. In local mode, the Electron main process remains the feature host.
 - **Embedded feature** — a product running inside the suite window against the `MoirasiaFeature` contract (`register`/`dispose`/`activate`/`setActive`). Currently Amove, Bonded, and Shout.
