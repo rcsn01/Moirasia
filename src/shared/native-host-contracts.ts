@@ -159,6 +159,8 @@ export interface NativeHostClientLike {
   connect(): Promise<void>
   close(): void
   request<T = unknown>(method: NativeHostMethod | string, params?: Record<string, unknown>): Promise<T>
+  /** Typed decode of the host's bootstrap snapshot. Undefined = malformed payload; transport errors still throw. */
+  getSnapshot(): Promise<NativeHostSnapshot | undefined>
   subscribe(event: string, listener: (payload: unknown, revision: number) => void): () => void
   subscribeConnection?(listener: (event: NativeHostConnectionEvent) => void): () => void
   isConnected(): boolean

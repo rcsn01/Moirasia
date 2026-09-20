@@ -12,7 +12,8 @@ import {
   type NativeHostClientLike,
   type NativeHostConnectionEvent,
   type NativeHostMethod,
-  type NativeHostMessage
+  type NativeHostMessage,
+  type NativeHostSnapshot
 } from '../../shared/native-host-contracts'
 
 interface PendingRequest {
@@ -80,6 +81,12 @@ export class NativeHostClient implements NativeHostClientLike {
       await this.connect()
       return this.#requestOnce<T>(method, params)
     }
+  }
+
+  /** Typed decode of the host's bootstrap snapshot over the same request path (read-only retry included). */
+  async getSnapshot(): Promise<NativeHostSnapshot | undefined> {
+    const result = await this.request('host.getSnapshot')
+    return isNativeHostSnapshot(result) ? result : undefined
   }
 
   subscribe(event: string, listener: (payload: unknown, revision: number) => void): () => void {

@@ -1,17 +1,14 @@
 import { app, ipcMain, nativeTheme, type BrowserWindow, type BrowserWindowConstructorOptions, type NativeTheme, type WebContents } from 'electron'
 import { copyFile, mkdir, open, readFile, rename, rm, stat, watch } from 'node:fs/promises'
 import { dirname, join } from 'node:path'
-import { APPEARANCES, PRODUCT_IDS, isAppearance, isProductId, type Appearance, type AppearanceSnapshot, type LoginItemControlResult, type ProductId } from './index'
+import { APPEARANCES, DEFAULT_PRODUCT_APPEARANCES, PRODUCT_IDS, defaultAppearanceSnapshot, isAppearance, isProductId, type Appearance, type AppearanceSnapshot, type LoginItemControlResult, type ProductId } from './index'
 
 export { runLoginItemControl } from './login-item-control'
 export { runStandaloneLaunch } from './standalone-launch'
 export type { StandaloneLaunchOptions, StandaloneLaunchOutcome } from './standalone-launch'
 
-const DEFAULTS: Record<ProductId, Appearance> = { moirasia: 'system', amove: 'system', vox: 'system', exithibition: 'dark', bonded: 'system', shout: 'system', orbis: 'system', yn360: 'system' }
-const EMPTY: AppearanceSnapshot = { version: 1, revision: 0, values: DEFAULTS }
-
-/** The product's default appearance — DEFAULTS stays the single owner of the seed table. */
-export function defaultProductAppearance(product: ProductId): Appearance { return DEFAULTS[product] }
+/** The product's default appearance — the seed table lives in ./index and stays its single owner. */
+export function defaultProductAppearance(product: ProductId): Appearance { return DEFAULT_PRODUCT_APPEARANCES[product] }
 
 export function appearanceRegistryPath(appData = app.getPath('appData')): string {
   return join(appData, 'Moirasia', 'appearance.json')
@@ -19,7 +16,7 @@ export function appearanceRegistryPath(appData = app.getPath('appData')): string
 
 export class AppearanceRegistry {
   readonly filePath: string
-  #snapshot: AppearanceSnapshot = structuredClone(EMPTY)
+  #snapshot: AppearanceSnapshot = defaultAppearanceSnapshot()
   #listeners = new Set<(snapshot: AppearanceSnapshot) => void>()
   #watcher: ReturnType<typeof watch> | undefined
   #watchAbort: AbortController | undefined
@@ -31,7 +28,7 @@ export class AppearanceRegistry {
   async load(legacy: Partial<Record<ProductId, Appearance>> = {}): Promise<AppearanceSnapshot> {
     const primary = await readSnapshot(this.filePath)
     const loaded = primary ?? await readSnapshot(`${this.filePath}.backup`)
-    this.#snapshot = loaded ?? { version: 1, revision: 0, values: { ...DEFAULTS, ...validLegacy(legacy) } }
+    this.#snapshot = loaded ?? { version: 1, revision: 0, values: { ...DEFAULT_PRODUCT_APPEARANCES, ...validLegacy(legacy) } }
     if (!primary) await this.#persist(this.#snapshot)
     await this.#watch()
     return this.get()
@@ -182,7 +179,7 @@ async function readSnapshot(path: string): Promise<AppearanceSnapshot | undefine
     const values = value.values as Partial<Record<ProductId, Appearance>>
     const requiredLegacyProducts = ['moirasia', 'amove', 'vox', 'exithibition'] as const
     if (!requiredLegacyProducts.every((id) => isAppearance(values[id]))) return undefined
-    return { version: 1, revision: value.revision!, values: { ...DEFAULTS, ...Object.fromEntries(PRODUCT_IDS.filter((id) => isAppearance(values[id])).map((id) => [id, values[id]])) } }
+    return { version: 1, revision: value.revision!, values: { ...DEFAULT_PRODUCT_APPEARANCES, ...Object.fromEntries(PRODUCT_IDS.filter((id) => isAppearance(values[id])).map((id) => [id, values[id]])) } }
   } catch { return undefined }
 }
 

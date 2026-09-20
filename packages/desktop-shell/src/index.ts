@@ -16,6 +16,11 @@ export interface AppearanceSnapshot {
   readonly values: Readonly<Record<ProductId, Appearance>>
 }
 
+/** The suite-wide appearance seed table: one owner of every product's default appearance. Pure data, renderer-safe. */
+export const DEFAULT_PRODUCT_APPEARANCES: Record<ProductId, Appearance> = { moirasia: 'system', amove: 'system', vox: 'system', exithibition: 'dark', bonded: 'system', shout: 'system', orbis: 'system', yn360: 'system' }
+
+export function defaultAppearanceSnapshot(): AppearanceSnapshot { return { version: 1, revision: 0, values: { ...DEFAULT_PRODUCT_APPEARANCES } } }
+
 export interface LoginItemControlResult {
   readonly protocolVersion: 1
   readonly appId: string

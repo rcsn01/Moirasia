@@ -1,8 +1,6 @@
 import { copyFile, mkdir, open, readFile, rename } from 'node:fs/promises'
 import { dirname } from 'node:path'
-import { APPLICATION_IDS, type ApplicationId, type ShellSettings } from '../shared/contracts'
-
-export const DEFAULT_SHELL_SETTINGS: ShellSettings = { version: 4, launchAtLogin: false, appPresence: 'dock', pendingLoginItems: {}, features: {} }
+import { APPLICATION_IDS, DEFAULT_SHELL_SETTINGS, type ApplicationId, type ShellSettings } from '../shared/contracts'
 
 export class ShellSettingsStore {
   #settings: ShellSettings = structuredClone(DEFAULT_SHELL_SETTINGS)

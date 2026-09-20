@@ -10,7 +10,6 @@ import { installMemoryDiagnostics } from './memory-diagnostics'
 import { installApplicationMenu } from './menu'
 import { applicationAgentPath, moirasiaFeatureServicePath, moirasiaHostPath, moirasiaHostSocketPath, moirasiaNativeFeaturePaths } from './paths'
 import { NativeHostClient } from './native-host/client'
-import { nativeHostSnapshotSchema } from '../shared/native-host-contracts'
 import { ShellWindowLifecycle } from './shell-window'
 import { ShellSettingsStore } from './settings'
 import { UiCommandRouter, parseUiIntent } from './ui-command-router'
@@ -210,7 +209,8 @@ function setLoginItemSettings(openAtLogin: boolean): void {
 async function connectNativeHost(client: NativeHostClient): Promise<boolean> {
   try {
     await client.connect()
-    nativeHostSnapshotSchema.parse(await client.request('host.getSnapshot'))
+    const snapshot = await client.getSnapshot()
+    if (!snapshot) { console.error('MoirasiaHost returned an invalid snapshot.'); return false }
     return true
   } catch (error) {
     console.error('Could not connect to MoirasiaHost', error)

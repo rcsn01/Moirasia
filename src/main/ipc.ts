@@ -4,7 +4,7 @@ import { isFeatureId } from '@moirasia/desktop-shell/feature'
 import { sendToRenderer } from '@moirasia/desktop-shell/main'
 import { IPC, isApplicationId, isAppPresenceMode, isControllerPage, type AppPresenceMode } from '../shared/contracts'
 import type { ApplicationController } from './application-controller'
-import { nativeHostSnapshotSchema, type NativeHostClientLike } from '../shared/native-host-contracts'
+import type { NativeHostClientLike } from '../shared/native-host-contracts'
 import type { ShellSettingsStore } from './settings'
 
 export function registerControllerIpc(options: { window: BrowserWindow; controller: ApplicationController; settings: ShellSettingsStore; applyShellAppearance(): void; applyAppPresence(mode: AppPresenceMode): void; nativeClient?: NativeHostClientLike }): () => void {
@@ -25,8 +25,8 @@ export function registerControllerIpc(options: { window: BrowserWindow; controll
     if (options.nativeClient) {
       await options.nativeClient.request('host.setLaunchAtLogin', { enabled })
       appSetLoginItem(enabled)
-      const snapshot = await options.nativeClient.request<unknown>('host.getSnapshot')
-      cacheNativeSettings(options.settings, snapshot)
+      const snapshot = await options.nativeClient.getSnapshot()
+      if (snapshot) options.settings.setCached(snapshot.settings)
       return options.settings.get()
     }
     const result = await options.settings.update({ launchAtLogin: enabled }); appSetLoginItem(enabled); return result
@@ -37,8 +37,8 @@ export function registerControllerIpc(options: { window: BrowserWindow; controll
     options.applyAppPresence(mode)
     if (options.nativeClient) {
       await options.nativeClient.request('host.setPresence', { mode })
-      const snapshot = await options.nativeClient.request<unknown>('host.getSnapshot')
-      cacheNativeSettings(options.settings, snapshot)
+      const snapshot = await options.nativeClient.getSnapshot()
+      if (snapshot) options.settings.setCached(snapshot.settings)
       return options.settings.get()
     }
     return options.settings.update({ appPresence: mode })
@@ -53,12 +53,6 @@ export function registerControllerIpc(options: { window: BrowserWindow; controll
   const unsubscribe = options.controller.subscribe((snapshot) => { sendToRenderer(options.window.webContents, IPC.snapshot, snapshot) })
   const handlers = Object.values(IPC).filter((value) => value !== IPC.snapshot && value !== IPC.navigate)
   return () => { unsubscribe(); handlers.forEach((channel) => ipcMain.removeHandler(channel)) }
-}
-
-function cacheNativeSettings(store: ShellSettingsStore, snapshot: unknown): void {
-  const parsed = nativeHostSnapshotSchema.safeParse(snapshot)
-  if (!parsed.success) return
-  store.setCached(parsed.data.settings as Parameters<ShellSettingsStore['setCached']>[0])
 }
 
 function appSetLoginItem(openAtLogin: boolean): void {

@@ -28,7 +28,7 @@ function writeResponse(socket: Socket, request: { id: string; version: number },
   socket.write(encodeNativeHostMessage(response))
 }
 
-function handleProtocol(socket: Socket, onSnapshot: () => void): void {
+function handleProtocol(socket: Socket, onSnapshot: () => void, snapshotResult: unknown = SNAPSHOT): void {
   let buffer = ''
   socket.setEncoding('utf8')
   socket.on('data', (chunk) => {
@@ -39,7 +39,7 @@ function handleProtocol(socket: Socket, onSnapshot: () => void): void {
       if (line) {
         const request = JSON.parse(line) as { id: string; method: string; version: number }
         if (request.method === 'host.authenticate') writeResponse(socket, request, { authenticated: true })
-        else if (request.method === 'host.getSnapshot') { writeResponse(socket, request, SNAPSHOT); onSnapshot() }
+        else if (request.method === 'host.getSnapshot') { writeResponse(socket, request, snapshotResult); onSnapshot() }
       }
       newline = buffer.indexOf('\n')
     }
@@ -53,9 +53,40 @@ describe('NativeHostClient', () => {
 
   afterEach(async () => {
     sockets.forEach((socket) => socket.destroy())
+    sockets = []
     server?.close()
     if (directory) await rm(directory, { recursive: true, force: true })
     vi.restoreAllMocks()
+  })
+
+  it('decodes host.getSnapshot through the typed port accessor', async () => {
+    directory = await mkdtemp(join(tmpdir(), 'moirasia-native-client-'))
+    const socketPath = join(directory, 'host.sock')
+    const tokenPath = join(directory, 'token')
+    await writeFile(tokenPath, 'secret\n')
+    server = await listen(socketPath, (socket) => {
+      sockets.push(socket)
+      handleProtocol(socket, () => undefined)
+    })
+
+    const client = new NativeHostClient({ socketPath, tokenPath, timeoutMs: 500 })
+    await expect(client.getSnapshot()).resolves.toEqual(SNAPSHOT)
+    client.close()
+  })
+
+  it('resolves undefined from getSnapshot() when the host returns a malformed snapshot payload', async () => {
+    directory = await mkdtemp(join(tmpdir(), 'moirasia-native-client-'))
+    const socketPath = join(directory, 'host.sock')
+    const tokenPath = join(directory, 'token')
+    await writeFile(tokenPath, 'secret\n')
+    server = await listen(socketPath, (socket) => {
+      sockets.push(socket)
+      handleProtocol(socket, () => undefined, { version: 1 })
+    })
+
+    const client = new NativeHostClient({ socketPath, tokenPath, timeoutMs: 500 })
+    await expect(client.getSnapshot()).resolves.toBeUndefined()
+    client.close()
   })
 
   it('emits one-shot connection transitions and resets revisions between host generations', async () => {

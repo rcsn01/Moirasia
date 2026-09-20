@@ -11,7 +11,7 @@ vi.mock('electron', () => electron)
 import { EmbeddedFeatureHost } from '../src/main/features/embedded-host'
 import { FeatureRuntime } from '../src/main/features/runtime'
 import { ShellSettingsStore } from '../src/main/settings'
-import type { NativeHostClientLike, NativeHostConnectionEvent } from '../src/shared/native-host-contracts'
+import type { NativeHostClientLike, NativeHostConnectionEvent, NativeHostSnapshot } from '../src/shared/native-host-contracts'
 
 class FakeShellWindow extends EventEmitter {
   webContents = {}
@@ -337,6 +337,7 @@ describe('FeatureRuntime', () => {
           requestCalls.push({ method: String(method), params })
           return (method === 'host.getSnapshot' ? snapshot : undefined) as T
         },
+        getSnapshot: async () => snapshot as NativeHostSnapshot | undefined,
         subscribe: (event, listener) => {
           if (event === 'host.snapshotChanged') snapshotListeners.add(listener)
           return () => { unsubscribes.push(event); snapshotListeners.delete(listener) }

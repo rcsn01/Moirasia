@@ -1,5 +1,5 @@
 import type { Appearance, AppearanceSnapshot, LoginItemControlResult } from '@moirasia/desktop-shell'
-import { APPLICATION_IDS, isApplicationId, type ApplicationId } from '@moirasia/desktop-shell'
+import { applicationCatalog, defaultAppearanceSnapshot, APPLICATION_IDS, isApplicationId, type ApplicationId } from '@moirasia/desktop-shell'
 import { isFeatureId, type FeatureId } from '@moirasia/desktop-shell/feature'
 
 export { APPLICATION_IDS, isApplicationId, type ApplicationId }
@@ -16,7 +16,6 @@ export interface ApplicationStatus {
   readonly running: boolean
   readonly path?: string
   readonly loginItem?: LoginItemControlResult
-  readonly busy?: 'opening' | 'quitting' | 'login-item'
   readonly error?: string
 }
 
@@ -43,6 +42,17 @@ export interface ShellSettings {
   readonly appPresence: AppPresenceMode
   readonly pendingLoginItems: Readonly<Partial<Record<ApplicationId, true>>>
   readonly features: Readonly<Partial<Record<ApplicationId, boolean>>>
+}
+
+export const DEFAULT_SHELL_SETTINGS: ShellSettings = { version: 4, launchAtLogin: false, appPresence: 'dock', pendingLoginItems: {}, features: {} }
+
+/** The renderer's pre-first-snapshot state: catalog-seeded application rows under the default appearance snapshot. */
+export function emptyControllerSnapshot(): ControllerSnapshot {
+  return {
+    applications: applicationCatalog.entries.map(({ id, label, bundleId }) => ({ id, label, bundleId, installed: false, running: false })),
+    appearances: defaultAppearanceSnapshot(),
+    features: []
+  }
 }
 
 export interface ControllerApi {

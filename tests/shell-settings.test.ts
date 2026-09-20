@@ -2,10 +2,8 @@ import { mkdtemp, readFile, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
-import {
-  DEFAULT_SHELL_SETTINGS,
-  ShellSettingsStore
-} from '../src/main/settings'
+import { ShellSettingsStore } from '../src/main/settings'
+import { DEFAULT_SHELL_SETTINGS } from '../src/shared/contracts'
 
 describe('ShellSettingsStore', () => {
   it('loads defaults when no file exists and persists them', async () => {

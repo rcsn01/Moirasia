@@ -1,14 +1,11 @@
 import { useCallback, useEffect, useState } from 'react'
 import { applyDocumentAppearance } from '@moirasia/desktop-shell/react'
 import { featureCatalog } from '@moirasia/desktop-shell/feature'
-import { applicationCatalog } from '@moirasia/desktop-shell'
 import type { Appearance } from '@moirasia/desktop-shell'
-import type { ApplicationId, AppPresenceMode, ControllerPage, ControllerSnapshot, ShellSettings } from '../../shared/contracts'
+import { DEFAULT_SHELL_SETTINGS, emptyControllerSnapshot, type ApplicationId, type AppPresenceMode, type ControllerPage, type ControllerSnapshot } from '../../shared/contracts'
 
-const EMPTY: ControllerSnapshot = { applications: applicationCatalog.entries.map(({ id, label }) => ({ id, label, bundleId: '', installed: false, running: false })), appearances: { version: 1, revision: 0, values: { moirasia: 'system', amove: 'system', vox: 'system', exithibition: 'dark', bonded: 'system', shout: 'system', orbis: 'system', yn360: 'system' } }, features: [] }
-const DEFAULT_SETTINGS: ShellSettings = { version: 4, launchAtLogin: false, appPresence: 'dock', pendingLoginItems: {}, features: {} }
 export function useController() {
-  const [snapshot, setSnapshot] = useState(EMPTY), [settings, setSettings] = useState(DEFAULT_SETTINGS), [page, setPage] = useState<ControllerPage>('general'), [loading, setLoading] = useState(true), [error, setError] = useState<string>()
+  const [snapshot, setSnapshot] = useState(emptyControllerSnapshot), [settings, setSettings] = useState(DEFAULT_SHELL_SETTINGS), [page, setPage] = useState<ControllerPage>('general'), [loading, setLoading] = useState(true), [error, setError] = useState<string>()
   useEffect(() => { let active = true; void Promise.all([window.moirasia.getSnapshot(), window.moirasia.getSettings(), window.moirasia.getPage()]).then(([next, preferences, initialPage]) => { if (active) { setSnapshot(next); setSettings(preferences); setPage(initialPage); void window.moirasia.reportPage(initialPage).catch((reason) => active && setError(message(reason))) } }).catch((reason) => active && setError(message(reason))).finally(() => active && setLoading(false)); const offSnapshot = window.moirasia.onSnapshot((next) => active && setSnapshot(next)); const offNavigate = window.moirasia.onNavigate((next) => active && setPage(next)); return () => { active = false; offSnapshot(); offNavigate() } }, [])
   useEffect(() => { const appearance = snapshot.appearances.values.moirasia; const media = matchMedia('(prefers-color-scheme: dark)'); const apply = () => applyDocumentAppearance(appearance, media.matches); apply(); media.addEventListener('change', apply); return () => media.removeEventListener('change', apply) }, [snapshot.appearances.values.moirasia])
   const action = useCallback(async (operation: () => Promise<ControllerSnapshot>) => { setError(undefined); try { setSnapshot(await operation()) } catch (reason) { setError(message(reason)) } }, [])
