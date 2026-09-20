@@ -1,139 +1,171 @@
-# Implementation plan: the Enforcement policy module
+# Implementation plan: the Feature mode seam
 
 ## Decision
 
-Architecture-review candidate 1 (Enforcement policy), finalized. One deep module owns the blocking-state transitions in Bonded: the startup reconciliation of a stale persisted blocking flag, applying selections to the PF firewall, failing open when the helper is unavailable, rolling back settings/firewall/learned addresses on failure, and keeping the firewall's target list in sync with newly learned addresses. Today those five transition shapes live inline in the Controller across nine sites with three different persist-or-swallow policies and two hand-rolled rollback layers. After this change there is one interface with one test surface, and enforcement bugs have locality.
+Architecture-review candidate 1 (the Feature runtime's host-mode split), finalized. The **Feature runtime** (`src/main/features/runtime.ts`, 379 lines) keeps its exact public interface and gains one internal seam: a **Feature mode** interface with exactly two adapters — `NativeFeatureMode` and `LocalFeatureMode` — selected once at construction. Today the mode is selected once (a `nativeClient` present or not) and then re-implemented as branches and native-only bodies at 22 `#nativeClient` sites across 14 members (grep `#nativeClient` — the field, the constructor, and 12 methods): every one of `statuses`, `isInstalled`, `isLoaded`, `syncAtLaunch` (two bodies), `setInstalled` (two bodies), `setActive`, `activate`, and the near-identical 15-line twins `openShelf`/`toggleShelf` re-decides who owns installed-truth, how a feature loads, and how status composes; `disposeAll` adds its native-only unsubscribe. After this change the runtime's methods are mode-agnostic one-liners over shared machinery (loaded instances, the per-feature serialization queue, load errors, active-feature tracking), and each adapter owns its mode's behavior in one place. Feature-host bugs gain locality; the third time a host-mode behavior changes, it changes in one adapter, not at one of the 22 `#nativeClient` sites.
 
-Terminology follows `CONTEXT.md` and the codebase-design vocabulary: the new module is the **Enforcement policy module**; the Controller remains the wiring (mutation-queue ordering, snapshot publishing, monitor lifecycle) and the firewall adapter, settings-store, and Observed-IP blocker stay exactly where they are. No new seam is invented: the module is in-process, and its two real adapters at the firewall seam (the `FakeFirewallClient` that e2e selects via `BONDED_FAKE_FIREWALL=1` and that the new module tests will use, vs the real `FirewallClient` in prod) already exist on either side of it.
+Design provenance: three parallel interface designs were compared (design-it-twice). A "facts protocol" design (adapters push normalized facts; one reconciler owns instance lifecycle) and an event/session design were **rejected** because both restructure instance lifecycle and change observable behavior — `setInstalled` becomes eventual, local mode starts emitting status events it never emits today, and the 22 existing tests break by design. The chosen design moves each mode arm **verbatim** into its adapter, keeps `setInstalled` synchronous-to-persistence, and keeps the runtime as the single writer of shared state.
+
+Terminology follows `CONTEXT.md` and the codebase-design vocabulary: the new module is the **Feature mode** module (new term, see "CONTEXT.md update"); the **Feature runtime** remains the one interface and the shared machinery. No new external seam is invented: `NativeHostClientLike` (`src/shared/native-host-contracts.ts`) is already the outer port at the native-process boundary (production adapter `NativeHostClient`, test fakes), and `ShellSettingsStore` is local-substitutable (real store on a tmpdir in tests). The mode seam is **internal** to the Feature runtime module: two real implementations (native and local are both shipped production paths, both exercised by tests), selected once, never re-tested per method.
 
 ## Verified baseline
 
-Repository root: `/Users/mac/Syncthing/Projects/Moirasia`, tip `c92f425 docs: plan the Application identity module`. Nested Bonded repo: `apps/integrated/Bonded`, branch `main`, tip `fa73046 fix: match bundle-keyed rules by bundle identity`. Both worktrees clean as of this plan apart from this file itself (`plan.md` is modified — it is this document, replacing the committed Application identity plan in place). The Application identity module (`src/main/application-identity.ts`) is freshly landed and deep; this plan does not re-litigate it and does not touch it. `plan.md` in the repository root held the completed Application identity plan and has been replaced in place by this file.
+Repository root: `/Users/mac/Syncthing/Projects/Moirasia`, tip `d91e15e docs: plan the Enforcement policy module`, worktree clean apart from this file (`plan.md` held the completed Enforcement plan and has been replaced in place by this document). Nested Bonded repo tip `a308988 refactor: own blocking enforcement in one module` — untouched by this plan.
 
-Vocabulary sources read: root `CONTEXT.md` (no "Enforcement" term exists yet — this plan adds one, see "CONTEXT.md update"); no ADR directory exists at root or under `apps/integrated/Bonded`; no ADR conflicts. `docs/architecture/standalone-applications.md` is untouched: this plan moves no launch/mode/lease decision. Native mode is unaffected: the native feature service (`native-feature.ts`) owns its own state in native mode, and `feature.ts` wires `BondedController` only for the embedded/local host — the Enforcement module is therefore local-mode only by construction.
+Baseline checks at `d91e15e`: root `pnpm test` → **264 passed / 35 files** (2026-09-20, re-run during planning); root `pnpm typecheck` clean. No ADR directory exists at the root; no ADR conflicts. `CONTEXT.md` terms read: **Feature runtime**, **Feature host**, **Embedded feature**, **Feature surface host**, **Shell window lifecycle**, **Host mode** (suite|standalone — a different axis; this plan's "native mode"/"local mode" is the feature-execution axis already described inside the Feature host and Feature surface host terms).
 
-Vitest baseline at `fa73046`: 90 passed / 1 skipped across 23 files (the skipped file is `tests/real-nettop.integration.test.ts`); playwright 2 passed / 2 packaged skipped.
+Every claim below was verified against source at `d91e15e`, not inherited from the architecture-review card. Two card claims were corrected during verification: the card said index.ts/ipc.ts leak the mode fact — index.ts's 10 native-connection re-derivations (nine `nativeSelected && nativeClient`, plus the negated guard at `:128`) are about native **connection** state (shell quit/reconnect policy), a different fact the Feature runtime cannot own (see Out of scope).
 
-## The scattered transitions (evidence)
+## The scattered branches (evidence)
 
-| # | Site | Behavior |
-|---|------|----------|
-| 1 | `controller.ts:55–66` (`start`) | stale persisted blocking cleared and **required-persisted** (:58–61); firewall initialized, then an *active* firewall reconfigured to `(false, [])` (:63) |
-| 2 | `controller.ts:127–138` (`uninstallFirewallHelper`) | sync canceled (:129), hard `configure(false, [])` (:130), disable + **required-persisted** save (:131–132), then helper uninstall |
-| 3 | `controller.ts:147` (`setBlocking` → `commitSettings`) | cancel sync, configure **only if enforcement changed**, save, adopt; on failure: reconfigure previous targets, on second failure disable previous + **best-effort** save, restore settings, rethrow |
-| 4 | `controller.ts:153–175` (`selectObservedApplication`) and `:176–196` (`removeApplicationRule`) | hand-rolled `exportState()`/`restore()` around the mutation plus `previousTargets` captured pre-mutation, feeding `commitSettings`; the catch restores the blocker **after** commitSettings has already restored settings + firewall |
-| 5 | `controller.ts:252–258` (`acceptFirewallStatus`) | helper no longer active while `blockingEnabled` ⇒ disable + **best-effort** persist, then scheduleSnapshot |
-| 6 | `controller.ts:230–250` (`commitSettings`), `:284–299` (`scheduleFirewallSync`/`cancelFirewallSync`), `:301–311` (`reconfigureAfterObservation`) | the debounced (150 ms) reconfigure to current blocker targets; on failure `configure(false, [])` swallowed, then **unconditional** disable + best-effort save |
-| 7 | `controller.ts:212–228` (`stop`) | in-memory disable, `disconnect` (error surfaced last), best-effort save, `clearLearned` — disposal orchestration |
+| # | Site | Lines | Mode-varying behavior |
+|---|------|-------|----------------------|
+| 1 | `statuses()` | `runtime.ts:63–78` | six mode ternaries: `nativeMode` (:66), installed source (:67), service-error gating (:68), state composition (:69–71), loadError precedence (:72), loaded semantics (:73–75); also emits the same fact under two keys, `error` and `loadError`, in the return expression (:76) |
+| 2 | `isInstalled` / `isLoaded` | `:80`, `:82` | ternaries; native `isInstalled` falls back to settings when the snapshot has no entry |
+| 3 | `syncAtLaunch()` | `:86–103` | two bodies: native = connect + double subscribe + refresh + **parallel** eager load of installed adapters (:87–97); local = **sequential** await loop (:100–102). The parallel/sequential difference is deliberate |
+| 4 | `setInstalled()` | `:105–146` | two arms: native = retry detection (:110), `host.setFeatureInstalled`/`host.retryFeature` (:111), refresh, delete-then-dispose with swallow+log (:114–118), running-adapter reload (:119); local = inside `#enqueue` (:122): uninstall with **settings rollback on failed disposal** (:123–139, rollback+rethrow :133–136), install with rollback-to-uninstalled on failed load (:140–144) |
+| 5 | `setActive()` | `:149–158` | mode-varying guard (:150: native checks installed only; local also checks instance-existence), shared active bookkeeping (:151–153), native-only extras: `host.setUiState` (:155) + lazy native-adapter load (:156) |
+| 6 | `activate()` | `:160–169` | mode branch (:162): `#activateNative` vs local instance checks + `#host.activate` fallback |
+| 7 | `openShelf()` / `toggleShelf()` | `:171–185`, `:187–202` | near-identical 15-line twins; each contains its own mode branch; differ only in which instance method they call and toggle's local `openShelf` fallback |
+| 8 | `disposeAll()` | `:206–217` | native-only unsubscribe (:208–209); instance disposal is shared |
+| 9 | native-only machinery | `#loadRunningNativeAdapters` :227–233, `#activateNative` :242–248, `#loadNative` :250–260, `#refreshNativeSnapshot` :262–269, `#handleNativeSnapshotChanged` :271–280, `#handleNativeConnection` :282–300, `#applyNativeHealth` :302–318, `#applyNativeSnapshot` :320–339, `#emitNativeStatus` :341 | ~110 lines of native machinery interleaved with the shared class |
+| 10 | `#load` vs `#loadNative` | `:345–369`, `:250–260` | two load kernels differing only in the loader closure and whether load/register failures `console.error` (local logs; native silent) |
 
-Also related: `controller.ts:105–117` (`setMonitoring`) and `:198–210` (`restartMonitor`) persist settings without touching enforcement — deliberately **not** routed through the transaction today (no `cancelFirewallSync`, no configure); routing them through `apply` would change behavior (a pending sync would be canceled) for no benefit. `tests/controller.test.ts` has 2 tests (startup stale-clear + snapshot metadata); no unit test exercises `commitSettings`, `acceptFirewallStatus`, the selection rollback, or the sync debounce. e2e (with `BONDED_FAKE_FIREWALL=1`) reaches the happy-path dances — selection, blocking toggle, the debounced sync, shutdown disable — but the fake firewall never rejects, so no automated test exercises any failure path; the rollback dances are covered by the new module tests only.
+Also verified, deliberately **out**: `src/main/index.ts` (12 `nativeSelected` occurrences, ~10 re-derivations) — these gate native **connection** facts for shell policy (`canExitToNativeHost` :117, `preserveNativeMenuHost` :119/:188, `shouldStopNativeRuntime` :198, reconnect :135–141) — the Feature runtime cannot own connection lifecycle; `src/main/ipc.ts` `setLaunchAtLogin`/`setAppPresence` handlers (:22–45) split on `options.nativeClient` because **shell-settings ownership** differs by host mode (host owns settings in native mode, Electron caches) — a different module's seam (see Out of scope). `export type { FeatureLoader }` (`:379`) has zero importers. `FeatureStatus.error` (`src/shared/contracts.ts:28`) is a dual key of `loadError`: set only in native mode (`runtime.ts:76`), read by no renderer code (`features.tsx:34,39` read `loadError` only; no consumer anywhere in `src/` — the only pin is `feature-runtime.test.ts`, see the ledger; `contracts.ts:20` has a *different* `error?` on `ApplicationStatus` that stays), and FeatureStatus never crosses to the native host (it is the Electron→renderer contract only).
 
-Divergence consequence today: the "disable and persist" fact exists in six sites with two persistence strengths (required at :60 and :132; best-effort at :243–244 rollback-internal, :255–256, :307–309, and stop's :219/:222) — this plan consolidates four of them (:60, :243–244, :255–256, :307–309) and deliberately keeps the uninstall teardown and stop's disposal; the rollback ordering exists in three sites (commitSettings internal, two selection catches). A bug in any one copy stays invisible until a firewall failure, and the fix must be re-derived at each site.
+Divergence consequence today: the installed-truth fact is derived at every call site from two different sources with a settings fallback that only the native branch knows about; a status-composition bug must be fixed in `statuses()`, re-derived in `isInstalled`, and cross-checked against `isLoaded` — three copies of one concept.
 
 ## The deepened module
 
-**New file:** `apps/integrated/Bonded/src/main/enforcement.ts`
+**New file:** `src/main/features/host-mode.ts` — the Feature mode interface, both adapters, the native event machinery, and the `LOADERS`/`NATIVE_LOADERS` tables (moved from `runtime.ts`; they are mode wiring).
 
 ```
-Interface (all exports; no Electron, no fs, no clock of its own — timers via the runtime):
-  interface EnforcementOptions {
-    firewall: FirewallClientLike
-    store: { save(settings: BondedSettings): Promise<void> }        // structural: the real SettingsStore fits
-    blocker: ObservedIpBlocker
-    getSettings: () => BondedSettings                               // the Controller keeps owning the settings object
-    setSettings: (next: BondedSettings) => void                     // adopt-after-commit hook
-    enqueue: <T>(operation: () => Promise<T>) => Promise<T>         // the Controller's mutation queue
-  }
-  class Enforcement {
-    constructor(options: EnforcementOptions)
-    reconcile(): Promise<void>
-    apply(next: BondedSettings, mutateBlocker?: (blocker: ObservedIpBlocker) => void): Promise<void>
-    failOpen(): Promise<void>
-    scheduleSync(): void
-    cancelSync(): void
-    dispose(): void
-  }
+export interface SharedFeatureState {
+  instanceLoaded: boolean          // runtime: #instances.has(id)
+  sessionLoaded: boolean           // runtime: #loadedThisSession.has(id)
+  loadError: string | undefined    // runtime: #loadErrors.get(id)
+}
+
+/** The narrow callback surface the shared runtime machinery exposes to its mode adapters. */
+export interface FeatureModeLinks {
+  enqueue(id: FeatureId, operation: () => Promise<void> | void): Promise<void>  // the per-feature queue
+  acquire(id: FeatureId): Promise<boolean>                                      // the unified load kernel
+  instance(id: FeatureId): MoirasiaFeature | undefined
+  removeInstance(id: FeatureId): void
+  setInstanceActive(id: FeatureId, active: boolean): void
+  loadError(id: FeatureId): string | undefined
+  forgetLoadError(id: FeatureId): void
+  activeId(): FeatureId | undefined
+  setActive(id: FeatureId | undefined): void            // the public method; documented re-entrancy
+  embeddedHost: EmbeddedFeatureHost | undefined
+  onStatusesChanged(): void                            // native: fires wherever #emitNativeStatus fires today; the runtime wires it to the #statusListeners fan-out; local: never called
+}
+
+export interface FeatureMode {
+  start(): Promise<void>                                                      // the two syncAtLaunch bodies, verbatim
+  installed(id: FeatureId): boolean
+  isLoaded(id: FeatureId, instanceLoaded: boolean): boolean
+  describeFeature(id: FeatureId, shared: SharedFeatureState): FeatureStatus   // full per-feature composition
+  setInstalled(id: FeatureId, installed: boolean): Promise<void>              // the two arms, verbatim
+  resolveActive(id: FeatureId | undefined, instanceLoaded: boolean): FeatureId | undefined
+  applyActive(id: FeatureId | undefined): void                                // native: setUiState + lazy load; local: no-op
+  activate(id: FeatureId): void | Promise<void>                               // the two arms, verbatim
+  shelf(action: 'open' | 'toggle'): Promise<void>                             // the collapsed twins' arms
+  stop(): void                                                                // native: unsubscribe both; local: no-op
+  loader(id: FeatureId): (() => Promise<{ feature: MoirasiaFeature }>) | undefined
+  readonly logsAcquisitionErrors: boolean                                     // local: true; native: false
+}
 ```
 
-Interface invariants (these *are* the depth; all hidden from callers):
+`NativeFeatureMode` owns: the `NativeHostClientLike`, `NATIVE_LOADERS` (via `options.nativeLoaders ?? NATIVE_LOADERS`), the `#nativeStatuses` map, service health (`#nativeServiceState`/`#nativeServiceError`), the snapshot/health subscriptions, `#nativeRecovery`, and `isInstalledFromSettings` fallback reads. `LocalFeatureMode` owns: the `ShellSettingsStore` installed-truth, `LOADERS` (via `options.loaders ?? LOADERS`), and the settings writes. The runtime keeps and owns: `#instances`, `#loadedThisSession`, `#loadErrors`, the `#enqueue` per-feature serialization queue, `#active`, `#setInstanceActive`, the unified `#acquire` kernel (loader closure from `mode.loader(id)`, `register(context)` with rollback dispose, `#loadErrors` recording, `console.error` gated on `mode.logsAcquisitionErrors`), and the `#featureIds` list (`Object.keys(options.loaders ?? LOADERS)` — exactly today's iteration domain), plus `#operations` (the queue's pending promises, awaited by `disposeAll`), `#statusListeners` (the fan-out behind `subscribe`, driven by `onStatusesChanged`), `#host`, and `#context`.
 
-- `apply` is a transaction. It captures the settings clone, the blocker's `exportState()`, and `blocker.targets()` **before** running `mutateBlocker`; it then cancels the pending sync, configures the firewall only when enforcement changed (`previous.blockingEnabled || next.blockingEnabled` — exact call `configure(next.blockingEnabled, next.blockingEnabled ? blocker.targets() : [])`, targets from the post-mutation blocker), saves, and adopts the new settings **last**. On any failure — blocker mutation, configure, or save — the blocker state, the previous firewall configuration (captured targets, not post-mutation ones), and the previous settings are restored in that order, and the original error is rethrown. A blocker-mutation failure rolls back before anything is configured or persisted. The firewall restore and its fail-open fallback run **only when the forward path configured the firewall** (enforcement changed), with the exact call `configure(previous.blockingEnabled, previous.blockingEnabled ? capturedTargets : [])` — a save-only failure with unchanged enforcement restores the blocker and settings and issues **no** firewall call, as today's catch does (`:239` gate).
-- If the firewall rollback itself fails, the transaction fails open: blocking is disabled in settings and persisted **best-effort** before the error rethrows. This is today's nested catch in `commitSettings`, unchanged. In all three fail-open shapes — this nested catch, `failOpen()`, and the sync kernel — the disabled settings end up adopted **regardless of the save outcome** (today `:243–244`, `:254–256`, `:307–309` all leave the disabled settings in `this.settings` whether or not the save succeeded). Adopting only after a successful save would leave `blockingEnabled` true in memory while the helper is unreachable, and blocking would resume the next time the status listener saw `active` — a behavior change.
-- `failOpen` is the status-driven shape: it acts only when `firewall.status().state !== 'active'` and blocking is enabled. The sync-failure path uses the **unconditional** internal kernel `disablePersistBestEffort()` instead — today's `reconfigureAfterObservation` catch disables regardless of the reported status, and a `configure` that throws before updating its status must still fail open. Merging these two gates would be a behavior change; the plan pins them apart.
-- `reconcile` = startup reconciliation: clear a stale persisted `blockingEnabled` and **required-persist** the save (errors propagate, as today), then `firewall.initialize()`, then configure an *active* firewall to `(false, [])` — that configure's errors also propagate (today's `:63` is an uncaught `await`; a failure fails `start()` and the feature registration). Calling it replaces the two start-up dances; the Controller keeps load/monitor/publish.
-- `scheduleSync` debounces (150 ms, as today) a reconfigure to the blocker's current targets through the injected `enqueue`; on failure it configures `(false, [])` swallowed and then runs the unconditional disable kernel (adopt the disabled settings, then persist best-effort and swallow — today's `reconfigureAfterObservation` catch). `cancelSync` is idempotent; `dispose()` = `cancelSync` + stop scheduling for the module's lifetime. The timer is a real `setTimeout`; tests use fake timers.
-- No I/O beyond the injected collaborators, no snapshot scheduling, no Electron.
+Interface invariants (these *are* the depth):
 
-**Deletion test:** delete this module and the seven sites above reappear in the Controller, plus two rollback owners (commit-internal and selection-catch) whose ordering contract lives only in a comment. Complexity concentrates — it earns its keep.
+- **Arms move verbatim.** Each adapter method is the corresponding mode arm of today's branch, byte-for-byte — including enqueue placement (native `setInstalled` does *not* enqueue the host request; local wraps in `links.enqueue`), disposal-error policy (native deletes the instance first and swallows+logs; local rolls the settings write back and rethrows), and load ordering (`syncAtLaunch`'s parallel-vs-sequential difference).
+- **Single writer.** Adapters never mutate runtime state except through `links`; the runtime is the only writer of `#instances`, `#loadErrors`, `#active`. Re-entrancy exists today (`activate → setActive → native extras`; adapter `activate` → `links.setActive` → `applyActive`) and is preserved, not introduced.
+- **Status composition has one shape.** `statuses()` = `#featureIds.map((id) => mode.describeFeature(id, { instanceLoaded, sessionLoaded, loadError }))`. Each adapter composes from its own state plus the shared facts; the runtime never branches on mode.
+- **`setActive` order is pinned:** resolveActive guard → assign `#active` → `host.setActive` → instance-callback loop → `applyActive` extras. Today's order (:150–157) preserved exactly.
+- **Native payload validation moves, unchanged.** `#applyNativeSnapshot`'s acceptance rules (partial-payload tolerance, `expected` = loader keys, reject-on-unknown-entry, all-expected-present) move verbatim into `NativeFeatureMode`. Tightening to `completeNativeFeatureStatusSchema` is **out of scope**: the schema requires the full envelope (version/revision/settings) and all three features, while the runtime must keep accepting the looser legacy partial payloads the tests emit — tightening is a behavior change (see Out of scope).
+- **Reconnection stays native-side.** `#handleNativeConnection`'s disconnect/reconnect/recovery guard (`#nativeRecovery`) moves wholesale; the adapter reports status changes through an `onStatusesChanged: () => void` callback the runtime wires to its listener fan-out. Local mode never calls it — preserving today's behavior where local status changes surface only via command-returned snapshots.
 
-**Seam placement:** the seam sits between the Controller's *decisions* (when to block, when to reselect) and the *transitions* (how blocking state lands on the firewall, disk, and blocker). The firewall seam is real — two adapters already exist (real helper client in prod, `FakeFirewallClient` in e2e and the new module tests). The store and blocker are in-process collaborators, injected, not seam-justified on their own.
+**Deletion test:** delete `host-mode.ts` and the 22 `#nativeClient` sites, the shelf twins, both two-body methods, and ~110 lines of native machinery reappear inside `FeatureRuntime`, with the installed-truth concept re-derived at every site. Complexity concentrates — the seam earns its keep. Conversely the adapters are not pass-throughs: each hides a real body (native ≈ 150 lines with event machinery; local ≈ 70 with rollback semantics).
 
-**What deliberately stays out:** helper install/uninstall (`controller.ts:119–138` — the uninstall site keeps its own dance: single site, uninstall-specific ordering, required persistence, and the firewalled-`state === 'active'` condition that `apply` would not reproduce); `stop()`'s disposal orchestration (`:212–228` — error-surfacing ordering is shutdown-specific); `setMonitoring`/`restartMonitor` saves (routing them through `apply` would cancel a pending sync — a behavior change with no payoff); the mutation queue itself (injected); snapshot publishing; sample ingest (architecture-review candidate 3); the native adapter; `firewall-client.ts` itself (its status/retry semantics are already owned there).
+**Seam placement:** the seam sits between the runtime's shared machinery (what every mode needs: instances, serialization, error bookkeeping, active tracking) and the two executions of "who owns installed-truth and how features load and report". Two real adapters justify it — native mode (Feature host owns persistent state) and local mode (Electron owns everything) are both shipped production paths selected at startup by `index.ts`. The outer `NativeHostClientLike` port keeps its own adapters (production client, test fakes); the mode seam does not duplicate it.
 
 ## Behavior-preservation ledger (checked, not assumed)
 
-- **fail-open gating**: `reconfigureAfterObservation`'s catch disables unconditionally; `acceptFirewallStatus` gates on `state !== 'active'`. Verified distinct: a `configure` throw can occur before the client updates its status (e.g. socket connect failure), leaving a stale `'active'` status — a merged gate would skip the disable. The plan keeps an internal unconditional kernel for the sync-failure path and the gated `failOpen()` for the status listener.
-- **setMonitoring/restartMonitor** are *not* migrated: `apply` would cancel a pending sync they do not cancel today. Plain saves stay plain.
-- **uninstall** is *not* migrated: its save is required (not best-effort) and its configure is gated on `settings.blockingEnabled || firewall.status().state === 'active'` — conditions `apply` does not express. Only its `cancelFirewallSync()` becomes `cancelSync()`.
-- **pre-commit blocker mutations**: `ObservedIpBlocker.addRule` is throw-clean before mutating (the `MAX_APPLICATION_RULES` throw precedes `rules.set`). `addApplicationIfMissing`'s own MAX throw cannot in fact fire after a successful `addRule` today — settings and blocker rule counts move in lockstep (both deduped from the same parse-validated list, both capped at 256, mutated only in pairs), so a successful `addRule` implies `settings.applicationRules.length < 256`. The boundary must not lean on that invariant: the reachable rollback case is the configure/save failure, which must restore **pre-mutation** blocker state (learned addresses and targets), and the transaction can only guarantee that if it captures state before the mutation runs. Therefore the controller passes the blocker mutation **as the callback**, and `addApplicationIfMissing` runs inside the same closure, preserving today's rollback boundary exactly.
-- **blocker restore is idempotent**: `exportState()`/`restore()` round-trips rules, addresses, and `limitReached`; double-restore (commit-internal + none remaining) is safe — the controller's two `restore()` calls are deleted, not duplicated.
-- **firewall targets on rollback** must be the pre-mutation targets (rolling back to post-mutation targets would leave newly learned addresses blocked while the settings say unselected). Captured inside the transaction at entry — the caller-visible `previousTargets` parameter disappears.
-- **rollback restore order inside `apply` is blocker → firewall → settings**, whereas today's interleaving is firewall → settings inside `commitSettings` with the blocker restored in the caller's catch. Deliberate and observationally equivalent: the blocker restore is synchronous and emits nothing, the rollback configure uses the captured pre-mutation targets rather than the live blocker, and queued operations (status events, the sync timer) cannot run mid-transaction — the only mid-transaction observer is a snapshot from the snapshot timer during the rollback await, which would transiently see pre-mutation targets where today it sees post-mutation ones. End states are identical.
-- **adoption order**: `setSettings(next)` runs after a successful save (today: `this.settings = next` inside the try) — unchanged.
-- **no behavior change elsewhere**: `getSnapshot`, snapshot scheduling, and `setBlocking`'s precondition errors (rules empty / no traffic / helper missing) stay byte-identical.
+- **`syncAtLaunch` parallelism**: native eager-loads with `Promise.all` across features (:93–97), local awaits sequentially (:100–102). The adapters keep their own `start()` bodies; the shared loop is *not* extracted across modes.
+- **Disposal error policies differ by mode and stay different**: local uninstall re-enables the setting and rethrows on disposal failure (:133–136 — the retryable-uninstall behavior pinned by `tests/feature-runtime.test.ts` 'keeps a failed disposal installed'); native deletes the instance first and swallows+logs (:114–118). Each adapter keeps its own.
+- **`setActive` re-entrancy**: `#activateNative` calls `setActive(id)` (:246), which in native mode issues `host.setUiState` and lazy-loads; adapter `activate` → `links.setActive` → `applyActive` preserves this exactly.
+- **`isInstalled` settings fallback in native mode** (`:80`): when the snapshot has no entry, settings decide. The native adapter receives the settings store for this fallback.
+- **`#loadedThisSession`** is written by the unified `#acquire` for both modes (today both kernels write it, `:259` and `:366`) and read only by local `describeFeature` (loaded semantics, :73). Native `loaded` derives from instance presence + service state (:73–74), ignoring the session set.
+- **Feature-id domain** stays `Object.keys(options.loaders ?? LOADERS)` — today's `statuses`/`hasInstalledFeatures`/`syncAtLaunch`/`#loadRunningNativeAdapters` all iterate it; adapters receive the list.
+- **`FeatureStatus.error` trim** is the one intentional contract change: `error` is dropped from `FeatureStatus` (`contracts.ts:28`, not the `error?` on `ApplicationStatus` at `:20`, which stays) and from native `describeFeature`. Renderer reads `loadError` only; no test outside `feature-runtime.test.ts` pins `error` (verified: `shell-renderer.test.tsx:91` pins `loadError`; `contracts.test.ts` pins catalogs only). The 'overlays service health' test's `error: 'service exited'` assertion becomes `loadError: 'service exited'`, and its closing `.not.toHaveProperty('error')` becomes `.not.toHaveProperty('loadError')`.
+- **`setInstalled` completion semantics stay synchronous-to-persistence**: local uninstall disposes the instance before resolving; local install loads before resolving. No eventual-facts reconciliation.
+- **`relaunch()`** stays `app.relaunch(); app.exit(0)` (`:204`) — no mode involvement; no `restartHost` verb is invented.
+- **`narrow()`** stays runtime-side: the public `setInstalled`/`activate` still take `ApplicationId` and narrow (`:106`, `:161`).
 
 ## Migration of call sites
 
-1. **`start()`** (`:55–66`) — replace `:58–61` and `:62–63` with `await this.enforcement.reconcile()` (the module owns `firewall.initialize()`; the Controller keeps load, blocker load, monitor start, publish).
-2. **`setBlocking()`** (`:139–152`) — preconditions stay; the body becomes `await this.enforcement.apply(next)`; publish/return unchanged.
-3. **`selectObservedApplication()`** (`:153–175`) — delete `previousBlocker`/`previousTargets`/try/catch; become `await this.enforcement.apply(next, (blocker) => { blocker.addRule(rule, this.history.addresses(applicationId)); if (!existing) addApplicationIfMissing(next, rule) })`.
-4. **`removeApplicationRule()`** (`:176–196`) — same shape; the splice `next.applicationRules.splice(index, 1)` stays before the call: `apply(next, (blocker) => { blocker.removeRule(applicationRuleId); if (next.blockingEnabled && blocker.targets().length === 0) next.blockingEnabled = false })`.
-5. **`acceptFirewallStatus()`** (`:252–258`) — body becomes `await this.enforcement.failOpen(); this.scheduleSnapshot()`.
-6. **`acceptSample()`** (`:275`) — `this.scheduleFirewallSync()` becomes `this.enforcement.scheduleSync()`; **`scheduleFirewallSync`/`cancelFirewallSync`/`reconfigureAfterObservation`/`commitSettings` deleted** (`:230–250`, `:284–311`); the `firewallSyncTimer` field deleted.
-7. **`stop()`** (`:212–228`) — `cancelFirewallSync()` at `:216` becomes `this.enforcement.dispose()`; everything else unchanged (deliberate).
-8. **`uninstallFirewallHelper()`** (`:127–138`) — only `cancelFirewallSync()` at `:129` becomes `cancelSync()`; the rest stays (deliberate, see ledger).
-9. **Constructor** — one new field `private readonly enforcement: Enforcement`, **assigned in the constructor body** after `this.firewall` and `this.store` exist (a field initializer would run before both): `this.enforcement = new Enforcement({ firewall: this.firewall, store: this.store, blocker: this.observedIpBlocker, getSettings: () => this.settings, setSettings: (next) => { this.settings = next }, enqueue: (operation) => this.queueSettingsMutation(operation) })`.
+| Runtime member | Becomes |
+|---|---|
+| `statuses()` :63–78 | `#featureIds.map((id) => this.#mode.describeFeature(id, …))` — one line |
+| `isInstalled` :80 / `isLoaded` :82 | `this.#mode.installed(id)` / `this.#mode.isLoaded(id, this.#instances.has(id))` |
+| `hasInstalledFeatures()` :81 | `#featureIds.some((id) => this.#mode.installed(id))` |
+| `syncAtLaunch()` :86–103 | `await this.#mode.start()` — the two bodies move into the adapters |
+| `setInstalled()` :105–146 | `return this.#mode.setInstalled(narrow(id), installed)` |
+| `setActive()` :149–158 | resolveActive → assign → `host.setActive` → instance loop → `applyActive` (five shared lines, zero mode conditionals) |
+| `activate()` :160–169 | `return this.#mode.activate(narrow(id))` |
+| `openShelf()` :171–185 / `toggleShelf()` :187–202 | both become `#shelf('open' \| 'toggle')` → `#enqueue('amove', () => this.#mode.shelf(action))` — the twins delete |
+| `disposeAll()` :206–217 | `this.#mode.stop()` replaces :208–209; the rest unchanged |
+| `#load` :345–369 + `#loadNative` :250–260 | one unified `#acquire(id)` (loader closure from `mode.loader(id)`, logging gated on `mode.logsAcquisitionErrors`) |
+| `#loadRunningNativeAdapters` :227–233 and `#refreshNativeSnapshot`/`#handle*`/`#applyNative*`/`#emitNativeStatus` :262–341 | move whole into `NativeFeatureMode` |
+| `#activateNative` :242–248 | moves into `NativeFeatureMode.activate` |
+| constructor :50–61 | same signature; constructor body builds `links` and picks the adapter: `options.nativeClient ? new NativeFeatureMode(…) : new LocalFeatureMode(…)` |
+| `export type { FeatureLoader }` :379 | deleted (zero importers); the type moves to `host-mode.ts` |
 
-`setMonitoring`/`restartMonitor` keep their plain saves. The Controller loses ~60 lines and keeps every decision.
+`index.ts`, `application-controller.ts`, `ipc.ts`, `ui-command-router.ts`: untouched. The public interface, the constructor signature, and every caller survive unchanged.
 
-## Tests (new module = new test file)
+## Tests
 
-**New:** `apps/integrated/Bonded/tests/enforcement.test.ts`, through the module's interface only — a firewall double — `FakeFirewallClient` from `@main/firewall-client` for happy paths (it cannot reject `configure` on demand), plus a scripted double for the failure-path tests, a stub `{ save }` store whose save can be made to reject, a **real** `ObservedIpBlocker` (pure, in-memory), accessor closures over a local settings variable, and an `enqueue` that just runs the operation (plus a serializing variant to prove ordering):
+**Survive unchanged:** all 22 tests in `tests/feature-runtime.test.ts` — they construct through the unchanged constructor signature and assert public behavior; the fake `NativeHostClientLike` and tmpdir `ShellSettingsStore` injections land on the adapters exactly as they landed on the branches. Two assertions in one existing test ('overlays service health') update for the `error`-key trim.
 
-- `apply` happy path: configure called with post-mutation targets when enforcement changes; save called; settings adopted via `setSettings`.
-- `apply` skips configure when enforcement is unchanged (false → false) and still saves.
-- `apply` rollback: first `configure` rejects ⇒ reconfigure with captured pre-mutation targets; settings restored; blocker restored (the selection-flow regression pin); error rethrown.
-- `apply` with unchanged enforcement (false → false) and a rejecting save ⇒ no configure call at all (forward or rollback), blocker state and settings restored, error rethrown.
-- `apply` fail-open: rollback `configure` also rejects ⇒ blocking disabled, **adopted even though the save rejects**, best-effort persisted; original error still rethrown.
-- `apply` with `mutateBlocker` throwing ⇒ blocker restored, no configure, no save, no settings adoption, error rethrown.
-- `failOpen`: status inactive + enabled ⇒ disabled, adopted even when the save rejects, best-effort saved; status active ⇒ untouched; save rejection swallowed.
-- `reconcile`: stale persisted `blockingEnabled` cleared and required-persisted; `initialize` awaited; active firewall ⇒ `configure(false, [])` with errors propagating; otherwise untouched.
-- `scheduleSync`/`cancelSync`/`dispose` (vitest fake timers): fires once after 150 ms through `enqueue`; failure path configures `(false, [])` swallowed then adopts the disabled settings and persists best-effort (unconditional, even if the status is stale, even if the save rejects); guards on disabled/enqueued-twice; `cancelSync`/`dispose` prevent the pending fire.
+**New gap tests (same file, through the public interface — the adapters are internal seams and are not tested past the interface):**
 
-**Updated:** `tests/controller.test.ts` — the two existing tests keep passing untouched (they exercise the Controller's interface through a firewall double, unchanged). Add one regression: with blocking enabled on the selected fixture application (its address learned from the fixture sample, `setBlocking(true)` succeeding), a `removeApplicationRule()` whose firewall `configure` rejects must leave the rule, its learned address, and `blockingEnabled: true` intact in the settings file and the snapshot — the transaction rolled the removal back. Constraint to know up front: the fixture resolver resolves every sample to `/usr/bin/curl`, so a controller test can only ever see one application; a *selection* whose `configure` fails while blocking is enabled is therefore reachable only as a re-selection of the already-selected application, whose blocker rollback is observationally a no-op — the removal flow is the reachable one with an observable rollback delta (proves the wiring, not the policy — the policy is pinned in the enforcement tests). The double must reject only the removal's `configure(false, [])` and let the rollback `configure(true, …)` succeed, or the transaction fails open and the assertions change.
+1. Native connection events: fake client with `subscribeConnection` — disconnect ⇒ `statuses()` show `state: 'error'` with the connection error; reconnected ⇒ recovery refresh restores snapshot state.
+2. Native retry: uninstall-then-reinstall over a failed state requests `host.retryFeature`, not `host.setFeatureInstalled`.
+3. Native active reporting: `activate`/`setActive` issue `host.setUiState` with the page id; clearing sends `'general'`.
+4. Native uninstall-while-active clears the active feature.
+5. Local shelf fallbacks: a feature without `openShelf` falls back to `activate`; `toggleShelf` falls back to `openShelf` before `activate`.
+6. Local activate fallback: loaded feature without `activate` delegates to `EmbeddedFeatureHost.activate`; unloaded feature throws the 'not loaded' error.
+7. `disposeAll` unsubscribes the native subscriptions exactly once and is idempotent.
+8. Local uninstall rollback: extend the existing 'keeps a failed disposal installed' test with its statuses assertion (installed flips back to `true`) — an assertion addition, not a new test.
 
-**Test surface statement:** transition policy is tested only through the Enforcement module's interface; the Controller tests keep lifecycle wiring plus the one wiring-level rollback regression above. No test reaches past the interface under test.
+Expected total: **271 passed** (264 + 7 new; the `error`-trim updates assertions of one existing test in place).
 
 ## CONTEXT.md update
 
-Add to root `CONTEXT.md` under Terms:
+Sharpen the **Feature runtime** term and add a **Feature mode** term under Terms:
 
-> **Enforcement** — `apps/integrated/Bonded/src/main/enforcement.ts`; owns the blocking-state transitions: the startup reconciliation, applying selections to the PF firewall, failing open when the helper is unavailable, and rolling back settings, firewall configuration, and learned addresses on failure. The controller decides when transitions happen; Enforcement owns how they land.
+> **Feature mode** — native mode or local mode; the two executions of the Feature runtime. A `NativeFeatureMode` adapter owns the authenticated native client, snapshot and health ingestion, and host-mediated install; a `LocalFeatureMode` adapter owns installed-truth in the Shell settings store and local loaders. Selected exactly once at Feature runtime construction; the adapters own every mode-varying behavior behind the runtime's unchanged interface.
 
-## Execution steps (nested repo `apps/integrated/Bonded` unless noted; steps 1–2 share one commit — see Commit messages)
+> **Feature runtime** — `src/main/features/runtime.ts`; selects one **Feature mode** adapter at construction and owns the shared machinery: loaded instances, the per-feature serialization queue, load errors, and active-feature tracking. It presents one mode-agnostic interface; mode facts are never re-derived per method. It never loads a local controller after native mode is selected — the selection is structural, not a branch.
 
-1. **Add the module + tests, no consumers moved.** `enforcement.ts` + `enforcement.test.ts` green. Verify: `pnpm -C apps/integrated/Bonded exec vitest run tests/enforcement.test.ts`.
-2. **Migrate the Controller** per the table; delete the five dance shapes; add the controller-level rollback regression. Verify: `tsc --noEmit -p tsconfig.json` + focused `vitest run tests/controller.test.ts tests/enforcement.test.ts`.
-3. **Full nested check:** `pnpm -C apps/integrated/Bonded typecheck`, full `vitest run` (expect ≥ 100 passed / 1 skipped — +10 enforcement tests, +1 controller regression over the 90 baseline), `build:renderer`, full `playwright test` (2 passed, 2 packaged skipped).
-4. **Update root `CONTEXT.md`** with the Enforcement term. Verify: root `pnpm typecheck`, root `pnpm test` (expect 264 passed).
-5. **Status check:** both repos clean after commits; no leftover `commitSettings`/`reconfigureAfterObservation`/`scheduleFirewallSync`/`cancelFirewallSync`/`firewallSyncTimer` references (`rg` clean; `acceptFirewallStatus` survives by design as the two-line status-listener shim delegating to `failOpen`, so it is deliberately not in this list; `failOpen`-shaped comment swallows live only in the module).
+## Execution steps (root repo)
 
-Commit messages: `refactor: own blocking enforcement in one module` (steps 1–2 fold into it: the intermediate state adds no review value for a behavior-preserving move), then root `docs: add Enforcement term`.
+1. **Create `src/main/features/host-mode.ts`** with the interface, both adapters, the moved native machinery, and the loader tables — arms verbatim, `FeatureModeLinks` wired in `FeatureRuntime`'s constructor body. No callers changed yet. Verify: `pnpm typecheck`.
+2. **Rewire `runtime.ts`** per the migration table; delete the 22 `#nativeClient` sites, the twins, both load kernels (→ `#acquire`), and the native machinery; trim `export type { FeatureLoader }`; trim `FeatureStatus.error` from `contracts.ts` and update the two pinned assertions ('overlays service health'). Verify: `pnpm typecheck` + `pnpm exec vitest run tests/feature-runtime.test.ts`.
+3. **Add the seven gap tests** (plus the assertion extension from item 8). Verify: `pnpm exec vitest run tests/feature-runtime.test.ts` (expect 29 passed in the file: 22 surviving + 7 new).
+4. **Full check:** `pnpm typecheck`, `pnpm test` (expect **271 passed / 35 files**), `pnpm build:app`. `rg -n "#nativeClient|#nativeStatuses|#refreshNativeSnapshot|#applyNative|#handleNative|#loadRunningNativeAdapters|#loadNative|FeatureLoader" src/main/features/runtime.ts src/shared/contracts.ts` → the moved names live only in `host-mode.ts`: runtime.ts is clean for every `#native*` pattern, with `FeatureLoader` remaining only as the type import in the unchanged constructor options (the `:379` re-export is deleted); `contracts.ts` is clean.
+5. **Update `CONTEXT.md`** with the two terms. Verify: `git status` clean after commits.
+
+Commit messages: `refactor: own the feature host mode in one module` (steps 1–3 fold into it — the intermediate state adds no review value for a behavior-preserving move), then `docs: sharpen the Feature runtime term`.
 
 ## Out of scope
 
-- Architecture-review candidates 2–5 (Snapshot composer, Sample ingest, command contract, single-flight queue) — separate deepenings; the Enforcement module is not their seam.
-- Helper install/uninstall lifecycle and `stop()`'s disposal sequence — single-site orchestration with deliberate error-surfacing order; moving them adds interface without removing duplication.
-- The native feature adapter (`native-feature.ts`) — native mode owns its own state; untouched.
-- `firewall-client.ts` — its status/retry/socket semantics stay; only the *policy* around it deepens.
-- Renderer code — the snapshot contract is untouched.
+- `index.ts`'s native connection policy (reconnect, `willQuit`, `quitSuite`, menu-host preservation) — it owns a different fact (connection state, not feature mode); reshaping it is a separate candidate.
+- `ipc.ts`'s shell-settings split (`setLaunchAtLogin`/`setAppPresence`) — shell-settings ownership across host modes is its own seam; giving the Feature runtime those methods would widen its interface with a responsibility it does not own.
+- Tightening `#applyNativeSnapshot` to the zod schemas (`completeNativeFeatureStatusSchema` requires the full envelope and all three features; the runtime must keep accepting looser legacy partial payloads). The parser moves verbatim; tightening is a behavior change to decide separately.
+- `feature-catalog`/`feature-resources`/`EmbeddedFeatureHost`/`suite-context` — already deep or out of the seam's path.
+- Renderer code and `FeatureStatus`'s remaining shape (`features.tsx` reads `installed`, `loaded`, `restartPending`, and `loadError`; it never reads `state` — `state` is emitted only in native mode and pinned by the `feature-runtime.test.ts` status assertions, so trimming it would be a second behavior change).
+- Architecture-review candidates 2–7 (Snapshot composer, command contract, single-flight queue, Bonded renderer view-model, the small deletions) — separate deepenings; the mode seam is not their surface.
