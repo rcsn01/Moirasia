@@ -53,7 +53,6 @@ export function registerControllerIpc(options: { window: BrowserWindow; controll
   ipcMain.handle(IPC.openLoginItemsSettings, (event) => { authorize(event); return options.controller.openLoginItemsSettings() })
   ipcMain.handle(IPC.getUpdateState, (event) => { authorize(event); return options.updater?.state() ?? idleUpdateState() })
   ipcMain.handle(IPC.checkForUpdate, (event) => { authorize(event); return options.updater ? options.updater.check() : idleUpdateState() })
-  ipcMain.handle(IPC.downloadUpdate, (event) => { authorize(event); return options.updater ? options.updater.download() : idleUpdateState() })
   ipcMain.handle(IPC.openReleasePage, (event) => { authorize(event); return options.updater?.openRelease() })
   const unsubscribe = options.controller.subscribe((snapshot) => { sendToRenderer(options.window.webContents, IPC.snapshot, snapshot) })
   const unsubscribeUpdater = options.updater?.subscribe((state) => { sendToRenderer(options.window.webContents, IPC.updateState, state) })

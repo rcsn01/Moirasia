@@ -1,6 +1,5 @@
 import { app, nativeTheme, shell } from 'electron'
 import { existsSync } from 'node:fs'
-import { writeFile } from 'node:fs/promises'
 import { join, resolve } from 'node:path'
 import { AppearanceRegistry, applyAppearance } from '@moirasia/desktop-shell/main'
 import { ApplicationController } from './application-controller'
@@ -210,14 +209,10 @@ async function createApplication(): Promise<void> {
 function createAppUpdaterHost(): AppUpdaterHost {
   return {
     currentVersion: () => app.getVersion(),
-    packaged: () => app.isPackaged,
-    downloadsDirectory: () => app.getPath('downloads'),
     fetch: async (url, init) => {
       const response = await fetch(url, init)
-      return { ok: response.ok, status: response.status, text: () => response.text(), arrayBuffer: () => response.arrayBuffer() }
+      return { ok: response.ok, status: response.status, text: () => response.text() }
     },
-    writeFile: (path, data) => writeFile(path, data),
-    openPath: (path) => shell.openPath(path),
     openExternal: (url) => shell.openExternal(url)
   }
 }

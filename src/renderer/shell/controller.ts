@@ -31,7 +31,7 @@ export function useController() {
     setLoginItem: (id: ApplicationId, enabled: boolean) => void action(() => window.moirasia.setApplicationLoginItem(id, enabled)), openLoginItemsSettings: () => void window.moirasia.openLoginItemsSettings().catch((reason) => setError(message(reason))),
     installFeature: (id: ApplicationId) => void action(() => window.moirasia.installFeature(id)), uninstallFeature: (id: ApplicationId) => void action(() => window.moirasia.uninstallFeature(id)),
     openFeature: (id: ApplicationId) => { setError(undefined); window.moirasia.openFeature(id).catch((reason) => setError(message(reason))) }, relaunchApp: () => void window.moirasia.relaunchApp().catch((reason) => setError(message(reason))),
-    checkForUpdate: () => void runUpdate(() => window.moirasia.checkForUpdate()), downloadUpdate: () => void runUpdate(() => window.moirasia.downloadUpdate()),
+    checkForUpdate: () => void runUpdate(() => window.moirasia.checkForUpdate()),
     openReleasePage: () => { setError(undefined); window.moirasia.openReleasePage().catch((reason) => setError(message(reason))) } }
 }
 function message(reason: unknown) { return reason instanceof Error ? reason.message : String(reason) }

@@ -29,7 +29,7 @@ function api(next: ControllerSnapshot = snapshot, initialPage: ControllerPage = 
     setLaunchAtLogin: vi.fn(async (enabled) => ({ ...settings, launchAtLogin: enabled })), setAppPresence: vi.fn(async (appPresence) => ({ ...settings, appPresence })),
     setApplicationLoginItem: vi.fn(async () => next), installFeature: vi.fn(async () => next), uninstallFeature: vi.fn(async () => next), openFeature: vi.fn(async () => {}),
     reportPage: vi.fn(async () => {}), relaunchApp: vi.fn(async () => {}), openLoginItemsSettings: vi.fn(async () => {}),
-    getUpdateState: vi.fn(async () => update), checkForUpdate: vi.fn(async () => update), downloadUpdate: vi.fn(async () => update), openReleasePage: vi.fn(async () => {}),
+    getUpdateState: vi.fn(async () => update), checkForUpdate: vi.fn(async () => update), openReleasePage: vi.fn(async () => {}),
     onSnapshot: vi.fn((listener) => { publishSnapshot = listener; return vi.fn() }),
     onNavigate: vi.fn((listener) => { navigate = listener; return vi.fn() }),
     onUpdateState: vi.fn((listener) => { publishUpdate = listener; return vi.fn() })
@@ -155,14 +155,13 @@ describe('Moirasia renderer', () => {
     expect(bridge.reportPage).toHaveBeenLastCalledWith('general')
   })
 
-  it('checks GitHub Releases from General and can download an available installer', async () => {
+  it('checks GitHub Releases from General and links to the release page', async () => {
     const available: UpdateState = {
       status: 'available', currentVersion: '0.1.0', latestVersion: '0.2.0',
-      releaseUrl: 'https://github.com/rcsn01/Moirasia/releases/tag/v0.2.0', notes: 'Fixes', canDownload: true
+      releaseUrl: 'https://github.com/rcsn01/Moirasia/releases/tag/v0.2.0', notes: 'Fixes'
     }
     const bridge = api(); window.moirasia = bridge
     bridge.checkForUpdate = vi.fn(async () => available)
-    bridge.downloadUpdate = vi.fn(async () => ({ ...available, status: 'ready' as const, canDownload: false }))
     const user = userEvent.setup(); render(<App />)
 
     expect(await screen.findByRole('heading', { name: 'Updates' })).toBeVisible()
@@ -171,17 +170,17 @@ describe('Moirasia renderer', () => {
     expect(bridge.checkForUpdate).toHaveBeenCalled()
     expect(await screen.findByText('Version 0.2.0 is available.')).toBeVisible()
     expect(screen.getByText('Fixes')).toBeVisible()
-    await user.click(screen.getByRole('button', { name: 'View Release' }))
+    const link = screen.getByRole('link', { name: 'https://github.com/rcsn01/Moirasia/releases/tag/v0.2.0' })
+    expect(link).toHaveAttribute('href', 'https://github.com/rcsn01/Moirasia/releases/tag/v0.2.0')
+    await user.click(link)
     expect(bridge.openReleasePage).toHaveBeenCalled()
-    await user.click(screen.getByRole('button', { name: 'Download Installer' }))
-    expect(bridge.downloadUpdate).toHaveBeenCalled()
-    expect(await screen.findByText(/Opened the installer/)).toBeVisible()
+    expect(screen.queryByRole('button', { name: 'Check for Updates' })).not.toBeInTheDocument()
   })
 
   it('shows updater errors from the main process on General', async () => {
     const bridge = api(); window.moirasia = bridge; render(<App />)
     await screen.findByRole('heading', { name: 'Updates' })
-    act(() => publishUpdate?.({ status: 'error', currentVersion: '0.1.0', error: 'GitHub returned 403.', canDownload: false }))
+    act(() => publishUpdate?.({ status: 'error', currentVersion: '0.1.0', error: 'GitHub returned 403.' }))
     expect(await screen.findByRole('alert')).toHaveTextContent('GitHub returned 403.')
   })
 })

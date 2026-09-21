@@ -46,7 +46,7 @@ export function App(): React.JSX.Element {
     {controller.loading
       ? <DesktopPage width="standard" className="controller-main"><p role="status">Loading applications…</p></DesktopPage>
       : <>
-        {activePage === 'general' && <div className="shell-route"><DesktopPage width="standard" className="controller-main"><GeneralScreen appPresence={controller.settings.appPresence} onAppPresenceChange={(mode) => void controller.setAppPresence(mode)} update={controller.update} onCheckForUpdate={controller.checkForUpdate} onDownloadUpdate={controller.downloadUpdate} onOpenRelease={controller.openReleasePage} /></DesktopPage></div>}
+        {activePage === 'general' && <div className="shell-route"><DesktopPage width="standard" className="controller-main"><GeneralScreen appPresence={controller.settings.appPresence} onAppPresenceChange={(mode) => void controller.setAppPresence(mode)} update={controller.update} onCheckForUpdate={controller.checkForUpdate} onOpenRelease={controller.openReleasePage} /></DesktopPage></div>}
         {activePage === 'features' && <div className="shell-route"><DesktopPage width="standard" className="controller-main"><FeaturesScreen controller={controller} /></DesktopPage></div>}
         {activeFeature && <div className="shell-feature-route">
           <FeatureErrorBoundary name={featureCatalog.get(activeFeature).label}>

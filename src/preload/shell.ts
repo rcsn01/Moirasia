@@ -16,7 +16,6 @@ const api: ControllerApi = {
   openLoginItemsSettings: () => ipcRenderer.invoke(IPC.openLoginItemsSettings),
   getUpdateState: () => ipcRenderer.invoke(IPC.getUpdateState) as Promise<UpdateState>,
   checkForUpdate: () => ipcRenderer.invoke(IPC.checkForUpdate) as Promise<UpdateState>,
-  downloadUpdate: () => ipcRenderer.invoke(IPC.downloadUpdate) as Promise<UpdateState>,
   openReleasePage: () => ipcRenderer.invoke(IPC.openReleasePage) as Promise<void>,
   onSnapshot(listener) { const handler = (_event: Electron.IpcRendererEvent, snapshot: ControllerSnapshot) => listener(snapshot); ipcRenderer.on(IPC.snapshot, handler); return () => ipcRenderer.removeListener(IPC.snapshot, handler) },
   onNavigate(listener) { const handler = (_event: Electron.IpcRendererEvent, page: ControllerPage) => listener(page); ipcRenderer.on(IPC.navigate, handler); return () => ipcRenderer.removeListener(IPC.navigate, handler) },
