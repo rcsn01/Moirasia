@@ -2,12 +2,13 @@ import { ipcMain, type BrowserWindow, type IpcMainEvent, type IpcMainInvokeEvent
 import { isAppearance, isProductId } from '@moirasia/desktop-shell'
 import { isFeatureId } from '@moirasia/desktop-shell/feature'
 import { sendToRenderer } from '@moirasia/desktop-shell/main'
-import { IPC, isApplicationId, isAppPresenceMode, isControllerPage, type AppPresenceMode } from '../shared/contracts'
+import { IPC, idleUpdateState, isApplicationId, isAppPresenceMode, isControllerPage, type AppPresenceMode } from '../shared/contracts'
 import type { ApplicationController } from './application-controller'
+import type { AppUpdater } from './app-updater'
 import type { NativeHostClientLike } from '../shared/native-host-contracts'
 import type { ShellSettingsStore } from './settings'
 
-export function registerControllerIpc(options: { window: BrowserWindow; controller: ApplicationController; settings: ShellSettingsStore; applyShellAppearance(): void; applyAppPresence(mode: AppPresenceMode): void; nativeClient?: NativeHostClientLike }): () => void {
+export function registerControllerIpc(options: { window: BrowserWindow; controller: ApplicationController; settings: ShellSettingsStore; applyShellAppearance(): void; applyAppPresence(mode: AppPresenceMode): void; nativeClient?: NativeHostClientLike; updater?: AppUpdater }): () => void {
   const authorize = (event: IpcMainEvent | IpcMainInvokeEvent) => { if (event.sender !== options.window.webContents || event.sender.isDestroyed()) throw new Error('Unauthorized IPC sender') }
   const applicationId = (value: unknown) => { if (!isApplicationId(value)) throw new TypeError('Invalid application id'); return value }
   const featureId = (value: unknown) => { if (!isFeatureId(value)) throw new TypeError('Invalid feature id'); return value }
@@ -50,9 +51,15 @@ export function registerControllerIpc(options: { window: BrowserWindow; controll
   ipcMain.handle(IPC.reportPage, (event, page) => { authorize(event); if (!isControllerPage(page)) throw new TypeError('Invalid controller page'); options.controller.reportPage(page) })
   ipcMain.handle(IPC.relaunch, (event) => { authorize(event); options.controller.relaunch() })
   ipcMain.handle(IPC.openLoginItemsSettings, (event) => { authorize(event); return options.controller.openLoginItemsSettings() })
+  ipcMain.handle(IPC.getUpdateState, (event) => { authorize(event); return options.updater?.state() ?? idleUpdateState() })
+  ipcMain.handle(IPC.checkForUpdate, (event) => { authorize(event); return options.updater ? options.updater.check() : idleUpdateState() })
+  ipcMain.handle(IPC.downloadUpdate, (event) => { authorize(event); return options.updater ? options.updater.download() : idleUpdateState() })
+  ipcMain.handle(IPC.openReleasePage, (event) => { authorize(event); return options.updater?.openRelease() })
   const unsubscribe = options.controller.subscribe((snapshot) => { sendToRenderer(options.window.webContents, IPC.snapshot, snapshot) })
-  const handlers = Object.values(IPC).filter((value) => value !== IPC.snapshot && value !== IPC.navigate)
-  return () => { unsubscribe(); handlers.forEach((channel) => ipcMain.removeHandler(channel)) }
+  const unsubscribeUpdater = options.updater?.subscribe((state) => { sendToRenderer(options.window.webContents, IPC.updateState, state) })
+  const push = new Set<string>([IPC.snapshot, IPC.navigate, IPC.updateState])
+  const handlers = Object.values(IPC).filter((value) => !push.has(value))
+  return () => { unsubscribe(); unsubscribeUpdater?.(); handlers.forEach((channel) => ipcMain.removeHandler(channel)) }
 }
 
 function appSetLoginItem(openAtLogin: boolean): void {

@@ -41,6 +41,8 @@ The command requires a clean `main` branch and a semantic `package.json` version
 
 Moirasia releases are unsigned and unnotarized.
 
+Packaged builds can check for a newer GitHub Release from General or **Moirasia > Check for Updates…**. If a newer `Moirasia-<version>-arm64.dmg` is published, Moirasia verifies the matching SHA-256 checksum, saves the disk image to Downloads, and opens it. Replacing the running app still requires dragging the new copy into Applications. Development builds can check and open the release page but will not download an installer.
+
 Amove and Bonded remain buildable in standalone mode as well as embedded mode. Run Amove's commands from its app directory:
 
 ```sh

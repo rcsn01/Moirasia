@@ -46,6 +46,23 @@ export interface ShellSettings {
 
 export const DEFAULT_SHELL_SETTINGS: ShellSettings = { version: 4, launchAtLogin: false, appPresence: 'dock', pendingLoginItems: {}, features: {} }
 
+export type UpdateStatus = 'idle' | 'checking' | 'up-to-date' | 'available' | 'downloading' | 'ready' | 'error'
+
+export interface UpdateState {
+  readonly status: UpdateStatus
+  readonly currentVersion: string
+  readonly latestVersion?: string
+  readonly releaseUrl?: string
+  readonly notes?: string
+  readonly progress?: number
+  readonly error?: string
+  readonly canDownload: boolean
+}
+
+export function idleUpdateState(currentVersion = ''): UpdateState {
+  return { status: 'idle', currentVersion, canDownload: false }
+}
+
 /** The renderer's pre-first-snapshot state: catalog-seeded application rows under the default appearance snapshot. */
 export function emptyControllerSnapshot(): ControllerSnapshot {
   return {
@@ -73,8 +90,13 @@ export interface ControllerApi {
   reportPage(page: ControllerPage): Promise<void>
   relaunchApp(): Promise<void>
   openLoginItemsSettings(): Promise<void>
+  getUpdateState(): Promise<UpdateState>
+  checkForUpdate(): Promise<UpdateState>
+  downloadUpdate(): Promise<UpdateState>
+  openReleasePage(): Promise<void>
   onSnapshot(listener: (snapshot: ControllerSnapshot) => void): () => void
   onNavigate(listener: (page: ControllerPage) => void): () => void
+  onUpdateState(listener: (state: UpdateState) => void): () => void
 }
 
 export const IPC = {
@@ -84,7 +106,8 @@ export const IPC = {
   openFeature: 'controller:open-feature', relaunch: 'controller:relaunch',
   setAppearance: 'controller:set-appearance', setAllAppearances: 'controller:set-all-appearances',
   setLaunchAtLogin: 'controller:set-launch-at-login', setAppPresence: 'controller:set-app-presence', setApplicationLoginItem: 'controller:set-application-login-item',
-  openLoginItemsSettings: 'controller:open-login-items-settings', reportPage: 'controller:report-page', snapshot: 'controller:snapshot', navigate: 'controller:navigate'
+  openLoginItemsSettings: 'controller:open-login-items-settings', reportPage: 'controller:report-page', snapshot: 'controller:snapshot', navigate: 'controller:navigate',
+  getUpdateState: 'updater:get-state', checkForUpdate: 'updater:check', downloadUpdate: 'updater:download', openReleasePage: 'updater:open-release', updateState: 'updater:state'
 } as const
 
 export function isControllerPage(value: unknown): value is ControllerPage { return value === 'general' || value === 'features' || isFeatureId(value) }

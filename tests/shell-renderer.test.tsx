@@ -2,7 +2,8 @@
 import { act, cleanup, render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import type { ControllerApi, ControllerPage, ControllerSnapshot, ShellSettings } from '../src/shared/contracts'
+import type { ControllerApi, ControllerPage, ControllerSnapshot, ShellSettings, UpdateState } from '../src/shared/contracts'
+import { idleUpdateState } from '../src/shared/contracts'
 
 vi.mock('../apps/integrated/Amove/src/renderer/main/AmovePanel', () => ({ AmovePanel: () => <div>Amove panel</div> }))
 vi.mock('../apps/integrated/Bonded/src/renderer/App', () => ({ BondedPanel: () => <div>Bonded panel</div> }))
@@ -20,9 +21,22 @@ const snapshot: ControllerSnapshot = { applications: [
 const settings: ShellSettings = { version: 4, launchAtLogin: false, appPresence: 'dock', pendingLoginItems: {}, features: { amove: true, bonded: false } }
 let navigate: ((page: ControllerPage) => void) | undefined
 let publishSnapshot: ((snapshot: ControllerSnapshot) => void) | undefined
-function api(next: ControllerSnapshot = snapshot, initialPage: ControllerPage = 'general'): ControllerApi { return { getSnapshot: vi.fn(async () => next), refresh: vi.fn(async () => next), getSettings: vi.fn(async () => settings), getPage: vi.fn(async () => initialPage), openApplication: vi.fn(async () => next), quitApplication: vi.fn(async () => next), setAppearance: vi.fn(async () => next), setAllAppearances: vi.fn(async () => next), setLaunchAtLogin: vi.fn(async (enabled) => ({ ...settings, launchAtLogin: enabled })), setAppPresence: vi.fn(async (appPresence) => ({ ...settings, appPresence })), setApplicationLoginItem: vi.fn(async () => next), installFeature: vi.fn(async () => next), uninstallFeature: vi.fn(async () => next), openFeature: vi.fn(async () => {}), reportPage: vi.fn(async () => {}), relaunchApp: vi.fn(async () => {}), openLoginItemsSettings: vi.fn(async () => {}), onSnapshot: vi.fn((listener) => { publishSnapshot = listener; return vi.fn() }), onNavigate: vi.fn((listener) => { navigate = listener; return vi.fn() }) } }
+let publishUpdate: ((state: UpdateState) => void) | undefined
+function api(next: ControllerSnapshot = snapshot, initialPage: ControllerPage = 'general', update: UpdateState = idleUpdateState('0.1.0')): ControllerApi {
+  return {
+    getSnapshot: vi.fn(async () => next), refresh: vi.fn(async () => next), getSettings: vi.fn(async () => settings), getPage: vi.fn(async () => initialPage),
+    openApplication: vi.fn(async () => next), quitApplication: vi.fn(async () => next), setAppearance: vi.fn(async () => next), setAllAppearances: vi.fn(async () => next),
+    setLaunchAtLogin: vi.fn(async (enabled) => ({ ...settings, launchAtLogin: enabled })), setAppPresence: vi.fn(async (appPresence) => ({ ...settings, appPresence })),
+    setApplicationLoginItem: vi.fn(async () => next), installFeature: vi.fn(async () => next), uninstallFeature: vi.fn(async () => next), openFeature: vi.fn(async () => {}),
+    reportPage: vi.fn(async () => {}), relaunchApp: vi.fn(async () => {}), openLoginItemsSettings: vi.fn(async () => {}),
+    getUpdateState: vi.fn(async () => update), checkForUpdate: vi.fn(async () => update), downloadUpdate: vi.fn(async () => update), openReleasePage: vi.fn(async () => {}),
+    onSnapshot: vi.fn((listener) => { publishSnapshot = listener; return vi.fn() }),
+    onNavigate: vi.fn((listener) => { navigate = listener; return vi.fn() }),
+    onUpdateState: vi.fn((listener) => { publishUpdate = listener; return vi.fn() })
+  }
+}
 
-beforeEach(() => { navigate = undefined; publishSnapshot = undefined; vi.stubGlobal('matchMedia', vi.fn(() => ({ matches: false, addEventListener: vi.fn(), removeEventListener: vi.fn() }))); document.documentElement.className = '' })
+beforeEach(() => { navigate = undefined; publishSnapshot = undefined; publishUpdate = undefined; vi.stubGlobal('matchMedia', vi.fn(() => ({ matches: false, addEventListener: vi.fn(), removeEventListener: vi.fn() }))); document.documentElement.className = '' })
 afterEach(() => { cleanup(); vi.unstubAllGlobals(); vi.restoreAllMocks() })
 
 describe('Moirasia renderer', () => {
@@ -139,5 +153,35 @@ describe('Moirasia renderer', () => {
     await user.click(screen.getByRole('button', { name: 'General' }))
     expect(await screen.findByRole('heading', { name: 'General' })).toBeVisible()
     expect(bridge.reportPage).toHaveBeenLastCalledWith('general')
+  })
+
+  it('checks GitHub Releases from General and can download an available installer', async () => {
+    const available: UpdateState = {
+      status: 'available', currentVersion: '0.1.0', latestVersion: '0.2.0',
+      releaseUrl: 'https://github.com/rcsn01/Moirasia/releases/tag/v0.2.0', notes: 'Fixes', canDownload: true
+    }
+    const bridge = api(); window.moirasia = bridge
+    bridge.checkForUpdate = vi.fn(async () => available)
+    bridge.downloadUpdate = vi.fn(async () => ({ ...available, status: 'ready' as const, canDownload: false }))
+    const user = userEvent.setup(); render(<App />)
+
+    expect(await screen.findByRole('heading', { name: 'Updates' })).toBeVisible()
+    expect(screen.getByText(/Current version 0.1.0/)).toBeVisible()
+    await user.click(screen.getByRole('button', { name: 'Check for Updates' }))
+    expect(bridge.checkForUpdate).toHaveBeenCalled()
+    expect(await screen.findByText('Version 0.2.0 is available.')).toBeVisible()
+    expect(screen.getByText('Fixes')).toBeVisible()
+    await user.click(screen.getByRole('button', { name: 'View Release' }))
+    expect(bridge.openReleasePage).toHaveBeenCalled()
+    await user.click(screen.getByRole('button', { name: 'Download Installer' }))
+    expect(bridge.downloadUpdate).toHaveBeenCalled()
+    expect(await screen.findByText(/Opened the installer/)).toBeVisible()
+  })
+
+  it('shows updater errors from the main process on General', async () => {
+    const bridge = api(); window.moirasia = bridge; render(<App />)
+    await screen.findByRole('heading', { name: 'Updates' })
+    act(() => publishUpdate?.({ status: 'error', currentVersion: '0.1.0', error: 'GitHub returned 403.', canDownload: false }))
+    expect(await screen.findByRole('alert')).toHaveTextContent('GitHub returned 403.')
   })
 })

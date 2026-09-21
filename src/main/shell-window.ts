@@ -4,6 +4,7 @@ import { applyWindowAppearance, desktopWindowChromeOptions, neutralWindowBackgro
 import { IPC, type AppPresenceMode, type ControllerPage } from '../shared/contracts'
 import type { NativeHostClientLike } from '../shared/native-host-contracts'
 import type { ApplicationController } from './application-controller'
+import type { AppUpdater } from './app-updater'
 import type { EmbeddedFeatureHost } from './features/embedded-host'
 import { registerControllerIpc } from './ipc'
 import { paths } from './paths'
@@ -30,6 +31,7 @@ export interface ShellWindowLifecycleOptions {
   presenceMode(): AppPresenceMode
   applyAppPresence(mode: AppPresenceMode): void
   nativeClient?: NativeHostClientLike
+  updater?: AppUpdater
   onMenuBarWindowClosed?(): void
   rendererUrl?: string
 }
@@ -123,7 +125,8 @@ export class ShellWindowLifecycle {
         settings: this.options.settings,
         applyShellAppearance: () => this.applyAppearance(),
         applyAppPresence: this.options.applyAppPresence,
-        ...(this.options.nativeClient ? { nativeClient: this.options.nativeClient } : {})
+        ...(this.options.nativeClient ? { nativeClient: this.options.nativeClient } : {}),
+        ...(this.options.updater ? { updater: this.options.updater } : {})
       })
       generation = { window, disposeIpc, timer: undefined, closing: false, onClose, onClosed, onFocus, onShow, onHide, onRenderProcessGone }
       this.#generation = generation

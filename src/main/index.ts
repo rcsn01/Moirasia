@@ -1,8 +1,10 @@
-import { app, nativeTheme } from 'electron'
+import { app, nativeTheme, shell } from 'electron'
 import { existsSync } from 'node:fs'
+import { writeFile } from 'node:fs/promises'
 import { join, resolve } from 'node:path'
 import { AppearanceRegistry, applyAppearance } from '@moirasia/desktop-shell/main'
 import { ApplicationController } from './application-controller'
+import { AppUpdater, type AppUpdaterHost } from './app-updater'
 import { AppPresence } from './app-presence'
 import { EmbeddedFeatureHost } from './features/embedded-host'
 import { FeatureRuntime, suiteFeatureContext } from './features/runtime'
@@ -96,6 +98,7 @@ async function createApplication(): Promise<void> {
   const features = new FeatureRuntime(settings, { host, context: (id) => suiteFeatureContext(id, host.surface(id)), ...featureOptions })
   await features.syncAtLaunch()
   const controller = new ApplicationController(appearances, settings, features)
+  const updater = new AppUpdater(createAppUpdaterHost())
 
   let preserveNativeMenuHost = false
   let uiLifetime: UiLifetime
@@ -106,6 +109,7 @@ async function createApplication(): Promise<void> {
     appearance: () => appearances.get().values.moirasia,
     presenceMode: () => presence.mode,
     applyAppPresence: (mode) => presence.apply(mode),
+    updater,
     ...(nativeSelected && nativeClient ? { nativeClient } : {}),
     onMenuBarWindowClosed: () => uiLifetime.shellClosed(),
     ...(process.env.ELECTRON_RENDERER_URL ? { rendererUrl: process.env.ELECTRON_RENDERER_URL } : {})
@@ -147,7 +151,10 @@ async function createApplication(): Promise<void> {
   ] : []
   installApplicationMenu(
     (id) => void controller.open(id).catch(console.error),
-    (page) => void openShell(page).catch(console.error)
+    (page) => void openShell(page).catch(console.error),
+    () => {
+      void openShell('general').then(() => updater.check()).catch(console.error)
+    }
   )
   const updateSystemAppearance = (): void => {
     if (appearances.get().values.moirasia === 'system') shellWindow.applyAppearance()
@@ -198,6 +205,21 @@ async function createApplication(): Promise<void> {
     if (shouldStopNativeRuntime) void nativeClient!.request('host.quitSuite').catch((error) => console.error('Could not coordinate native suite quit', error)).finally(() => void finish())
     else void finish()
   })
+}
+
+function createAppUpdaterHost(): AppUpdaterHost {
+  return {
+    currentVersion: () => app.getVersion(),
+    packaged: () => app.isPackaged,
+    downloadsDirectory: () => app.getPath('downloads'),
+    fetch: async (url, init) => {
+      const response = await fetch(url, init)
+      return { ok: response.ok, status: response.status, text: () => response.text(), arrayBuffer: () => response.arrayBuffer() }
+    },
+    writeFile: (path, data) => writeFile(path, data),
+    openPath: (path) => shell.openPath(path),
+    openExternal: (url) => shell.openExternal(url)
+  }
 }
 
 function setLoginItemSettings(openAtLogin: boolean): void {
