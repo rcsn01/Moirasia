@@ -4,7 +4,7 @@ import { isFeatureId } from '@moirasia/desktop-shell/feature'
 import { sendToRenderer } from '@moirasia/desktop-shell/main'
 import { IPC, idleUpdateState, isApplicationId, isAppPresenceMode, isControllerPage, type AppPresenceMode } from '../shared/contracts'
 import type { ApplicationController } from './application-controller'
-import type { AppUpdater } from './app-updater'
+import type { AppUpdater } from '@moirasia/desktop-shell/app-updater'
 import type { NativeHostClientLike } from '../shared/native-host-contracts'
 import type { ShellSettingsStore } from './settings'
 

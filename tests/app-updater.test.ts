@@ -1,10 +1,10 @@
 import { describe, expect, it, vi } from 'vitest'
-import { AppUpdater, type AppUpdaterHost, type AppUpdaterResponse } from '../src/main/app-updater'
+import { AppUpdater, type AppUpdaterHost, type AppUpdaterResponse, type GitHubReleaseFeed } from '@moirasia/desktop-shell/app-updater'
 
 describe('AppUpdater', () => {
   it('reports up-to-date when the latest release matches the running version', async () => {
     const host = makeHost({ version: '0.1.0', release: githubRelease('0.1.0') })
-    const updater = new AppUpdater(host)
+    const updater = new AppUpdater(host, FEED)
     const first = updater.check()
     const second = updater.check()
     const state = await first
@@ -15,7 +15,7 @@ describe('AppUpdater', () => {
 
   it('exposes the GitHub release page when a newer version exists', async () => {
     const host = makeHost({ version: '0.1.0', release: githubRelease('0.2.0') })
-    const updater = new AppUpdater(host)
+    const updater = new AppUpdater(host, FEED)
     const state = await updater.check()
     expect(state).toMatchObject({
       status: 'available',
@@ -30,7 +30,7 @@ describe('AppUpdater', () => {
 
   it('opens the latest-releases page when no check has run', async () => {
     const host = makeHost({ version: '0.1.0' })
-    await new AppUpdater(host).openRelease()
+    await new AppUpdater(host, FEED).openRelease()
     expect(host.openExternal).toHaveBeenCalledWith('https://github.com/rcsn01/Moirasia/releases/latest')
   })
 
@@ -39,7 +39,7 @@ describe('AppUpdater', () => {
       version: '0.1.0',
       release: { tag_name: 'nightly', html_url: 'https://example.test/nightly' }
     })
-    await expect(new AppUpdater(host).check()).resolves.toMatchObject({
+    await expect(new AppUpdater(host, FEED).check()).resolves.toMatchObject({
       status: 'error',
       error: 'The latest GitHub Release is not a semantic version.'
     })
@@ -47,12 +47,24 @@ describe('AppUpdater', () => {
 
   it('surfaces GitHub error messages', async () => {
     const host = makeHost({ version: '0.1.0', latestStatus: 403, latestBody: JSON.stringify({ message: 'API rate limit exceeded' }) })
-    await expect(new AppUpdater(host).check()).resolves.toMatchObject({
+    await expect(new AppUpdater(host, FEED).check()).resolves.toMatchObject({
       status: 'error',
       error: 'API rate limit exceeded'
     })
   })
+
+  it('checks the configured GitHub repository', async () => {
+    const host = makeHost({
+      version: '1.0.0',
+      release: { tag_name: 'v1.0.0', html_url: 'https://github.com/rcsn01/Amove/releases/tag/v1.0.0' }
+    })
+    await new AppUpdater(host, { owner: 'rcsn01', repo: 'Amove', userAgent: 'Amove' }).check()
+    expect(String(host.fetch.mock.calls[0]?.[0])).toBe('https://api.github.com/repos/rcsn01/Amove/releases/latest')
+    expect(host.fetch.mock.calls[0]?.[1]).toMatchObject({ headers: expect.objectContaining({ 'User-Agent': 'Amove' }) })
+  })
 })
+
+const FEED: GitHubReleaseFeed = { owner: 'rcsn01', repo: 'Moirasia', userAgent: 'Moirasia' }
 
 function githubRelease(version: string) {
   return {

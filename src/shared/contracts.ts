@@ -1,6 +1,7 @@
 import type { Appearance, AppearanceSnapshot, LoginItemControlResult } from '@moirasia/desktop-shell'
 import { applicationCatalog, defaultAppearanceSnapshot, APPLICATION_IDS, isApplicationId, type ApplicationId } from '@moirasia/desktop-shell'
 import { isFeatureId, type FeatureId } from '@moirasia/desktop-shell/feature'
+import { idleUpdateState, type UpdateState, type UpdateStatus } from '@moirasia/desktop-shell/app-updater'
 
 export { APPLICATION_IDS, isApplicationId, type ApplicationId }
 export type ControllerPage = 'general' | 'features' | FeatureId
@@ -46,20 +47,7 @@ export interface ShellSettings {
 
 export const DEFAULT_SHELL_SETTINGS: ShellSettings = { version: 4, launchAtLogin: false, appPresence: 'dock', pendingLoginItems: {}, features: {} }
 
-export type UpdateStatus = 'idle' | 'checking' | 'up-to-date' | 'available' | 'error'
-
-export interface UpdateState {
-  readonly status: UpdateStatus
-  readonly currentVersion: string
-  readonly latestVersion?: string
-  readonly releaseUrl?: string
-  readonly notes?: string
-  readonly error?: string
-}
-
-export function idleUpdateState(currentVersion = ''): UpdateState {
-  return { status: 'idle', currentVersion }
-}
+export { idleUpdateState, type UpdateState, type UpdateStatus }
 
 /** The renderer's pre-first-snapshot state: catalog-seeded application rows under the default appearance snapshot. */
 export function emptyControllerSnapshot(): ControllerSnapshot {

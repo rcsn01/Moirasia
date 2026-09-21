@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { compareSemver, parseSemver } from '../src/shared/semver'
+import { compareSemver, parseSemver } from '@moirasia/desktop-shell/app-updater'
 
 describe('semver', () => {
   it('accepts semantic versions and rejects malformed versions', () => {

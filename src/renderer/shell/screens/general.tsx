@@ -1,5 +1,5 @@
 import { RadioGroup, RadioGroupItem } from '@moirasia/ui-react/components/radio-group'
-import { Button } from '@moirasia/ui-react/components/button'
+import { GitHubUpdatesPanel } from '@moirasia/desktop-shell/react'
 import type { AppPresenceMode, UpdateState } from '../../../shared/contracts'
 
 export function GeneralScreen({ appPresence, onAppPresenceChange, update, onCheckForUpdate, onOpenRelease }: {
@@ -13,7 +13,6 @@ export function GeneralScreen({ appPresence, onAppPresenceChange, update, onChec
     { mode: 'menu-bar', title: 'Menu Bar', detail: 'Keep Moirasia available from the menu bar and hide its Dock icon.' },
     { mode: 'dock', title: 'Dock Icon', detail: 'Show Moirasia in the Dock.' }
   ]
-  const busy = update.status === 'checking'
 
   return <section className="controller-page" aria-labelledby="general-heading">
     <p className="eyebrow">ESSENTIALS</p>
@@ -36,28 +35,12 @@ export function GeneralScreen({ appPresence, onAppPresenceChange, update, onChec
       </RadioGroup>
     </section>
 
-    <section className="general-settings-section" aria-labelledby="updates-heading">
-      <div className="general-settings-heading">
-        <h2 id="updates-heading">Updates</h2>
-        <p>{update.currentVersion ? `Current version ${update.currentVersion}. ` : ''}Check GitHub Releases for a newer build.</p>
-      </div>
-      <div className="general-updates-body">
-        {update.status !== 'error' && <p className="general-updates-status" role="status">{statusCopy(update)}</p>}
-        {update.status === 'available' && <p className="general-updates-note">Open the GitHub release to download the DMG. After installing, reopen Moirasia. Shout Mic or Bonded's firewall helper may ask to be reinstalled if those binaries changed.</p>}
-        {update.notes && update.status === 'available' && <p className="general-updates-notes">{update.notes}</p>}
-        {update.status === 'available' && update.releaseUrl && <a className="general-updates-link" href={update.releaseUrl} onClick={(event) => { event.preventDefault(); onOpenRelease() }}>{update.releaseUrl}</a>}
-        {update.status === 'error' && update.error && <p className="general-updates-error" role="alert">{update.error}</p>}
-        {update.status !== 'available' && <div className="general-updates-actions">
-          <Button size="sm" disabled={busy} onClick={onCheckForUpdate}>{update.status === 'checking' ? 'Checking…' : 'Check for Updates'}</Button>
-        </div>}
-      </div>
-    </section>
+    <GitHubUpdatesPanel
+      product="Moirasia"
+      state={update}
+      onCheck={onCheckForUpdate}
+      onOpenRelease={onOpenRelease}
+      availableNote="Open the GitHub release to download the DMG. After installing, reopen Moirasia. Shout Mic or Bonded's firewall helper may ask to be reinstalled if those binaries changed."
+    />
   </section>
-}
-
-function statusCopy(update: UpdateState): string {
-  if (update.status === 'checking') return 'Checking GitHub Releases…'
-  if (update.status === 'up-to-date') return "You're up to date."
-  if (update.status === 'available' && update.latestVersion) return `Version ${update.latestVersion} is available.`
-  return 'No check has run yet.'
 }

@@ -1,9 +1,10 @@
-import { app, nativeTheme, shell } from 'electron'
+import { app, nativeTheme } from 'electron'
 import { existsSync } from 'node:fs'
 import { join, resolve } from 'node:path'
 import { AppearanceRegistry, applyAppearance } from '@moirasia/desktop-shell/main'
 import { ApplicationController } from './application-controller'
-import { AppUpdater, type AppUpdaterHost } from './app-updater'
+import { AppUpdater } from '@moirasia/desktop-shell/app-updater'
+import { createElectronAppUpdaterHost } from '@moirasia/desktop-shell/app-updater-electron'
 import { AppPresence } from './app-presence'
 import { EmbeddedFeatureHost } from './features/embedded-host'
 import { FeatureRuntime, suiteFeatureContext } from './features/runtime'
@@ -97,7 +98,7 @@ async function createApplication(): Promise<void> {
   const features = new FeatureRuntime(settings, { host, context: (id) => suiteFeatureContext(id, host.surface(id)), ...featureOptions })
   await features.syncAtLaunch()
   const controller = new ApplicationController(appearances, settings, features)
-  const updater = new AppUpdater(createAppUpdaterHost())
+  const updater = new AppUpdater(createElectronAppUpdaterHost(), { owner: 'rcsn01', repo: 'Moirasia', userAgent: 'Moirasia' })
 
   let preserveNativeMenuHost = false
   let uiLifetime: UiLifetime
@@ -204,17 +205,6 @@ async function createApplication(): Promise<void> {
     if (shouldStopNativeRuntime) void nativeClient!.request('host.quitSuite').catch((error) => console.error('Could not coordinate native suite quit', error)).finally(() => void finish())
     else void finish()
   })
-}
-
-function createAppUpdaterHost(): AppUpdaterHost {
-  return {
-    currentVersion: () => app.getVersion(),
-    fetch: async (url, init) => {
-      const response = await fetch(url, init)
-      return { ok: response.ok, status: response.status, text: () => response.text() }
-    },
-    openExternal: (url) => shell.openExternal(url)
-  }
 }
 
 function setLoginItemSettings(openAtLogin: boolean): void {

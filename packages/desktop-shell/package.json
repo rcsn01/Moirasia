@@ -1,6 +1,6 @@
 {
   "name": "@moirasia/desktop-shell",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "private": true,
   "type": "module",
   "exports": {
@@ -9,6 +9,8 @@
     "./feature-resources": "./src/feature-resources.ts",
     "./feature-surface-host": "./src/feature-surface-host.ts",
     "./native-feature-adapter": "./src/native-feature-adapter.ts",
+    "./app-updater": "./src/app-updater.ts",
+    "./app-updater-electron": "./src/app-updater-electron.ts",
     "./main": "./src/main.ts",
     "./renderer-target": "./src/renderer-target.ts",
     "./runtime-lease": "./src/runtime-lease.ts",

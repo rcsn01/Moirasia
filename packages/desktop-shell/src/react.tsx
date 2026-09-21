@@ -1,5 +1,6 @@
-import React, { useEffect, useState } from 'react'
+import React, { useCallback, useEffect, useState } from 'react'
 import { APPEARANCES, type Appearance, type AppearanceApi } from './index'
+import { idleUpdateState, type GitHubUpdatesApi, type UpdateState } from './app-updater'
 
 export interface DesktopNavigationItem<Id extends string = string> {
   readonly id: Id
@@ -163,6 +164,71 @@ export function applyDocumentAppearance(appearance: Appearance, systemDark = mat
   document.documentElement.classList.toggle('dark', dark)
   document.documentElement.dataset.appearance = appearance
   document.documentElement.style.colorScheme = dark ? 'dark' : 'light'
+}
+
+export function useGitHubUpdates(api: GitHubUpdatesApi | undefined): {
+  readonly state: UpdateState
+  check(): void
+  openRelease(): void
+} {
+  const [state, setState] = useState<UpdateState>(() => idleUpdateState())
+  useEffect(() => {
+    if (!api) return
+    let active = true
+    void api.getUpdateState().then((value) => { if (active) setState(value) })
+    const unsubscribe = api.onUpdateState((value) => { if (active) setState(value) })
+    return () => { active = false; unsubscribe() }
+  }, [api])
+  const check = useCallback((): void => { if (api) void api.checkForUpdate().then(setState) }, [api])
+  const openRelease = useCallback((): void => { if (api) void api.openReleasePage() }, [api])
+  return { state, check, openRelease }
+}
+
+export function GitHubUpdatesPanel({ product, state, onCheck, onOpenRelease, availableNote, variant = 'card' }: {
+  readonly product: string
+  readonly state: UpdateState
+  readonly onCheck: () => void
+  readonly onOpenRelease: () => void
+  readonly availableNote?: string | undefined
+  readonly variant?: 'card' | 'flush' | undefined
+}): React.JSX.Element {
+  const headingId = `${product.replace(/\s+/g, '-').toLowerCase()}-updates-heading`
+  const busy = state.status === 'checking'
+  return <section className={`desktop-updates desktop-updates--${variant}`} aria-labelledby={headingId}>
+    <div className="desktop-updates__heading">
+      <h2 id={headingId}>Updates</h2>
+      <p>{state.currentVersion ? `Current version ${state.currentVersion}. ` : ''}Check GitHub Releases for a newer build.</p>
+    </div>
+    <div className="desktop-updates__body">
+      {state.status !== 'error' && <p className="desktop-updates__status" role="status">{statusCopy(state)}</p>}
+      {state.status === 'available' && availableNote && <p className="desktop-updates__note">{availableNote}</p>}
+      {state.status === 'available' && !availableNote && <p className="desktop-updates__note">Open the GitHub release to download the DMG. After installing, reopen {product}.</p>}
+      {state.notes && state.status === 'available' && <p className="desktop-updates__notes">{state.notes}</p>}
+      {state.status === 'available' && state.releaseUrl && <a className="desktop-updates__link" href={state.releaseUrl} onClick={(event) => { event.preventDefault(); onOpenRelease() }}>{state.releaseUrl}</a>}
+      {state.status === 'error' && state.error && <p className="desktop-updates__error" role="alert">{state.error}</p>}
+      {state.status !== 'available' && <div className="desktop-updates__actions">
+        <button type="button" className="desktop-updates__button" disabled={busy} onClick={onCheck}>{state.status === 'checking' ? 'Checking…' : 'Check for Updates'}</button>
+      </div>}
+    </div>
+  </section>
+}
+
+export function StandaloneGitHubUpdates({ product, api, availableNote, variant = 'card' }: {
+  readonly product: string
+  readonly api: GitHubUpdatesApi | undefined
+  readonly availableNote?: string | undefined
+  readonly variant?: 'card' | 'flush' | undefined
+}): React.JSX.Element | null {
+  const updates = useGitHubUpdates(api)
+  if (!api) return null
+  return <GitHubUpdatesPanel product={product} state={updates.state} onCheck={updates.check} onOpenRelease={updates.openRelease} availableNote={availableNote} variant={variant} />
+}
+
+function statusCopy(update: UpdateState): string {
+  if (update.status === 'checking') return 'Checking GitHub Releases…'
+  if (update.status === 'up-to-date') return "You're up to date."
+  if (update.status === 'available' && update.latestVersion) return `Version ${update.latestVersion} is available.`
+  return 'No check has run yet.'
 }
 
 export function useProductAppearance(api: AppearanceApi | undefined): readonly [Appearance, (appearance: Appearance) => void] {

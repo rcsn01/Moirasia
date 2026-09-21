@@ -4,7 +4,7 @@ import { applyWindowAppearance, desktopWindowChromeOptions, neutralWindowBackgro
 import { IPC, type AppPresenceMode, type ControllerPage } from '../shared/contracts'
 import type { NativeHostClientLike } from '../shared/native-host-contracts'
 import type { ApplicationController } from './application-controller'
-import type { AppUpdater } from './app-updater'
+import type { AppUpdater } from '@moirasia/desktop-shell/app-updater'
 import type { EmbeddedFeatureHost } from './features/embedded-host'
 import { registerControllerIpc } from './ipc'
 import { paths } from './paths'
