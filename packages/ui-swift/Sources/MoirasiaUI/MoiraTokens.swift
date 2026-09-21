@@ -96,12 +96,45 @@ public enum MoiraType {
         )
     }
 
+    public static func bodyLarge(
+        weight: Font.Weight = .regular,
+        design: Font.Design = .default
+    ) -> Font {
+        .system(
+            size: 16,
+            weight: weight,
+            design: design
+        )
+    }
+
+    public static func titleSmall(
+        weight: Font.Weight = .semibold,
+        design: Font.Design = .default
+    ) -> Font {
+        .system(
+            size: 19,
+            weight: weight,
+            design: design
+        )
+    }
+
     public static func title(
         weight: Font.Weight = .semibold,
         design: Font.Design = .default
     ) -> Font {
         .system(
             size: 20,
+            weight: weight,
+            design: design
+        )
+    }
+
+    public static func titleLarge(
+        weight: Font.Weight = .semibold,
+        design: Font.Design = .default
+    ) -> Font {
+        .system(
+            size: 31,
             weight: weight,
             design: design
         )
