@@ -28,17 +28,27 @@ export function registerGitHubUpdaterIpc(options: {
     ipcMain.handle(channel, listener)
     registered.push(channel)
   }
+  let unsubscribe = (): void => undefined
   try {
     handle(channels.getState, (event) => { options.authorize(event); return options.updater.state() })
     handle(channels.check, (event) => { options.authorize(event); return options.updater.check() })
     handle(channels.openRelease, (event) => { options.authorize(event); return options.updater.openRelease() })
+    unsubscribe = options.updater.subscribe((state) => options.sendState(state))
   } catch (error) {
-    for (const channel of registered) ipcMain.removeHandler(channel)
+    for (const channel of registered) {
+      try { ipcMain.removeHandler(channel) } catch { /* preserve the setup error */ }
+    }
     throw error
   }
-  const unsubscribe = options.updater.subscribe((state) => options.sendState(state))
+  let disposed = false
   return () => {
-    unsubscribe()
-    for (const channel of registered) ipcMain.removeHandler(channel)
+    if (disposed) return
+    disposed = true
+    let firstError: unknown
+    try { unsubscribe() } catch (error) { firstError = error }
+    for (const channel of registered) {
+      try { ipcMain.removeHandler(channel) } catch (error) { firstError ??= error }
+    }
+    if (firstError !== undefined) throw firstError
   }
 }

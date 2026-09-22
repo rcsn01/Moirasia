@@ -1,226 +1,722 @@
-# Implementation plan: the Controller's snapshot and command lifecycle
+# Implementation plan: deepen the embedded feature lifecycle
 
 ## Decision
 
-Architecture-review candidate 1 ("Deepen the Controller's snapshot composition"), finalized. The plan is three coordinated moves, each landing one fact at its natural owner, plus one contract trim and the **Controller**'s first interface-level test suite:
+Implement architecture-review candidate 1 for the four adapters that repeat the same outer surface lifecycle:
 
-1. **The Controller deepens in place** (`src/main/application-controller.ts`): commands on one application serialize through a per-application queue; `setLoginItem` unifies through the shared `#action` lifecycle (deleting its hand-rolled twin); the execFile contact with controlled apps (`invokeLoginControl`) moves into the `ApplicationAgent` port; the write-only `ApplicationStatus.busy` field is deleted from the contract.
-2. **The native-process port decodes its own payloads**: `NativeHostClientLike`/`NativeHostClient` gain a typed `getSnapshot()` returning `NativeHostSnapshot | undefined`; the zod schema imports and parse/safeParse calls leave `src/main/index.ts` (`:213`) and `src/main/ipc.ts` (`:7, :58–62`).
-3. **Initial-state defaults centralize**: the appearance seed table moves to the pure `packages/desktop-shell/src/index.ts` with a `defaultAppearanceSnapshot()` factory; `DEFAULT_SHELL_SETTINGS` moves to `src/shared/contracts.ts`; a new `emptyControllerSnapshot()` factory becomes the one owner of the renderer's pre-first-snapshot state, and the renderer's hand-written `EMPTY`/`DEFAULT_SETTINGS` twins delete (`src/renderer/shell/controller.ts:8–9`) — including the `bundleId: ''` divergence from the catalog.
+- Bonded local: `apps/integrated/Bonded/src/main/feature.ts`
+- Bonded native: `apps/integrated/Bonded/src/main/native-feature.ts`
+- Shout local: `apps/integrated/Shout/src/main/feature.ts`
+- Shout native: `apps/integrated/Shout/src/main/native-feature.ts`
 
-Grilling sharpened the review card before this plan: the card's phrase "one implementation owns the snapshot fact end-to-end" overstated the scatter. The composition itself was never scattered — `snapshot()` (`application-controller.ts:29`) is one line over three already-deep facts (applications, `AppearanceRegistry`, Feature runtime), and the merge-on-refresh (`:33`) is the applications state machine and belongs inside the Controller. What is actually scattered is the **command lifecycle** (no serialization, a write-only and broken `busy` path, a duplicated `setLoginItem` body), the **native payload decode** (parse decisions at three consumer sites), the **initial-state defaults** (two hand-written renderer twins), and the **test surface** (zero interface tests for the module that coordinates every user-facing action). Inventing a "snapshot composer" module would have been a pass-through; deepening the owners deletes the duplication instead.
+Add one deep module at `packages/desktop-shell/src/feature-lifecycle.ts`. Its interface remains the existing `MoirasiaFeature` contract. A small registration adapter supplies product-owned setup and cleanup to the module. The implementation owns the common outer lifecycle:
 
-Design provenance (design-it-twice): two alternative module shapes were compared and rejected. A standalone `SnapshotComposer` module (pure compose/parse/defaults functions consumed by controller, index, ipc, and renderer) fails the deletion test as a shallow re-wrap — deleting it re-scatters nothing that isn't already one zod schema or one assembly line. Splitting the controller's state into an internal `controller-state.ts` behind a thin façade is the same pass-through shape. Serialization variants were likewise compared: a **global queue** was rejected (it couples independent applications — opening Amove would delay quitting Vox), and a **reject-on-busy guard** was rejected (every in-repo precedent queues — `ShellSettingsStore.#persist`, `ShellWindowLifecycle.#enqueue`, `AppearanceRegistry.#update`, the Feature runtime's per-feature `#enqueue` — and a double-click should not become an error). The chosen **per-application queue** copies the Feature runtime's per-feature `#enqueue` shape — `previous.catch(() => undefined).then(operation)`, fixed id domain, one precedent — minus that helper's settled-tail deletion, which the controller drops on purpose (four fixed ids; see the module notes below).
+1. exact context and host-mode validation before side effects;
+2. one registration in flight at a time, preserving the existing Bonded/Shout local guard;
+3. feature-surface acquisition and local readiness;
+4. reverse-order rollback after partial registration;
+5. activation only after a successful registration;
+6. exhaustive, reverse-order, idempotent disposal;
+7. a fresh registration after disposal.
 
-Terminology follows `CONTEXT.md` and the codebase-design vocabulary. No new external seam is invented: `NativeHostClientLike` (`src/shared/native-host-contracts.ts:158–165`) remains the outer port facing the native host process — the new `getSnapshot()` accessor concentrates payload decoding *inside* that existing port. `ApplicationAgent` (`application-controller.ts:16`) is already the local-substitutable port for AppKit/`--moirasia-control` contact (the controller takes it as an injectable constructor parameter with a production default); the login-item move extends that port rather than adding a second one. `ShellSettingsStore` and `AppearanceRegistry` are already deep and stay untouched.
+Do not add cross-operation scheduling inside this module. Local Feature runtime operations use `FeatureRuntime.#enqueue`, `disposeAll()` waits for queued operations, and `runStandaloneLaunch` waits for registration before disposal. Native uninstall can overlap an acquisition before the runtime publishes an instance, but then it has no feature object to dispose; a scheduler inside that unpublished object cannot fix the runtime race. No current caller invokes `dispose()` on the same feature object while its `register()` is pending. Handling that case, `register()` during disposal, or shared concurrent-disposal promises here would solve call patterns no current consumer can produce. The existing adapters do not consistently support those races.
+
+Product adapters continue to own product facts: controllers, command validation, native snapshot decoders, IPC channel lists, Runtime lease names and errors, updater repositories, and Bonded's renderer-process exclusion. The shared module does not learn Bonded or Shout command semantics.
+
+One supporting correction is required at the cleanup boundary. The lifecycle can continue after an owned IPC disposer throws, but both local `registerIpc` functions currently stop inside that disposer if snapshot unsubscribe throws, and their registration catch omits snapshot unsubscribe if updater setup fails. `registerGitHubUpdaterIpc` also leaves its handlers installed if `updater.subscribe` throws. Harden these existing registrars in place; do not pull their channel-level resources into the lifecycle module.
+
+Amove stays out of this refactor. Its local `AppController` owns the Feature surface and its native adapter owns an Electron shelf, UI-state reporting, and two-renderer IPC. Pulling those differences into the first version would enlarge the interface before a second matching adapter proves the need. This keeps the change aligned with the review card, whose before diagram identified the four Bonded/Shout modules rather than all six feature adapters.
+
+## Grilling decisions
+
+The user pre-approved the recommended answer to every clarification question. The settled design tree is:
+
+| Decision | Recommended answer used by this plan | Reason |
+|---|---|---|
+| Scope | Bonded and Shout, local and native | These four adapters contain the demonstrated duplication. |
+| Amove | Exclude | Shelf and custom controller ownership would force speculative hooks. |
+| Seam | Keep `MoirasiaFeature` between Feature runtime and product adapters | It is already the real seam. Adding another lifecycle port would duplicate it. |
+| Shared ownership | Registration state, Feature surface, local readiness, rollback, activation, disposal | These outer lifecycle facts repeat and currently drift. Native adapters are suite-only, so their surface `ready()` is a no-op. |
+| Product ownership | Controllers, Runtime leases, updater repository facts, IPC channels, decoders, validation | These facts vary by product and stay local. |
+| Cleanup model | Register cleanup functions with one owned LIFO scope | One primitive hides rollback and disposal without a callback bag. |
+| Concurrency | Preserve single-flight `register()`; do not schedule unlike operations | Bonded/Shout local already suppress duplicate in-flight registration. Production callers serialize registration and disposal, so a second scheduler here would duplicate their responsibility. |
+| Error policy at registration | Preserve the original registration error after best-effort rollback | Native adapters already do this. Local cleanup can currently replace the startup error if an earlier synchronous cleanup throws, so this is a deliberate correction. |
+| Error policy at disposal | Attempt every cleanup, then throw the first cleanup error | Matches the strongest existing adapters and prevents a failed cleanup from leaking later resources. |
+| Cleanup retry | Do not retry an already-attempted cleanup on a second `dispose()` | Existing adapters clear references before cleanup, and both controllers mark themselves disposed before operations that can reject. The runtime may call `dispose()` again after an uninstall failure, but the concrete adapters already make that call a no-op; the retry is for completing the uninstall state transition, not replaying teardown side effects. |
+| Cleanup order | Reverse acquisition order, with the Feature surface acquired first and therefore disposed last | A single rule works for startup rollback and normal disposal. Product resources stop before their renderer disappears. |
+| Readiness | The shared module calls `surface.ready()` after product registration | The local adapters already call it at this point. Native adapters do not call it today, but accept only suite contexts, whose handle implements `ready()` as a no-op. |
+| Activation | The shared module delegates to `surface.activate()` only while registered | Bonded and Shout do not need product-specific activation. |
+| Updater | Keep `#updater` in each local product adapter | Update checking is a product action, not a lifecycle fact. |
+| Public contract | Do not change `MoirasiaFeature` | Feature runtime and loaders remain untouched. |
+| Documentation | Add an Embedded feature lifecycle term to `CONTEXT.md` | The new deep module needs a domain name future reviews can recognize. |
+
+## Design-it-twice result
+
+Four shapes were compared.
+
+### Chosen: minimal lifecycle factory
+
+A factory returns a `MoirasiaFeature`. Its one product seam is `mount`, and `mount` receives one ownership primitive, `own(cleanup)`. Runtime callers learn nothing new, while product adapters share duplicate-registration suppression, rollback, readiness, activation, and disposal. It does not duplicate the callers' registration-versus-disposal scheduling.
+
+### Rejected: public typestate
+
+A `prepare → bind → ready → running` interface made valid phases explicit but exposed internal sequencing to every adapter. It would replace repeated implementation with a larger interface and a compatibility module around `MoirasiaFeature`. The extra types do not add leverage for four fixed adapters.
+
+### Rejected: declarative feature description
+
+A large declaration covering local/native plans, Runtime leases, updater feeds, controller construction, IPC wiring, and custom actions made common declarations short. It also pulled product facts into `desktop-shell` and needed escape hooks for Amove. The result would be a shallow module whose interface nearly described each implementation.
+
+### Rejected: a second lifecycle port
+
+`MoirasiaFeature` already sits at the Feature runtime seam. Adding `FeatureLifecyclePort` and `FeatureSession` would create two names for the same transition and force Feature runtime changes. One adapter would only wrap the other, so the added seam fails the deletion test.
+
+### Deletion test
+
+Deleting the chosen module would restore surface ownership, rollback blocks, activation, and disposal loops in all four product adapters, plus single-flight fields in the two local adapters. Complexity would spread back to four callers. The module therefore earns its depth without becoming another operation scheduler.
 
 ## Verified baseline
 
-Repository root: `/Users/mac/Syncthing/Projects/Moirasia`, tip `23e2d99 docs: sharpen the Feature runtime term`, worktree clean apart from this file (`plan.md` held the completed Feature mode plan, committed at `0f50d21`, and was deleted per instruction before this document was written — history preserves it). Nested Bonded repo untouched by this plan.
+Repository root: `/Users/mac/Syncthing/Projects/Moirasia`
 
-Baseline checks at `23e2d99`: root `pnpm test` → **271 passed / 35 files** (2026-09-21); root `pnpm typecheck` clean. No ADR directory exists at the root. `CONTEXT.md` terms read: **Controller**, **Feature runtime**, **Feature mode**, **Product bar / appearance** (the shared `AppearanceRegistry`), **Runtime lease**.
+Current tip: `c55f749 feat: share GitHub release checks through desktop-shell`
 
-Every claim below was verified against source at `23e2d99`, not inherited from the review card. One card claim was corrected during verification: the card counted "native snapshot validated 3×" — in fact the *logic* is already single-owner (one zod schema, `nativeHostSnapshotSchema`); what is scattered is the *decode decision*: a validating `parse` that discards its result at `index.ts:213` and `safeParse`-plus-cache at `ipc.ts:58–62` (driven by the two native branches at `:25–31` and `:38–43`), with both consumers importing the schema and round-tripping `unknown`. The port accessor fixes that scatter without inventing a second implementation.
+Worktree before this plan:
 
-## Evidence (the scattered and missing pieces)
+- `plan.md` was tracked and contained the completed Controller plan. It was deleted first as requested; Git history preserves it.
+- `architecture-review-20260922-171414.html` is untracked and intentionally remains in the repository because the user requested local report output.
+- No other root worktree changes were present.
+- No root ADR directory exists.
 
-| # | Fact | Sites | Today's defect |
-|---|------|-------|----------------|
-| 1 | Command lifecycle | `#action` `application-controller.ts:68–75`; `setLoginItem` `:52–63` | `#busy` (`:21`) is set (`:55`, `:71`) and never checked as a guard — its only read (`:33`) copies it into the rebuilt status that no consumer reads — so concurrent open/quit/login-item commands on one application all proceed; `open`/`quit` each run `refresh()` in their `finally` (`:74`), so their rebuilds interleave last-writer-wins, while the login-item command's `finally` only emits (`:62`). `busy` is write-only: zero readers in `src/renderer`, `apps/`, `packages/`, or `tests/` (grep verified; the only other `busy` hits are unrelated standalone apps and `runtime-lease`'s own domain). Its write path is broken anyway: the emit after `#busy.set` clones `#applications`, which only gains `busy` during a `refresh()` rebuild — so `busy` reaches a snapshot solely when a concurrent refresh (e.g. the 2s polling timer, `shell-window.ts:95`) races the action. |
-| 2 | Serialization precedent | `settings.ts:36` `#persist`; `shell-window.ts:74` `#enqueue`; `desktop-shell/src/main.ts:62` `#update`; `features/runtime.ts` per-feature `#enqueue` | The pattern exists four times; the Controller — the one coordinator whose queue is driven by user double-clicks — is the module without it. |
-| 3 | setLoginItem twin | `setLoginItem` `:52–63` vs `#action` `:68–75` | A byte-level twin of the action lifecycle (guard → busy/error bookkeeping → operation → catch → finally) minus the refresh; two implementations of one lifecycle. |
-| 4 | Login-item execFile | `invokeLoginControl` `:100–106`, called at `:57` and `:82` | execFile contact with controlled apps lives outside the `ApplicationAgent` (which already owns `snapshot`/`open`/`quit`/`openLoginItemsSettings` via `SwiftApplicationAgent` `:88–98`). Untestable as injected: controller tests would spawn real processes. |
-| 5 | Native payload decode | `index.ts:213` (parse + discard); `ipc.ts:58–62` `cacheNativeSettings` (safeParse + `setCached`), called from the two native branches `:28–29` and `:40–41` | Both consumers import the schema and handle `unknown`; the decode decision is re-made at each site, and the port returns raw `unknown` for the read it already special-cases internally (`client.ts:72–73, :184`). |
-| 6 | Initial-state defaults | renderer `controller.ts:8–9`; `settings.ts:5`; `desktop-shell/src/main.ts:10–11` | The renderer hand-writes the appearance seed table and `DEFAULT_SHELL_SETTINGS`, and writes `bundleId: ''` where the application catalog has a real bundle id — a divergent twin of two shared facts. |
-| 7 | Test surface | `rg ApplicationController tests/` → no matches | Zero interface-level tests for the module that owns discovery, open, quit, login items, page tracking, and snapshot composition. `ipc.ts` is only ever mocked (`shell-window.test.ts:42`); `index.ts` is only pinned by source-string assertions (`platform-integration.test.ts:52–58`, which do not touch the lines this plan edits). |
+Relevant domain terms read from `CONTEXT.md`: Embedded feature, Feature host, Feature mode, Feature runtime, Feature surface host, Runtime lease, and App updater.
 
-## The deepened module
+Targeted baseline checks:
 
-### 1. The Controller: per-application serialization, one action lifecycle
+- `pnpm -C apps/integrated/Bonded exec vitest run tests/feature.test.ts tests/native-feature.test.ts` passed: 2 files, 6 tests.
+- `pnpm -C apps/integrated/Shout exec vitest run tests/native-feature.test.ts` has a pre-existing failure at `apps/integrated/Shout/tests/native-feature.test.ts:113`: the malformed-response assertion expects `/shout\.getSnapshot/`, but the received error message is empty. Two other tests pass.
+- The attempted root targeted run for `tests/native-feature-adapter.test.ts` and `tests/feature-surface-host.test.ts` was blocked by the execution guard, not by a test result.
+
+The Shout failure is outside this lifecycle refactor. Do not change native payload error wording in this work merely to make that baseline green. Re-run it during implementation and report whether it persists; this change must introduce no additional failure.
+
+## Current architecture and friction
+
+### Existing shared modules
+
+- `packages/desktop-shell/src/feature.ts:102-119` defines `MoirasiaFeature`. Feature runtime calls this interface.
+- `packages/desktop-shell/src/feature-surface-host.ts:19-90` validates resources, returns the suite renderer or creates the standalone window, loads it in `ready()`, activates it, and disposes it.
+- `packages/desktop-shell/src/native-feature-adapter.ts:32-84` owns native request/event decoding.
+- `packages/desktop-shell/src/native-feature-adapter.ts:101-151` owns renderer authorization, IPC handler registration, snapshot forwarding, registrar rollback, and handler disposal.
+- `packages/desktop-shell/src/app-updater-electron.ts:19-44` registers the three updater IPC handlers and updater-state subscription. Its setup/disposal cleanup needs the focused hardening described below. Grep finds five consumers: Bonded, Shout, and Amove IPC; Orbis `application.ts`; and YN360 `controller.ts`. Its signature and channel behavior remain unchanged for all five.
+- `apps/integrated/Bonded/src/main/ipc.ts` and `apps/integrated/Shout/src/main/ipc.ts` each own their product command handlers, snapshot subscription, and optional updater registrar. Their cleanup boundaries remain product-owned but need to become exhaustive before the lifecycle treats each disposer as one owned entry.
+
+These modules remain. The new module composes them; it does not absorb their implementation.
+
+### Four repeated adapters
+
+| Adapter | Registration today | Rollback today | Disposal today | Friction |
+|---|---|---|---|---|
+| Bonded local | guard → surface → lease → controller → IPC → start → renderer subscription → ready → publish fields | renderer subscription → IPC → controller stop → lease → surface | renderer subscription → IPC → controller stop → surface → lease | Full lifecycle implemented in the product class; registration has a single-flight field. |
+| Shout local | guard → surface → lease → controller → IPC → start → ready → publish fields | IPC → controller stop → lease → surface | IPC → controller stop → surface → lease | Near-copy of Bonded, but no renderer subscription and no test file. |
+| Bonded native | context check → surface → native IPC registrar → publish fields | registrar's internal rollback, then surface | IPC disposer → surface | Repeats native Shout state and cleanup loop; only checks `#surface` after acquisition begins. It does not call `surface.ready()`. |
+| Shout native | context check → surface → native IPC registrar → publish fields | registrar's internal rollback, then surface | IPC disposer → surface | Near byte-level twin of Bonded native. It does not call `surface.ready()`. |
+
+The local normal-disposal order differs from rollback: Runtime lease release comes after the surface normally but before the surface during rollback. The new module deliberately standardizes both paths on reverse acquisition order. The Feature surface is acquired first, so it is disposed last.
+
+### Tests and gaps
+
+- `apps/integrated/Bonded/tests/feature.test.ts` has three tests. They cover suite registration and activation, immediate renderer-process exclusion, a double `dispose()` idempotency check, standalone loading/activation/disposal, and a Runtime lease acquisition failure. They do not exercise failure after IPC registration, cleanup errors, cleanup order, or failure during `ready()`.
+- There is no `apps/integrated/Shout/tests/feature.test.ts`.
+- `apps/integrated/Bonded/tests/native-feature.test.ts` and `apps/integrated/Shout/tests/native-feature.test.ts` cover command mapping, validation, renderer replacement, event decoding, and basic disposal. They do not own generic lifecycle ordering.
+- `tests/native-feature-adapter.test.ts` already covers partial IPC-handler rollback, subscription failure, sender authorization, forwarding, and exhaustive registrar disposal. Keep those tests at that module's interface.
+- `apps/integrated/Bonded/tests/ipc.test.ts` and `apps/integrated/Shout/tests/ipc.test.ts` each have two tests: normal authorization/snapshot/disposal and partial command-handler registration rollback. Neither covers controller-subscription cleanup when updater setup fails nor exhaustive disposal after one nested cleanup throws.
+- No test covers `registerGitHubUpdaterIpc` registration rollback when `updater.subscribe` throws or exhaustive/idempotent disposal when unsubscribe or handler removal throws.
+- `tests/feature-surface-host.test.ts` already covers suite and standalone surface behavior. Keep those tests at that module's interface.
+- No test currently describes single-flight registration, LIFO cleanup, readiness rollback, or re-registration after disposal through one shared lifecycle interface. The runtime tests cover local caller-level registration/uninstall serialization and reinstall with fakes; `runStandaloneLaunch` also waits for registration before disposal. No production path calls `register()` and `dispose()` concurrently on the same feature object.
+
+## The deep module
+
+### New file and export
+
+Create:
+
+- `packages/desktop-shell/src/feature-lifecycle.ts`
+- `tests/feature-lifecycle.test.ts`
+
+Add this package export to `packages/desktop-shell/package.json`:
+
+```json
+"./feature-lifecycle": "./src/feature-lifecycle.ts"
+```
+
+Do not re-export the module from `@moirasia/desktop-shell/main` or the package root. The dedicated subpath keeps Electron main-process lifecycle code out of renderer-safe imports.
+
+### Interface
+
+Use this exact public shape:
 
 ```ts
-// application-controller.ts — changed members only; all other members untouched
-#queues = new Map<ApplicationId, Promise<ControllerSnapshot>>()   // bounded: APPLICATION_IDS is a fixed 4-id domain
+import type { FeatureContext, FeatureHostMode, FeatureId, MoirasiaFeature } from './feature'
+import type { FeatureSurfaceHandle } from './feature-surface-host'
 
-async #action(id: ApplicationId, operation: (record: AgentRecord) => Promise<void>): Promise<ControllerSnapshot> {
-  const current = this.#applications.find((item) => item.id === id)
-  if (!current?.installed) throw new Error(`${applicationCatalog.get(id).label} is not installed.`)
-  const run = (this.#queues.get(id) ?? Promise.resolve()).catch(() => undefined).then(async (): Promise<ControllerSnapshot> => {
-    this.#errors.delete(id); this.#emit()
-    const status = this.#applications.find((item) => item.id === id)
-    if (!status?.installed) throw new Error(`${applicationCatalog.get(id).label} is not installed.`)
-    const record = { id, installed: status.installed, running: status.running, ...(status.path ? { path: status.path } : {}) }
-    try { await operation(record) }
-    catch (error) { this.#errors.set(id, message(error)); throw error }
-    finally { await this.refresh() }
-    return this.snapshot()
+export type FeatureCleanup = () => void | Promise<void>
+
+export interface FeatureMountContext {
+  readonly context: FeatureContext
+  readonly surface: FeatureSurfaceHandle
+  own(cleanup: FeatureCleanup): void
+}
+
+export interface FeatureLifecycleOptions {
+  readonly id: FeatureId
+  readonly modes: readonly FeatureHostMode[]
+  mount(input: FeatureMountContext): void | Promise<void>
+}
+
+export function createFeatureLifecycle(options: FeatureLifecycleOptions): MoirasiaFeature
+```
+
+The factory interface is intentionally small:
+
+- `id` identifies and validates the feature.
+- `modes` distinguishes local adapters, which accept `suite` and `standalone`, from native adapters, which accept only `suite`.
+- `mount` is the sole product adapter at the seam.
+- `own` is the sole cleanup-registration primitive.
+- Callers still receive `MoirasiaFeature`, so Feature runtime sees no new interface.
+
+Do not add separate callbacks for validation, surface acquisition, readiness, activation, rollback, or disposal. Those are implementation facts of the deep module. Do not add hooks for Amove shelf actions.
+
+### Required invariants
+
+#### Context validation
+
+Before acquiring a Feature surface or invoking `mount`:
+
+1. require `context.id === options.id`;
+2. require `context.productId === options.id`;
+3. require `context.mode` to appear in `options.modes`.
+
+Use a stable error naming the feature and accepted modes. The shared module cannot call it "local" or "native" because that product-specific distinction is represented only by the supplied mode list. Keep the existing product-level meaning:
+
+- local Bonded/Shout accept suite and standalone contexts;
+- native Bonded/Shout reject standalone contexts.
+
+Validation happens even if the feature is already registered. This makes a wrong context a caller error instead of a silent no-op.
+
+#### Registration
+
+1. If a registration is complete, a valid repeated `register()` is a no-op.
+2. If registration is in flight, concurrent valid calls reuse it and do not call `acquireFeatureSurface` or `mount` twice. Preserve side-effect single-flight behavior; exact JavaScript `Promise` object identity is not part of the contract and the current `async` local methods do not preserve it.
+3. Acquire the Feature surface first.
+4. Immediately register `() => surface.dispose()` with the cleanup scope. Use a closure rather than passing an unbound method. Because cleanup is LIFO, the surface is released last.
+5. Call `mount({ context, surface, own })`.
+6. After `mount` resolves, close the ownership scope so a retained `own` callback cannot register late cleanup.
+7. Await `surface.ready()`.
+8. Publish the registration as active only after readiness succeeds.
+9. Clear the in-flight registration promise in `finally`, allowing retry after failure.
+
+A private closure with idle, registering, and registered state is sufficient. Do not expose phases through the interface, add a disposing phase, or queue registration behind disposal. Current callers do not invoke unlike operations concurrently on one feature object.
+
+#### Ownership scope
+
+- Each call to `own(cleanup)` records one cleanup entry in acquisition order. Invoking `own` twice, even with the same function, intentionally records two acquisitions.
+- Reject a non-function cleanup with `TypeError`.
+- Throw if `own` is called after `mount` has settled. A late registration would otherwise escape both rollback and disposal.
+- Cleanup runs in reverse registration order.
+- Product adapters must register cleanup immediately after each resource is acquired, before the next fallible operation.
+
+#### Registration failure
+
+If surface acquisition, `mount`, or `surface.ready()` fails:
+
+1. mark the registration inactive;
+2. run every acquired cleanup in reverse order;
+3. continue cleanup after individual cleanup failures;
+4. preserve and rethrow the original registration error;
+5. clear all cleanup references so a later `dispose()` is a no-op;
+6. allow a later `register()` to retry from idle.
+
+Secondary rollback errors must not replace the startup error. This corrects the local adapters and preserves the native behavior. Do not introduce a new public error type in this refactor.
+
+#### Opaque cleanup boundary
+
+The lifecycle owns cleanup entries, not the internals of each entry. It must attempt later entries when one callback throws, but it cannot recover resources that a failing acquisition never exposed through `own`. Before relying on `registerIpc` as one owned entry:
+
+- update `registerGitHubUpdaterIpc` so any handler-registration or `updater.subscribe` failure removes every handler already installed and preserves the original setup error even if removal throws; make its returned disposer idempotent and exhaustive, preserving the first cleanup error;
+- update both local product `registerIpc` functions so registration failure best-effort runs the controller snapshot unsubscribe, updater disposer, and every registered handler removal while preserving the original registration error;
+- make both returned local IPC disposers idempotent and exhaustive with first-error precedence.
+
+Keep command tables, authorization, snapshot forwarding, and updater channel facts unchanged. Use small file-local cleanup loops; do not create another shared cleanup abstraction.
+
+#### Activation
+
+- While registered, `activate()` calls `surface.activate()`.
+- Before readiness, after failed registration, during/after disposal, or before any registration, `activate()` is a no-op.
+- Product adapters do not supply an activation callback.
+
+#### Disposal
+
+1. Mark the registration inactive and detach the committed cleanup stack before invoking cleanup. This makes activation stop immediately and makes concurrent or later `dispose()` calls no-ops rather than repeating side effects.
+2. Run every detached cleanup in reverse order, awaiting each one even if an earlier cleanup fails.
+3. Throw the first cleanup error in cleanup invocation order after all cleanup functions have been attempted.
+4. A later `dispose()` is a no-op, including when the first disposal threw. This matches the concrete adapters: they detach state before cleanup, and controller `stop()` marks the controller disposed before operations that may reject. `LocalFeatureMode` can call `dispose()` again after reverting a failed uninstall, but that second call already performs no product cleanup today.
+5. After disposal has settled, a later `register()` starts a new Feature surface and cleanup scope.
+
+Do not add behavior for `dispose()` during registration or `register()` during disposal. Current runtime and standalone call paths do not invoke those pairs on one feature object. The module should not silently invent semantics that its public contract and current adapters never promised.
+
+### Why this interface remains deep
+
+The interface gives each product one mounting entry point and one ownership primitive. Behind it sit duplicate-registration suppression, surface ownership, readiness, rollback, activation, disposal ordering, exhaustive cleanup, error precedence, and re-registration. Adding a matching product requires learning two lifecycle concepts rather than copying those mechanics. Cross-operation scheduling stays with the runtime and standalone launcher, where it already exists.
+
+## Product migrations
+
+### 1. Bonded local adapter
+
+File: `apps/integrated/Bonded/src/main/feature.ts`
+
+Keep `BondedFeature` as an exported class because tests instantiate it and standalone code uses the singleton export. Replace its lifecycle fields with:
+
+- `#updater: AppUpdater | undefined` for the committed product-owned menu action;
+- `#pendingUpdater: AppUpdater | undefined` while `mount` is running;
+- `#lifecycle: MoirasiaFeature`, created in the constructor with `createFeatureLifecycle`.
+
+The pending field preserves a current subtlety: the standalone menu exists before registration settles, but `checkForUpdates()` cannot call an updater until the feature is ready. Do not assign `#updater` from inside `mount`.
+
+Delete these fields after migration:
+
+- `#controller`
+- `#surface`
+- `#disposeIpc`
+- `#disposeRenderer`
+- `#lease`
+- `#registration`
+
+Configure the shared module with:
+
+```ts
+id: 'bonded',
+modes: ['suite', 'standalone']
+```
+
+The Bonded `mount` adapter performs only product work:
+
+1. create the standalone updater when `context.mode === 'standalone'`; assign it to `#pendingUpdater`;
+2. register an owned cleanup that clears `#pendingUpdater` only if it still refers to that registration's updater;
+3. acquire the Bonded Runtime lease with the existing app-data path and host argument, then immediately own `() => lease.release()`;
+4. construct `BondedController` from `context.paths` exactly as today;
+5. immediately own `() => controller.stop()`;
+6. call `registerIpc({ renderer: surface.renderer, controller, updater })` and immediately own its disposer. Passing the updater is required because this registration also owns the standalone updater IPC channels;
+7. await `controller.start()`;
+8. subscribe to `surface.renderer`; when a renderer exists, call `controller.excludeProcess(current.getOSProcessId())`;
+9. immediately own the renderer unsubscribe function;
+10. return. The shared module calls `surface.ready()`.
+
+After `#lifecycle.register(ctx)` resolves, `BondedFeature.register` promotes a non-undefined `#pendingUpdater` to `#updater` and clears the pending field. If a concurrent valid wrapper call resumes afterward, it sees no pending updater and must not overwrite the committed field. Registration failure cleanup clears the pending field. This preserves the current rule that menu update checks are unavailable during startup.
+
+`BondedFeature.dispose()` must synchronously clear both updater fields before calling `#lifecycle.dispose()`. The current adapter clears `#updater` before any asynchronous controller or lease cleanup, preventing a menu action from starting an update check during teardown.
+
+The lifecycle cleanup stack then runs:
+
+1. renderer unsubscribe;
+2. IPC disposal, including updater IPC;
+3. controller stop;
+4. Runtime lease release;
+5. Feature surface disposal.
+
+Delegate public lifecycle methods:
+
+- `register(ctx)` awaits `#lifecycle.register(ctx)`, then promotes a pending updater as described above;
+- `activate()` calls `#lifecycle.activate?.()`;
+- `dispose()` clears `#updater` and `#pendingUpdater` synchronously, then calls `#lifecycle.dispose()`.
+
+Keep `checkForUpdates()` product-owned and behavior-compatible:
+
+1. call `activate()`;
+2. call `#updater?.check()` without awaiting it.
+
+Keep `export const feature = new BondedFeature()` unchanged.
+
+### 2. Shout local adapter
+
+File: `apps/integrated/Shout/src/main/feature.ts`
+
+Mirror the Bonded migration, preserving Shout product facts. Keep the exported `ShoutFeature` class and singleton. Retain `#updater`, `#pendingUpdater`, and `#lifecycle` as state. Promote the pending updater only after shared registration and readiness succeed, with the same conditional pending cleanup and concurrent-wrapper safeguard as Bonded. Clear both updater fields synchronously at the start of public `dispose()`.
+
+Configure:
+
+```ts
+id: 'shout',
+modes: ['suite', 'standalone']
+```
+
+The Shout `mount` adapter:
+
+1. creates the standalone updater and records it as pending, with owned conditional cleanup of the pending field;
+2. acquires the Shout Runtime lease with the unchanged app-data path and host argument, then owns `() => lease.release()`;
+3. constructs `ShoutController` with `dataDirectory`, `helperExecutable`, and `driverSourceDirectory` exactly as today;
+4. owns `() => controller.stop()`;
+5. calls `registerIpc({ renderer: surface.renderer, controller, updater })` and owns its disposer, preserving standalone updater IPC;
+6. awaits `controller.start()`;
+7. returns for shared `surface.ready()`.
+
+After the public wrapper clears updater fields synchronously, expected lifecycle cleanup order is:
+
+1. IPC disposal, including updater IPC;
+2. controller stop;
+3. Runtime lease release;
+4. Feature surface disposal.
+
+Delegate `activate`; wrap `register` to promote `#pendingUpdater` after success and wrap `dispose` to clear updater fields before delegation. Keep `checkForUpdates()` product-owned. Delete `#controller`, `#surface`, `#disposeIpc`, `#lease`, and `#registration`.
+
+### 3. Bonded native adapter
+
+File: `apps/integrated/Bonded/src/main/native-feature.ts`
+
+Keep `NativeBondedController`. It is a useful product adapter over `NativeFeaturePort<BondedSnapshot>` and owns Bonded command names and response decoding.
+
+Delete `NativeBondedFeature`. Change `createNativeFeature(transport)` to construct the controller and return a shared lifecycle feature:
+
+```ts
+const controller = new NativeBondedController(transport)
+return {
+  feature: createFeatureLifecycle({
+    id: 'bonded',
+    modes: ['suite'],
+    mount({ surface, own }) {
+      const disposeIpc = registerNativeFeatureIpc({
+        renderer: surface.renderer,
+        authorizationError: 'Unauthorized Bonded IPC sender',
+        snapshotChannel: IPC.snapshot,
+        commands: [/* existing command list, unchanged */],
+        subscribeSnapshot: (listener) => controller.subscribeSnapshot(listener)
+      })
+      own(disposeIpc)
+    }
   })
-  this.#queues.set(id, run)
-  return run
-}
-
-async setLoginItem(id: ApplicationId, enabled: boolean): Promise<ControllerSnapshot> {
-  const status = this.#applications.find((item) => item.id === id)
-  if (!status?.installed || !status.path) throw new Error(`${applicationCatalog.get(id).label} is not installed.`)
-  return this.#action(id, async (record) => {
-    if (!record.path) throw new Error(`${applicationCatalog.get(id).label} is not installed.`)
-    const result = await this.agent.setLoginItem(record.path, id, enabled)
-    this.#applications = this.#applications.map((item) => item.id === id ? { ...item, loginItem: result } : item)
-    if (result.status === 'enabled' || result.status === 'disabled') await this.settings.clearPending(id)
-  })
 }
 ```
 
-- `open` (`:36`) and `quit` (`:49`) drop their `'opening'`/`'quitting'` literals and call `#action(id, operation)`.
-- `#retryPending` (`:77–83`) calls `this.agent.setLoginItem(status.path, id, true)` instead of `invokeLoginControl`.
-- The queue tail is never deleted (four fixed ids); a rejected tail is insulated by the `.catch(() => undefined)` of the next enqueue. `close()` does not drain queues — today's code has no draining either; in-flight actions settle as orphaned promises exactly as they do today.
-- `refresh()` itself is deliberately **not** queued: it is a full rebuild from a fresh agent snapshot, so interleaved refreshes are last-writer-wins on equivalent data, and serializing it would hold the shell's 2s polling refresh behind a slow agent call for no correctness gain. `#retryPending`'s possible double-invocation across concurrent refreshes is pre-existing, idempotent (`login-item:set:on` twice to the same target state), and best-effort by design (`:82` swallow comment) — unchanged.
+Keep all eight command channels, wire method names, parameter mappings, validator predicates, validation messages, authorization text, and decoder use semantically unchanged. Deleting the feature class necessarily changes `this.#controller` references to the closed-over `controller`, so a byte-for-byte command-table requirement would be impossible. Do not move Bonded opaque-id validation into the shared module.
 
-### 2. The ApplicationAgent owns login-item control
+The shared module now owns context validation, surface acquisition, activation, registrar disposal, and surface disposal. It also calls `ready()`, an observable call added to this adapter but a behavioral no-op because native mode accepts only suite contexts.
 
-```ts
-// application-controller.ts
-export interface ApplicationAgent {
-  snapshot(): Promise<readonly AgentRecord[]>
-  open(record: AgentRecord): Promise<void>
-  quit(record: AgentRecord): Promise<boolean>
-  setLoginItem(bundlePath: string, id: ApplicationId, enabled: boolean): Promise<LoginItemControlResult>
-  openLoginItemsSettings(): Promise<void>
-}
+### 4. Shout native adapter
+
+File: `apps/integrated/Shout/src/main/native-feature.ts`
+
+Keep `NativeShoutController` and `parseSource`. Delete `NativeShoutFeature`. Return `createFeatureLifecycle` configured with `id: 'shout'`, `modes: ['suite']`, and a `mount` adapter that registers the existing native IPC command table and owns its disposer.
+
+Keep all seven command channels and wire mappings, gain validation, source validation, device-uid validation, snapshot decoding, error strings, and authorization text semantically unchanged. As with Bonded, only the controller receiver changes from a class field to the closed-over controller. The added `ready()` call is a suite-handle no-op.
+
+## Package and domain documentation
+
+### Package export
+
+Update `packages/desktop-shell/package.json` with the dedicated `./feature-lifecycle` subpath. No dependency changes are required.
+
+### CONTEXT.md
+
+Add this term next to Embedded feature and Feature surface host:
+
+> **Embedded feature lifecycle** — `packages/desktop-shell/src/feature-lifecycle.ts`; owns single-flight registration, Feature surface readiness, activation, reverse-order rollback, and exhaustive disposal for the repeated Bonded and Shout local/native adapters. Product adapters retain controllers, Runtime leases, updater facts, native decoding, commands, and validation. Amove retains its custom local and native lifecycle because its shelf and two-renderer behavior do not yet share this seam.
+
+This records both the ownership and the deliberate Amove exclusion so future architecture reviews do not re-suggest a generic shelf hook without new evidence.
+
+## Test plan
+
+### New shared interface tests
+
+Add `tests/feature-lifecycle.test.ts`. Mock `acquireFeatureSurface` so these tests stay at the lifecycle interface and do not exercise Electron. Use a fake surface that records `ready`, `activate`, and `dispose` calls. Use one deferred mount promise to test duplicate-registration suppression; do not add register/dispose race tests.
+
+Test through the returned `MoirasiaFeature` only:
+
+1. **Validates identity before side effects.** Wrong `id`, wrong `productId`, and disallowed mode reject without acquiring a surface or mounting.
+2. **Registers once.** A valid registration acquires one surface, calls `mount` once, then calls `ready`; a second completed registration is a no-op.
+3. **Suppresses duplicate in-flight registration.** Two calls made before `mount` resolves produce one surface and one mount. Do not assert exact promise-object identity.
+4. **Activates only after readiness.** `activate()` is a no-op before and during registration, calls the surface after success, and stops calling it after disposal begins.
+5. **Rolls back a mount failure in LIFO order.** Register three owned cleanups, throw from `mount`, verify order 3 → 2 → 1 → surface, and verify the original mount error wins over a cleanup error.
+6. **Rolls back a readiness failure.** Let `mount` succeed and `ready()` fail; verify every product cleanup and the surface run once.
+7. **Attempts every disposal cleanup.** Make multiple sync and async cleanups throw, verify all are awaited in reverse order and the first error in that order is thrown.
+8. **Disposes idempotently.** A second disposal performs no work, including after the first disposal threw.
+9. **Contains surface-acquisition failure.** Reject acquisition, verify `mount` is not called, then retry with a fresh surface.
+10. **Allows retry after failed registration.** First mount fails; second registration gets a fresh surface and succeeds.
+11. **Allows registration after settled disposal.** Register, await disposal, and register again; verify two surfaces and two independent cleanup scopes.
+12. **Rejects invalid and late ownership.** Reject a non-function cleanup; separately retain `own`, let `mount` resolve, then call it and expect a `TypeError` without altering the committed cleanup stack.
+
+These tests replace the need to test lifecycle internals independently in every product. They are the main test surface for the new module.
+
+### IPC cleanup-boundary tests
+
+Add `tests/app-updater-electron.test.ts` for the Electron updater registrar. Cover partial handler registration, `updater.subscribe` failure after all three handlers exist, exhaustive disposal when unsubscribe and handler removal throw, first-error precedence, and idempotency.
+
+Expand both product IPC suites:
+
+- `apps/integrated/Bonded/tests/ipc.test.ts`
+- `apps/integrated/Shout/tests/ipc.test.ts`
+
+For each registrar, force updater setup to fail after the controller snapshot subscription succeeds. Assert snapshot unsubscribe and every product/updater handler cleanup are attempted and the updater setup error is preserved. Also force the returned snapshot unsubscribe and one handler removal to throw; assert all remaining updater and product handlers are still attempted, the first error is thrown, and a second dispose does no work. Keep these tests at the registrar interfaces rather than reproducing them in feature tests.
+
+### Bonded local tests
+
+Update `apps/integrated/Bonded/tests/feature.test.ts`:
+
+- Preserve the three existing behavioral tests.
+- Keep assertions that suite mode creates no window, standalone mode uses the catalog window, and activation reaches the surface.
+- Pin Bonded's ordering subtlety: the renderer subscription runs after `controller.start()` but before `surface.ready()`, and its immediate emission excludes PID 321. It does not "follow readiness"; the current source subscribes first.
+- Make `controller.start()` reject after IPC registration. Assert IPC disposal, controller stop, Runtime lease release, and surface disposal each happen once and in reverse-acquisition order.
+- Add a disposal-error test in which controller stop rejects but Runtime lease and surface cleanup still run; assert the controller error is returned and order remains reverse acquisition.
+- Verify `checkForUpdates()` does not call the pending updater while registration is blocked, then does after readiness succeeds. Block controller cleanup during `dispose()` and verify updater checks become unavailable synchronously, before cleanup settles.
+- Rely on the shared interface test for duplicate in-flight registration; the product adapter adds no work before entering the shared module.
+
+Update mocks only as required by the new import. Do not mock away `createFeatureLifecycle`; the product test should exercise its integration with Bonded's mount adapter.
+
+### New Shout local tests
+
+Create `apps/integrated/Shout/tests/feature.test.ts`, matching the useful Bonded cases without copying generic lifecycle permutations:
+
+1. suite registration constructs one controller with the current helper, driver, and data paths; starts it; and creates no standalone window;
+2. standalone registration loads the catalog-defined Feature surface, and a later `activate()` activates it;
+3. unavailable Runtime lease prevents controller construction;
+4. start failure disposes IPC, stops the controller, releases the Runtime lease, and disposes the Feature surface in reverse-acquisition order;
+5. disposal remains exhaustive and ordered if controller stop fails;
+6. `checkForUpdates()` cannot call the pending standalone updater before readiness, then activates the committed surface and checks that updater after registration; it becomes unavailable synchronously when disposal starts, and suite mode has no updater.
+
+### Native product tests
+
+Update imports/mocks in:
+
+- `apps/integrated/Bonded/tests/native-feature.test.ts`
+- `apps/integrated/Shout/tests/native-feature.test.ts`
+
+Replace the old package-subpath surface mock with the repository-relative source mock `../../../../packages/desktop-shell/src/feature-surface-host`. That resolves to the same source file imported relatively by `feature-lifecycle.ts`. Do not mock `createFeatureLifecycle` itself.
+
+Keep command mapping and product validation assertions unchanged. Add only integration assertions that are product-specific:
+
+- activation reaches the acquired surface after registration;
+- disposal unregisters the product's snapshot subscription and invokes the acquired handle's `dispose()` once;
+- wrong-id, wrong-product, and standalone contexts each fail before surface acquisition or native IPC handler installation;
+- registration invokes the acquired handle's `ready()` once. Record that this is new at the native adapter boundary but is a no-op for the only accepted mode.
+
+Do not duplicate shared LIFO, single-flight, or readiness tests in both product suites.
+
+### Existing shared tests
+
+Retain without semantic changes:
+
+- `tests/feature-surface-host.test.ts`
+- `tests/native-feature-adapter.test.ts`
+- `tests/feature-runtime.test.ts`
+
+Feature runtime loaders and `MoirasiaFeature` fakes should require no changes because the external interface is unchanged.
+
+## Implementation sequence
+
+### Step 0: make owned IPC cleanup trustworthy
+
+1. Add `tests/app-updater-electron.test.ts` and extend both product `ipc.test.ts` suites with the cleanup-boundary cases above.
+2. Harden `registerGitHubUpdaterIpc` and the Bonded/Shout local `registerIpc` functions with file-local exhaustive cleanup and idempotency.
+3. Run:
+
+```bash
+pnpm exec vitest run tests/app-updater-electron.test.ts
+pnpm -C apps/integrated/Bonded exec vitest run tests/ipc.test.ts
+pnpm -C apps/integrated/Shout exec vitest run tests/ipc.test.ts
+pnpm typecheck
+pnpm -C apps/integrated/Amove typecheck
+pnpm -C apps/standalone/Orbis typecheck
+pnpm -C apps/standalone/YN360 typecheck
 ```
 
-`invokeLoginControl` (`:100–106`) moves verbatim into `SwiftApplicationAgent` as the `setLoginItem` body: same `join(bundlePath, 'Contents', 'MacOS', executableName)`, same `--moirasia-control=login-item:set:on|off`, same `maxBuffer`, same last-line JSON parse, same `protocolVersion === 1 && appId === id` validation, same 5s timeout. The module-level function and its import of `join` move with it. `LoginItemControlResult` is already imported. Nothing else in the repository imports `invokeLoginControl` (verified).
+Acceptance:
 
-### 3. The native-process port decodes its payloads
+- setup failure leaves no updater or product IPC handler and no controller/updater subscription;
+- disposal attempts every nested cleanup once and throws its first error;
+- command mappings, validators, authorization, snapshot forwarding, and the shared updater registrar signature are unchanged;
+- all five `registerGitHubUpdaterIpc` consumers still typecheck;
+- no generic cleanup helper is exported.
 
-```ts
-// native-host-contracts.ts — the Like gains one required member
-export interface NativeHostClientLike {
-  connect(): Promise<void>
-  close(): void
-  request<T = unknown>(method: NativeHostMethod | string, params?: Record<string, unknown>): Promise<T>
-  getSnapshot(): Promise<NativeHostSnapshot | undefined>   // typed decode; undefined = malformed payload; transport errors still throw
-  subscribe(event: string, listener: (payload: unknown, revision: number) => void): () => void
-  subscribeConnection?(listener: (event: NativeHostConnectionEvent) => void): () => void
-  isConnected(): boolean
-}
+### Step 1: add the deep module test-first
 
-// client.ts — the production adapter
-async getSnapshot(): Promise<NativeHostSnapshot | undefined> {
-  const result = await this.request('host.getSnapshot')
-  return isNativeHostSnapshot(result) ? result : undefined
-}
+1. Add the `./feature-lifecycle` export to `packages/desktop-shell/package.json`.
+2. Add `tests/feature-lifecycle.test.ts` with the twelve interface cases.
+3. Implement `packages/desktop-shell/src/feature-lifecycle.ts` until the new tests pass.
+4. Run:
+
+```bash
+pnpm exec vitest run tests/feature-lifecycle.test.ts tests/feature-surface-host.test.ts tests/native-feature-adapter.test.ts
+pnpm typecheck
 ```
 
-`isNativeHostSnapshot` (`native-host-contracts.ts:199`) is the existing type guard over the existing schema — no new contract, just a home for the decode at the port. The client's internal `host.getSnapshot` bookkeeping (`client.ts:72–73` read-only marking, `:184` `#awaitingFullSnapshot`/`#revision` side effects) is preserved because the accessor wraps the same `request` call. Consumers:
+Acceptance for this step:
 
-- `index.ts:210–219` `connectNativeHost` — `const snapshot = await client.getSnapshot(); if (!snapshot) { console.error('MoirasiaHost returned an invalid snapshot.'); return false }` inside the existing try/catch. Same semantics: malformed payload ⇒ connect fails; transport error ⇒ logged connect failure. The `nativeHostSnapshotSchema` import (`index.ts:13`) deletes.
-- `ipc.ts` native branches (`:25–31`, `:38–43`) — `const snapshot = await options.nativeClient.getSnapshot(); if (snapshot) options.settings.setCached(snapshot.settings); return options.settings.get()`. The `cacheNativeSettings` helper (`:58–62`) and the schema import (`:7`) delete. Semantics preserved exactly: malformed payload ⇒ last good cache kept and the handler still succeeds; transport error ⇒ handler still rejects.
+- all lifecycle tests pass;
+- no `MoirasiaFeature` change;
+- no product-specific name appears in `feature-lifecycle.ts`;
+- no new dependency appears in a package manifest.
 
-A third snapshot reader exists and deliberately stays raw: the Feature runtime's native adapter (`src/main/features/host-mode.ts:179`) calls `request<unknown>('host.getSnapshot')`, and its `#applySnapshot` (`:235`) accepts looser legacy partial payloads on purpose — routing it through the strict accessor would be the acceptance-tightening the Feature mode plan ruled out (see Out of scope). It imports no zod schema and is untouched by this plan.
+### Step 2: migrate Bonded local
 
-### 4. Initial-state defaults: one owner per fact
+1. Replace Bonded's lifecycle fields and methods with the shared module and product `mount` adapter.
+2. Preserve updater behavior and Bonded renderer exclusion.
+3. Expand `apps/integrated/Bonded/tests/feature.test.ts` for late registration failure and exhaustive disposal.
+4. Run:
 
-```ts
-// packages/desktop-shell/src/index.ts — pure, renderer-safe (the entry already imports only './feature-catalog')
-export const DEFAULT_PRODUCT_APPEARANCES: Record<ProductId, Appearance> = { moirasia: 'system', amove: 'system', vox: 'system', exithibition: 'dark', bonded: 'system', shout: 'system', orbis: 'system', yn360: 'system' }
-export function defaultAppearanceSnapshot(): AppearanceSnapshot { return { version: 1, revision: 0, values: { ...DEFAULT_PRODUCT_APPEARANCES } } }
-
-// src/shared/contracts.ts
-export const DEFAULT_SHELL_SETTINGS: ShellSettings = { version: 4, launchAtLogin: false, appPresence: 'dock', pendingLoginItems: {}, features: {} }
-export function emptyControllerSnapshot(): ControllerSnapshot {
-  return {
-    applications: applicationCatalog.entries.map(({ id, label, bundleId }) => ({ id, label, bundleId, installed: false, running: false })),
-    appearances: defaultAppearanceSnapshot(),
-    features: []
-  }
-}
+```bash
+pnpm -C apps/integrated/Bonded exec vitest run tests/feature.test.ts
+pnpm -C apps/integrated/Bonded typecheck
 ```
 
-- `desktop-shell/src/main.ts` imports `DEFAULT_PRODUCT_APPEARANCES` and `defaultAppearanceSnapshot` from `./index`; the local `DEFAULTS` (`:10`) and `EMPTY` (`:11`) delete; `#snapshot` initializes from `defaultAppearanceSnapshot()` (`:22`); the two table spreads at `:34` and `:185` use `DEFAULT_PRODUCT_APPEARANCES`. `defaultProductAppearance` (`:14`) keeps its signature and all callers (it now reads the moved table) — `feature-surface-host.ts` and its mocked tests are untouched.
-- `settings.ts` imports `DEFAULT_SHELL_SETTINGS` from `../shared/contracts` (three internal uses: `:8`, `:47`, and the export); `tests/shell-settings.test.ts` updates its import to `../src/shared/contracts`. One owner, no re-export.
-- `src/renderer/shell/controller.ts` deletes both twins (`:8–9`): `useState(emptyControllerSnapshot)` (React calls the function per mount as a lazy initializer — a fresh object each time; today's module-level `EMPTY` constant is one shared object that nothing ever mutates, so the observable behavior is unchanged) and `useState(DEFAULT_SHELL_SETTINGS)`. Preload and main-process bundles are unaffected: `desktop-shell/index.ts` is pure data (no Electron, React, or filesystem imports), so the new value imports are renderer- and sandbox-safe.
+Acceptance:
 
-### 5. Contract trim: `ApplicationStatus.busy` deletes
+- `BondedFeature` remains exported;
+- the singleton export remains unchanged;
+- Runtime lease errors still reach `main/index.ts` unchanged;
+- process exclusion still subscribes after controller start and before surface readiness, so an already-present renderer PID is excluded before loading/showing the standalone surface;
+- no manual registration promise or cleanup loop remains in Bonded local.
 
-`busy` (`contracts.ts:19`) leaves `ApplicationStatus`, and all seven controller sites leave with it — the `#busy` map (`:21`), the merge arm in `refresh()` (`:33`), both write sites (`:55`, `:71`), both deletes (`:62`, `:74`), and `#action`'s parameter (`:68`). Verified safe: no renderer, app, package, or test reader anywhere (grep verified); `ApplicationStatus` never crosses to the native host (it is the Electron→renderer contract only); `ControllerApi` is unaffected. The `'opening' | 'quitting' | 'login-item'` union dies with it. Serialization replaces it: the interface no longer exposes a concurrency fact it cannot truthfully maintain, and if the shell ever wants a spinner, the serialized queue is the truthful foundation to re-add it on.
+### Step 3: migrate Shout local
 
-## Behavior-preservation ledger (checked, not assumed)
+1. Replace Shout's lifecycle fields and methods with the shared module.
+2. Add `apps/integrated/Shout/tests/feature.test.ts`.
+3. Preserve helper/driver path construction, updater behavior, and Runtime lease errors.
+4. Run:
 
-- **Verbatim moves:** `invokeLoginControl` into the agent (byte-for-byte, including the protocol-version and `appId` validation); the native snapshot acceptance rules (the client's existing `request('host.getSnapshot')` path is wrapped, not re-implemented); the appearance seed table's exact values; `DEFAULT_SHELL_SETTINGS`' exact shape.
-- **Preserved semantics at the port:** `index.ts`'s gate treats malformed payload as connect failure (with a log; the log text changes from the zod error dump to a fixed message — the one wording change this plan makes) and transport errors as logged connect failure. `ipc.ts` keeps the last good settings cache on a malformed payload and still rejects on transport errors. `setCached` is only ever called with schema-valid settings, exactly as today.
-- **Serialization is the plan's one deliberate concurrency change:** commands on the same application now run one at a time in call order. The turn begins inside the queue chain's `.catch`/`.then`, so even an empty-queue turn starts a couple of microtask jobs after the call, where today's `#action` prologue (`busy` set, error-clear, emit) runs synchronously at call time — the caller cannot tell the difference, because the returned promise settles with the same final snapshot after the same operation and refresh. For a queued command, two further consequences, both deliberate: (a) the installed guard re-evaluates at turn start against the refreshed state (fresher than today's call-time-only check); (b) the record passed to the operation is built from the post-previous-command state. Cross-application independence is preserved (per-id queues, not one global chain).
-- **`setLoginItem` through `#action`** harmonizes three behaviors, all listed: it gains the start-of-turn error-clear (today it deletes `#errors` only on success — retrying a failed login item now clears the stale error like `open`/`quit` already do); its `finally` gains the refresh (today it only emits — one extra `agent.snapshot()` per login-item change, an operation the shell's 2s polling already performs routinely, and the returned snapshot becomes fresher); and the path-vanished-while-queued case — unreachable today, since the call-time guard and the `invokeLoginControl` call share one synchronous block — now records the label's `not installed` error on the status, uniform with other operation failures (an application that becomes fully uninstalled while queued instead rejects through the turn-start guard, which — like today's call-time guard — throws without recording an error). The login-item result itself survives the finally-refresh via the existing `prior.loginItem` merge arm (`:33`).
-- **`busy` deletion is observable only in its absence**: no consumer reads it; the emit-after-set path never contained it in practice (only a racing refresh could surface it, transiently, to a non-reader).
-- **Renderer initial state**: identical shape, except the pre-first-snapshot rows now carry the catalog's real `bundleId` instead of `''` (a divergence fix, visible only before the first snapshot arrives, behind the `loading` gate at `app.tsx:46`).
-- **Untouched behavior:** `refresh()`'s rebuild order (rebuild → `#retryPending` → `#emit` → return clone, `:31–35`); the feature-status subscription wiring (`:26`); `restorablePage`/`rememberPage`/`reportPage`/`suspendRenderer`; `installFeature`/`uninstallFeature`/`setAppearance`/`setAllAppearances` (their delegates own their own queues); `close()`; `snapshot()`'s clone; the polling/focus refresh call sites in `shell-window.ts` (`:95`, `:107`); `index.ts`'s bootstrap, connection supervision, and teardown ordering; `appSetLoginItem` (`ipc.ts:64–70`) and `setLoginItemSettings` (`index.ts:204–208`) remain the twins they are today (see Out of scope).
+```bash
+pnpm -C apps/integrated/Shout exec vitest run tests/feature.test.ts
+pnpm -C apps/integrated/Shout typecheck
+```
 
-## Migration of call sites
+Acceptance:
 
-| Site | Becomes |
-|---|---|
-| `#busy` `:21`, the `busy` merge arm `:33`, `#action`'s `busy` param/write/delete `:68`/`:71`/`:74`, `setLoginItem`'s `:55`/`:62` | deleted; `#action(id, operation)` + `#queues` |
-| `setLoginItem` body `:52–63` | the unified body above (guard → `#action`) |
-| `#retryPending` `:82` | `this.agent.setLoginItem(status.path, id, true)` |
-| `invokeLoginControl` `:100–106` | moves into `SwiftApplicationAgent.setLoginItem`; `ApplicationAgent` interface (`:16`) gains the member |
-| `index.ts:213` schema parse | `client.getSnapshot()` typed call; `index.ts:13` import deletes |
-| `ipc.ts:7` schema import, `:58–62` `cacheNativeSettings`, `:28–29`/`:40–41` call sites | `nativeClient.getSnapshot()` + inline `setCached`; helper deletes |
-| `NativeHostClientLike` `:158–165` | + `getSnapshot()` required member; `NativeHostClient` implements it (`client.ts`) |
-| `desktop-shell/src/main.ts:10–11, :14, :22, :34, :185` | table + factory imported from `./index`; local `DEFAULTS`/`EMPTY` delete |
-| `settings.ts:5` | import from `../shared/contracts`; local export deletes |
-| `contracts.ts` | + `DEFAULT_SHELL_SETTINGS`, `emptyControllerSnapshot()`; − `busy?:` (`:19`); + value imports `applicationCatalog`, `defaultAppearanceSnapshot` |
-| renderer `controller.ts:8–9` | `useState(emptyControllerSnapshot)` + `DEFAULT_SHELL_SETTINGS` import; twins delete |
+- `ShoutFeature` and singleton exports remain;
+- all new local lifecycle tests pass;
+- no manual registration promise or cleanup loop remains in Shout local.
 
-`shell-window.ts`, `ui-command-router.ts`, `paths.ts`, `app-presence.ts`, the Feature runtime, and every preload/`ControllerApi` signature: untouched.
+### Step 4: migrate both native adapters
 
-## Tests
+1. Delete `NativeBondedFeature` and `NativeShoutFeature`.
+2. Keep each native controller and command table in its product file.
+3. Return the shared lifecycle feature from both `createNativeFeature` functions.
+4. Update the native product tests for context, activation, and disposal integration.
+5. Run:
 
-**Existing suites:** all 271 tests survive. One mechanical update: the fake client in `tests/feature-runtime.test.ts` (the `NativeHostClientLike` literal at `:332`) gains `getSnapshot: async () => snapshot as NativeHostSnapshot | undefined` — the fake's `snapshot` parameter is `unknown` (its fixtures are deliberately looser than the schema), so the raw value needs the cast; the member is never invoked — the runtime reads via `request` — it only satisfies the interface. `NativeHostSnapshot` joins the file's existing type import from `../src/shared/native-host-contracts`. `tests/shell-settings.test.ts` re-points its `DEFAULT_SHELL_SETTINGS` import at `../src/shared/contracts`. No test pins `busy`, `invokeLoginControl`, `cacheNativeSettings`, or the renderer twins (all verified by grep).
+```bash
+pnpm -C apps/integrated/Bonded exec vitest run tests/native-feature.test.ts
+pnpm -C apps/integrated/Shout exec vitest run tests/native-feature.test.ts
+pnpm -C apps/integrated/Bonded typecheck
+pnpm -C apps/integrated/Shout typecheck
+```
 
-**New file `tests/application-controller.test.ts`** — the Controller's first interface suite. Injections: a scripted `ApplicationAgent` fake (log of calls plus manually-resolved deferred promises for the serialization tests), a real `ShellSettingsStore` on a tmpdir (`await load()` first, as `shell-settings.test.ts` does), a real `AppearanceRegistry` on a tmpdir constructed **without** `load()` (defaults, no watcher), and a structural `FeatureRuntime` fake cast `as unknown as FeatureRuntime` (the controller touches only `subscribe`/`statuses`/`setActive`/`activate`/`setInstalled`/`relaunch`). Twelve tests, through the public interface only:
+Acceptance:
 
-1. `refresh()` rebuilds statuses from agent records under catalog facts (label, bundleId, installed, running, path) and preserves a prior `loginItem`.
-2. `snapshot()` hands out an isolated clone: mutating a returned snapshot does not affect the next one.
-3. `open()` sends the agent the current record and returns the refreshed snapshot.
-4. A failing `open()` records the error on the status and rethrows; the next successful command clears it.
-5. `open()` on a not-installed application throws the label message without touching the agent or recording an error.
-6. Commands on the same application serialize: a `quit` issued while an `open` is pending starts only after the open settles, and both resolve with correct final state.
-7. Commands on different applications run concurrently (no global serialization): a pending `open` on Amove does not delay a `quit` on Vox.
-8. `setLoginItem()` routes through the queue, stores the control result on the status, and clears the settings' pending flag on `enabled`/`disabled` results.
-9. A failing `setLoginItem()` records the error and keeps the pending item.
-10. `refresh()` retries pending login items through the agent (`login-item:set:on`) and clears the pending flag on an `enabled` result.
-11. A failing retry keeps the pending item and stays silent (the `:82` swallow).
-12. Feature-status changes fan out to controller subscribers with a fresh snapshot, and `restorablePage()` returns `'general'` when a feature page is not installed-and-loaded but passes non-feature pages through.
+- all eight Bonded command mappings and validator semantics remain unchanged;
+- all seven Shout command mappings and validator semantics remain unchanged;
+- native snapshot decoding and renderer authorization still pass through `native-feature-adapter.ts`;
+- no product native feature class repeats surface or cleanup state.
 
-**`tests/native-host-client.test.ts`** gains two tests against the real client over its existing scripted-socket harness (`SNAPSHOT` fixture, `:42`):
+Treat the exact Shout malformed-response assertion at line 113 as the recorded baseline exception. Do not alter decoder behavior in this change. Any additional Shout failure blocks completion.
 
-13. `getSnapshot()` resolves the typed snapshot (settings and feature entries present).
-14. `getSnapshot()` resolves `undefined` when the host returns a malformed snapshot payload.
+### Step 5: update the domain glossary and run broad verification
 
-Expected total: **285 passed / 36 files** (271 + 12 controller + 2 client).
+1. Add the Embedded feature lifecycle term to `CONTEXT.md`.
+2. Run root checks:
 
-## CONTEXT.md update
+```bash
+pnpm typecheck
+pnpm exec vitest run tests/app-updater-electron.test.ts tests/feature-lifecycle.test.ts tests/feature-surface-host.test.ts tests/native-feature-adapter.test.ts tests/feature-runtime.test.ts
+pnpm test
+```
 
-Sharpen the **Controller** term under Terms:
+3. Run product checks:
 
-> **Controller** — `src/main/application-controller.ts`; the Moirasia main-process side that discovers, opens, focuses, and quits Amove, Vox, Bonded, and Shout through the AppKit agent and the `--moirasia-control` protocol. It owns the applications fact — agent records merged with catalog facts, login-item results, and per-application error capture — and serializes commands per application, so concurrent open, quit, and login-item requests on one application land in order. It composes the ControllerSnapshot from the applications fact, the `AppearanceRegistry`, and the Feature runtime; the renderer's initial state is the shared `emptyControllerSnapshot()` default.
+```bash
+pnpm -C apps/integrated/Bonded typecheck
+pnpm -C apps/integrated/Bonded test
+pnpm -C apps/integrated/Bonded build:renderer
+pnpm -C apps/integrated/Shout typecheck
+pnpm -C apps/integrated/Shout test
+pnpm -C apps/integrated/Shout build:renderer
+```
 
-## Execution steps (root repo)
+4. Run grep gates:
 
-1. **Port accessor + defaults.** Add `getSnapshot()` to `NativeHostClientLike` and `NativeHostClient`; rewire `index.ts:210–219` and `ipc.ts:22–50`; delete `cacheNativeSettings` and both schema imports. Move the appearance table + factory to `desktop-shell/src/index.ts`; rewire `main.ts`; move `DEFAULT_SHELL_SETTINGS` to `contracts.ts` with `emptyControllerSnapshot()`; rewire `settings.ts`, the `shell-settings.test.ts` import, and the renderer twins. Update the `feature-runtime.test.ts` fake. Add the two client tests. Verify: `pnpm typecheck` + `pnpm exec vitest run tests/native-host-client.test.ts tests/feature-runtime.test.ts tests/shell-settings.test.ts tests/shell-renderer.test.tsx` (the last drives the renderer hook whose constants moved).
-2. **Controller deepening.** Extend `ApplicationAgent` with `setLoginItem` and move `invokeLoginControl` into `SwiftApplicationAgent`; rewire `#retryPending`; add `#queues`; rewrite `#action`; unify `setLoginItem`; delete `busy` from `contracts.ts:19` and all seven controller sites (`:21`, `:33`, `:55`, `:62`, `:68`, `:71`, `:74`). Verify: `pnpm typecheck`.
-3. **Gap tests.** Add `tests/application-controller.test.ts` with the twelve tests. Verify: `pnpm exec vitest run tests/application-controller.test.ts` (12 passed).
-4. **Full check.** `pnpm typecheck`; `pnpm test` (expect **285 passed / 36 files**); `pnpm build:app`. Grep gates: `rg -n "busy" src/main/application-controller.ts src/shared/contracts.ts src/renderer src/preload` → no matches; `rg -n "invokeLoginControl" src` → no matches; `rg -n "nativeHostSnapshotSchema" src/main` → no matches (the schema stays owned by `src/shared/native-host-contracts.ts` and its test); `rg -n "DEFAULT_SETTINGS|bundleId: ''" src/renderer` → no matches; `rg -n "DEFAULT_SHELL_SETTINGS" src` → only `contracts.ts` (definition), `settings.ts` (import), and the renderer's `controller.ts` (import).
-5. **Update `CONTEXT.md`** with the sharpened Controller term.
+```bash
+rg -n "#registration|#disposeIpc|#disposeRenderer|#surface|#lease|#controller" \
+  apps/integrated/Bonded/src/main/feature.ts \
+  apps/integrated/Shout/src/main/feature.ts
 
-Commit messages: `refactor: own the Controller's snapshot and command lifecycle` (steps 1–3 fold into it — the intermediate states add no review value), then `docs: sharpen the Controller term`.
+rg -n "class Native(Bonded|Shout)Feature" \
+  apps/integrated/Bonded/src/main/native-feature.ts \
+  apps/integrated/Shout/src/main/native-feature.ts
+
+rg -l "createFeatureLifecycle" \
+  apps/integrated/Bonded/src/main/feature.ts \
+  apps/integrated/Bonded/src/main/native-feature.ts \
+  apps/integrated/Shout/src/main/feature.ts \
+  apps/integrated/Shout/src/main/native-feature.ts
+```
+
+Expected grep results:
+
+- the first command has no matches for deleted lifecycle fields;
+- the second command has no matches;
+- the third command prints exactly the four adapter file paths.
+
+5. Review the final diff for accidental changes to command tables, product validators, updater feed constants, Runtime lease calls, and Amove files. Confirm the intended supporting edits are limited to `packages/desktop-shell/src/app-updater-electron.ts`, both local product `ipc.ts` files, and their named tests.
+
+## Behavior ledger
+
+### Deliberate improvements
+
+- Native and local adapters now share single-flight registration.
+- Registration readiness failure rolls back all acquired resources.
+- Registration rollback preserves the startup error even if a local cleanup throws; current local adapters do not consistently preserve it.
+- The lifecycle attempts every owned cleanup entry, and the three hardened IPC registrars now exhaust their nested handlers and subscriptions.
+- Rollback and normal disposal use one reverse-acquisition rule.
+- Re-registration after disposal is tested once at the shared interface.
+
+### Preserved behavior
+
+- Feature runtime still loads a `MoirasiaFeature` and invokes `register`, `activate`, and `dispose` as before.
+- Local Bonded and Shout support suite and standalone modes.
+- Native Bonded and Shout accept suite mode only.
+- Standalone updater checks remain product-owned and fire without awaiting.
+- The shared updater registrar keeps the same API and channel behavior for its five Bonded, Shout, Amove, Orbis, and YN360 consumers; only failure cleanup changes.
+- Runtime lease acquisition arguments and product-specific error classes remain unchanged.
+- Bonded process exclusion still follows renderer availability.
+- Native command names, channel names, authorization messages, validators, request parameters, snapshot decoders, and snapshot events remain unchanged.
+- Suite surface activation and standalone window activation still come from `FeatureSurfaceHandle.activate()`.
+- Resource validation and standalone window facts remain in Feature surface host.
+
+### Intentional ordering change
+
+Local normal disposal will release the Runtime lease before disposing the Feature surface, matching rollback and strict reverse acquisition. Today local normal disposal stops the controller, destroys the surface, and only then releases the lease. The lease release is observable to the other allowed host, so this is a real ordering change: another host may acquire after IPC and controller shutdown but just before the old inert surface is destroyed. This is acceptable because the Runtime lease protects the sensitive controller session, not window presence, and all product activity has stopped before release. Exhaustive cleanup also ensures a throwing controller stop or lease release cannot prevent later surface cleanup. Product integration tests must pin the new order.
 
 ## Out of scope
 
-- **index.ts's native connection supervision** (bootstrap fallback, reconnect policy, `willQuit`, menu-host preservation, teardown ordering, ~10 `nativeSelected && nativeClient` re-derivations) — architecture-review candidate 2, the highest-churn seam; it owns connection state, not the snapshot fact, and deserves its own design pass. Its login-item writer twin (`setLoginItemSettings` `index.ts:204–208` vs `appSetLoginItem` `ipc.ts:64–70`) travels with it; this plan deliberately leaves both bodies alone.
-- **ipc.ts's shell-settings ownership split** (the two native branches dividing on `options.nativeClient`) — the Feature mode plan (`0f50d21`) recorded this as its own seam ("shell-settings ownership across host modes"), and that recorded exclusion stands: this plan de-duplicates the *payload decode* beneath the handlers and does not move settings ownership or touch the handler split. Caching native settings at bootstrap (today `index.ts` validates and discards) would be a behavior change in the settings-ownership seam — a separate decision.
-- **A renderer busy/in-flight UI** (disabled buttons, spinners) — no such requirement exists; the queue is the foundation, not the feature.
-- **Generalizing the single-flight pattern** into a shared cross-module helper — the four existing queues (`settings`, `shell-window`, `AppearanceRegistry`, Feature runtime) each have module-specific semantics; an abstraction now would be speculative.
-- **Tightening `isNativeHostSnapshot`'s acceptance** (the looser legacy-payload tolerance the Feature mode plan already ruled on) — the accessor moves the decode, it does not tighten it; `host-mode.ts`'s snapshot read (`:179`) stays on raw `request` for the same reason.
-- The dead symbols from the small-deletions candidate (`nativeHostClientId`, `NativeHostClient.onConnectionState`, `UiLifetime.reset`) — unrelated to the snapshot fact; separate batch.
-- Bonded candidates (observation ingest, blocking-lifecycle completion), the command contract, and the Bonded renderer view-model — separate deepenings; this plan's surface is the Controller and its two ports only.
+- Amove local or native lifecycle migration.
+- New shelf, custom-action, or two-renderer hooks in the shared module.
+- Changes to `MoirasiaFeature` or Feature runtime loaders. In particular, this module does not fix a native uninstall that overlaps acquisition before `FeatureRuntime` publishes the instance; the unpublished adapter receives no `dispose()` call, so that race belongs at the runtime queue.
+- Changes to Feature mode ownership in `src/main/features/host-mode.ts`.
+- Changes to Feature surface host window policy.
+- Changes to native transport, payload decoding, command validation, or renderer authorization.
+- Moving product IPC channel tables into the lifecycle module; only their existing cleanup mechanics change.
+- Changes to Runtime lease implementation or product-specific lease adapters.
+- Moving updater creation or update checks into the shared lifecycle.
+- Fixing the pre-existing Shout malformed-response assertion.
+- Generalizing the cleanup scope for unrelated modules. Four lifecycle adapters justify this seam; no broader abstraction is needed.
+- Scheduling `register()` against `dispose()` or making concurrent disposal callers await one shared promise. Existing production owners already serialize those operations.
+- Removing or modifying `architecture-review-20260922-171414.html`.
+
+## Completion criteria
+
+The implementation is complete when:
+
+1. `feature-lifecycle.ts` owns the documented invariants and passes its interface suite;
+2. the four Bonded/Shout adapters use it;
+3. manual registration promises, surface fields, and cleanup loops are gone from those adapters;
+4. product commands, validation, controllers, Runtime leases, and updater facts remain product-owned;
+5. Amove files are unchanged;
+6. the relevant root, Bonded, and Shout typechecks pass;
+7. all lifecycle-related tests pass, with the exact recorded Shout line-113 assertion as the sole allowed baseline failure;
+8. `CONTEXT.md` records the Embedded feature lifecycle ownership and Amove exclusion;
+9. updater and local IPC registrar setup/disposal are exhaustive and idempotent at the boundary the lifecycle owns;
+10. the final diff contains no unrelated refactor, dependency, generated artifact, or formatting churn.
