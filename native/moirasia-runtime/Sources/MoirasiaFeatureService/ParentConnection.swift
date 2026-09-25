@@ -12,12 +12,13 @@ final class ParentConnection {
     private let runtime: FeatureRuntime
     private var closed = false
     private let lock = NSLock()
-    private let stateQueue = DispatchQueue(label: "com.moirasia.feature-service.state")
+    private let stateQueue: DispatchQueue
 
-    init(runtime: FeatureRuntime, writer: FramedWriter) {
+    init(runtime: FeatureRuntime, writer: FramedWriter, stateQueue: DispatchQueue) {
         self.input = FileHandle.standardInput
         self.writer = writer
         self.runtime = runtime
+        self.stateQueue = stateQueue
     }
 
     func start() {

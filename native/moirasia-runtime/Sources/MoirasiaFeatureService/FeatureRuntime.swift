@@ -3,29 +3,59 @@ import MoirasiaProtocol
 
 final class FeatureRuntime {
     private let userData: String
-    private var modules: [String: FeatureModule]
+    private let stateQueue: DispatchQueue
+    private let modules: [String: FeatureModule]
     private var installed: [String: Bool] = [:]
     private var revision: UInt64 = 0
+    private var emittedSnapshots: [String: JSONValue] = [:]
     private var settings: [String: JSONValue] = [:]
     private var leases: [String: FeatureRuntimeLease] = [:]
     private var moduleErrors: [String: String] = [:]
     private var shellVisible = false
     private var shutdownErrors: [String]?
     private let emit: (HostEvent) -> Void
+    private let stateQueueKey = DispatchSpecificKey<Bool>()
 
-    init(userData: String, bondedHelperExecutable: String?, shoutDriverDirectory: String?, emit: @escaping (HostEvent) -> Void) {
+    convenience init(
+        userData: String,
+        stateQueue: DispatchQueue,
+        bondedHelperExecutable: String?,
+        shoutDriverDirectory: String?,
+        emit: @escaping (HostEvent) -> Void
+    ) {
+        let modules: [String: FeatureModule] = [
+            "bonded": BondedModule(userData: userData, helperExecutable: bondedHelperExecutable ?? ""),
+            "shout": ShoutModule(userData: userData, driverSourceDirectory: shoutDriverDirectory ?? ""),
+            "amove": AmoveModule(userData: userData)
+        ]
+        self.init(userData: userData, stateQueue: stateQueue, modules: modules, emit: emit)
+    }
+
+    init(
+        userData: String,
+        stateQueue: DispatchQueue,
+        modules: [String: FeatureModule],
+        emit: @escaping (HostEvent) -> Void
+    ) {
+        precondition(modules.allSatisfy { $0.key == $0.value.id }, "Feature module keys must match module ids")
         self.userData = userData
+        self.stateQueue = stateQueue
         self.emit = emit
-        self.modules = ["bonded": BondedModule(userData: userData, helperExecutable: bondedHelperExecutable ?? ""), "shout": ShoutModule(userData: userData, driverSourceDirectory: shoutDriverDirectory ?? ""), "amove": AmoveModule(userData: userData)]
+        self.modules = modules
+        stateQueue.setSpecific(key: stateQueueKey, value: true)
         for (id, module) in modules {
-            module.publishHook = { [weak self] in self?.publishFeatureSnapshot(id: id) }
-            module.eventHook = { [weak self] name in self?.emitFeatureEvent(id: id, name: name) }
+            module.publishHook = { [weak self] in self?.enqueueFeatureSnapshot(id: id) }
+            module.eventHook = { [weak self] name in self?.publishEventHook(id: id, name: name) }
         }
         loadSettings()
     }
 
     @discardableResult
     func stopAll() -> [String] {
+        onStateQueue { stopAllOnStateQueue() }
+    }
+
+    private func stopAllOnStateQueue() -> [String] {
         if let shutdownErrors { return shutdownErrors }
         var failures: [String] = []
         for id in modules.keys.sorted() {
@@ -44,6 +74,10 @@ final class FeatureRuntime {
     }
 
     func startInstalled() {
+        onStateQueue { startInstalledOnStateQueue() }
+    }
+
+    private func startInstalledOnStateQueue() {
         shutdownErrors = nil
         for id in modules.keys {
             let shouldStart = installed[id] ?? true
@@ -54,6 +88,10 @@ final class FeatureRuntime {
     }
 
     func handle(_ request: HostRequest) -> HostResponse {
+        onStateQueue { handleOnStateQueue(request) }
+    }
+
+    private func handleOnStateQueue(_ request: HostRequest) -> HostResponse {
         do {
             let result: JSONValue
             switch request.method {
@@ -170,16 +208,45 @@ final class FeatureRuntime {
         for id in modules.keys.sorted() { publishFeatureSnapshot(id: id) }
     }
 
+    private func enqueueFeatureSnapshot(id: String) {
+        stateQueue.async { [weak self] in
+            guard let self, self.shutdownErrors == nil else { return }
+            self.publishFeatureSnapshot(id: id)
+        }
+    }
+
+    private func publishEventHook(id: String, name: String) {
+        if isOnStateQueue {
+            guard shutdownErrors == nil else { return }
+            emitFeatureEvent(id: id, name: name)
+        } else {
+            stateQueue.async { [weak self] in
+                guard let self, self.shutdownErrors == nil else { return }
+                self.emitFeatureEvent(id: id, name: name)
+            }
+        }
+    }
+
     private func publishFeatureSnapshot(id: String) {
+        let payload = modules[id]?.snapshot() ?? .object([:])
+        guard emittedSnapshots[id] != payload else { return }
+        emittedSnapshots[id] = payload
         revision += 1
-        emit(HostEvent(event: "\(id).snapshot", revision: revision, payload: modules[id]?.snapshot() ?? .object([:])))
+        emit(HostEvent(event: "\(id).snapshot", revision: revision, payload: payload))
     }
 
     private func emitFeatureEvent(id: String, name: String) {
+        guard shutdownErrors == nil else { return }
         revision += 1
         emit(HostEvent(event: name, revision: revision, payload: .object(["feature": .string(id)])))
     }
 
+    private var isOnStateQueue: Bool { DispatchQueue.getSpecific(key: stateQueueKey) == true }
+
+    private func onStateQueue<T>(_ work: () throws -> T) rethrows -> T {
+        if isOnStateQueue { return try work() }
+        return try stateQueue.sync(execute: work)
+    }
 
     private func loadSettings() {
         let path = URL(fileURLWithPath: userData, isDirectory: true).appendingPathComponent("settings.json")

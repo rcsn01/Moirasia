@@ -5,9 +5,10 @@ protocol FeatureModule: AnyObject {
     var id: String { get }
     var isRunning: Bool { get }
     var error: String? { get }
-    /// Runtime hook: request a feature-snapshot event from the service.
+    /// Request a feature snapshot; callbacks may originate on module-owned queues.
+    /// FeatureRuntime schedules snapshot publication asynchronously.
     var publishHook: (() -> Void)? { get set }
-    /// Runtime hook: emit a named protocol event (e.g. `ui.toggleShelf`).
+    /// Emit a named event (e.g. `ui.toggleShelf`); FeatureRuntime serializes publication.
     var eventHook: ((String) -> Void)? { get set }
     func snapshot() -> JSONValue
     func start() throws
@@ -19,9 +20,10 @@ class BasicFeatureModule: FeatureModule {
     let id: String
     private(set) var isRunning = false
     private(set) var error: String?
-    /// Runtime hook: request a feature-snapshot event from the service.
+    /// Request a feature snapshot; callbacks may originate on module-owned queues.
+    /// FeatureRuntime schedules snapshot publication asynchronously.
     var publishHook: (() -> Void)?
-    /// Runtime hook: emit a named protocol event.
+    /// Emit a named event; FeatureRuntime serializes publication.
     var eventHook: ((String) -> Void)?
 
     init(id: String) { self.id = id }
