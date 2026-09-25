@@ -36,15 +36,19 @@ final class ParentConnection {
 
     func stop() {
         guard markClosed() else { return }
-        stateQueue.async { [runtime] in runtime.stopAll() }
+        stateQueue.async { [runtime] in Self.stopAndLog(runtime) }
     }
 
     private func parentEnded() {
         guard markClosed() else { return }
         stateQueue.async { [runtime] in
-            runtime.stopAll()
+            Self.stopAndLog(runtime)
             Darwin.exit(0)
         }
+    }
+
+    private static func stopAndLog(_ runtime: FeatureRuntime) {
+        for error in runtime.stopAll() { fputs("MoirasiaFeatureService cleanup failed: \(error)\n", stderr) }
     }
 
     private func markClosed() -> Bool {

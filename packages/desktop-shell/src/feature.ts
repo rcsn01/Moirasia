@@ -113,4 +113,6 @@ export interface MoirasiaFeature {
   toggleShelf?(): Promise<void> | void
   /** Tell the feature whether its embedded tab is currently selected. */
   setActive?(active: boolean): void
+  /** Tell long-running features whether Moirasia's primary window is visible. */
+  setShellVisible?(visible: boolean): void | Promise<void>
 }

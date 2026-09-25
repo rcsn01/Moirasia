@@ -107,8 +107,8 @@ export class ShellWindowLifecycle {
       if (this.#generation === generation) void this.suspend().catch(console.error)
     }
     const onFocus = (): void => { void this.options.controller.refresh().catch(console.error) }
-    const onShow = (): void => updatePolling()
-    const onHide = (): void => updatePolling()
+    const onShow = (): void => { updatePolling(); this.options.controller.setShellVisible(true) }
+    const onHide = (): void => { updatePolling(); this.options.controller.setShellVisible(false) }
     const onRenderProcessGone = (): void => {
       if (this.#quitting) return
       void this.#enqueue(async () => {
@@ -168,6 +168,7 @@ export class ShellWindowLifecycle {
     this.#generation = undefined
     generation.closing = true
     if (generation.timer) clearInterval(generation.timer)
+    if (!this.#quitting) this.options.controller.setShellVisible(false)
     generation.disposeIpc()
     const { window } = generation
     window.removeListener('close', generation.onClose)

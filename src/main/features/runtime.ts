@@ -15,6 +15,7 @@ export class FeatureRuntime {
   #loadErrors = new Map<FeatureId, string>()
   #operations = new Map<FeatureId, Promise<void>>()
   #active: FeatureId | undefined
+  #shellVisible = false
   readonly #statusListeners = new Set<() => void>()
   readonly #featureIds: readonly FeatureId[]
   readonly #context: (id: FeatureId) => FeatureContext
@@ -61,6 +62,11 @@ export class FeatureRuntime {
   isLoaded(id: FeatureId): boolean { return this.#mode.isLoaded(id, this.#instances.has(id)) }
   get activeFeature(): FeatureId | undefined { return this.#active }
   subscribe(listener: () => void): () => void { this.#statusListeners.add(listener); return () => this.#statusListeners.delete(listener) }
+
+  setShellVisible(visible: boolean): void {
+    this.#shellVisible = visible
+    this.#mode.setShellVisible(visible)
+  }
 
   async syncAtLaunch(): Promise<void> { await this.#mode.start() }
 
@@ -138,6 +144,10 @@ export class FeatureRuntime {
     this.#loadErrors.delete(id)
     this.#loadedThisSession.add(id)
     this.#instances.set(id, loaded.feature)
+    try {
+      const result = loaded.feature.setShellVisible?.(this.#shellVisible)
+      if (result && typeof result.then === 'function') void result.catch((error) => console.error(`Feature '${id}' failed to update shell visibility`, error))
+    } catch (error) { console.error(`Feature '${id}' failed to update shell visibility`, error) }
     return true
   }
 }

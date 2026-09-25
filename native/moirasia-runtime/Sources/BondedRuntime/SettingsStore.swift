@@ -13,6 +13,7 @@ public struct BondedStoredRule: Codable, Equatable, Sendable {
 public struct BondedSettings: Codable, Equatable, Sendable {
     public var version: Int = 3
     public var monitoringEnabled: Bool = true
+    public var monitorWhenHidden: Bool = false
     public var blockingEnabled: Bool = false
     public var applicationRules: [BondedStoredRule] = []
 }
@@ -100,10 +101,11 @@ public final class BondedSettingsStore {
         if version == 3 {
             guard let rules = parseRules(object["applicationRules"]) else { return nil }
             let blocking = (object["blockingEnabled"]?.boolValue ?? false) && !rules.isEmpty
-            return BondedSettings(version: 3, monitoringEnabled: monitoring, blockingEnabled: blocking, applicationRules: rules)
+            let monitorWhenHidden = object["monitorWhenHidden"]?.boolValue ?? false
+            return BondedSettings(version: 3, monitoringEnabled: monitoring, monitorWhenHidden: monitorWhenHidden, blockingEnabled: blocking, applicationRules: rules)
         }
         guard version == 1 || version == 2 else { return nil }
-        let migrated = BondedSettings(version: 3, monitoringEnabled: monitoring, blockingEnabled: false, applicationRules: [])
+        let migrated = BondedSettings(version: 3, monitoringEnabled: monitoring, monitorWhenHidden: false, blockingEnabled: false, applicationRules: [])
         do {
             let backup = version == 1 ? versionOneBackupPath : versionTwoBackupPath
             try? FileManager.default.removeItem(at: backup)

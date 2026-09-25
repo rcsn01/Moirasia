@@ -11,7 +11,7 @@ protocol FeatureModule: AnyObject {
     var eventHook: ((String) -> Void)? { get set }
     func snapshot() -> JSONValue
     func start() throws
-    func stop()
+    func stop() throws
     func handle(_ request: HostRequest) throws -> JSONValue
 }
 
@@ -31,7 +31,7 @@ class BasicFeatureModule: FeatureModule {
         isRunning = true
     }
 
-    func stop() { isRunning = false }
+    func stop() throws { isRunning = false }
 
     func snapshot() -> JSONValue { .object(["version": .number(1), "state": .string(isRunning ? "running" : "stopped")]) }
 

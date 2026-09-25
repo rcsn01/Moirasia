@@ -49,7 +49,7 @@ function setup(mode: 'dock' | 'menu-bar') {
   const onMenuBarWindowClosed = vi.fn()
   const host = new EmbeddedFeatureHost()
   const controller = {
-    refresh: vi.fn(async () => ({})), restorablePage: vi.fn(() => 'general'), rememberPage: vi.fn(), reportPage: vi.fn(), suspendRenderer: vi.fn(), subscribe: vi.fn(() => () => undefined)
+    refresh: vi.fn(async () => ({})), restorablePage: vi.fn(() => 'general'), rememberPage: vi.fn(), reportPage: vi.fn(), setShellVisible: vi.fn(), suspendRenderer: vi.fn(), subscribe: vi.fn(() => () => undefined)
   }
   const lifecycle = new ShellWindowLifecycle({
     controller: controller as never,
@@ -92,7 +92,7 @@ describe('ShellWindowLifecycle', () => {
   })
 
   it('keeps the current renderer alive when a Dock window closes', async () => {
-    const { host, lifecycle } = setup('dock')
+    const { host, controller, lifecycle } = setup('dock')
     await lifecycle.open()
     const window = fakes.BrowserWindow.instances[0]!
 
@@ -103,6 +103,8 @@ describe('ShellWindowLifecycle', () => {
     expect(close.preventDefault).toHaveBeenCalled()
     expect(window.hide).toHaveBeenCalled()
     expect(window.destroy).not.toHaveBeenCalled()
+    expect(controller.setShellVisible).toHaveBeenNthCalledWith(1, true)
+    expect(controller.setShellVisible).toHaveBeenNthCalledWith(2, false)
     expect(host.renderer.current()).toBe(window.webContents)
   })
 

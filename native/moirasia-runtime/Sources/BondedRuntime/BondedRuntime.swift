@@ -16,13 +16,14 @@ public final class BondedRuntime {
     private let resolver: BondedProcessResolver
     private let dns = DNSResolver()
     private let history = FlowHistory()
-    private let monitor = NetworkMonitor()
+    private let monitor: NetworkMonitor
     private let firewall: FirewallClient
     private let blocker = ObservedIpBlocker()
     private var excludedPids: Set<Int>
     private var ownApplicationPath: String?
     private var iconCache: [String: String] = [:]
     private var disposed = false
+    private var uiVisible = false
     private let dataDirectory: URL
 
     /// Synchronous snapshot publisher; the feature service serializes replies.
@@ -31,12 +32,13 @@ public final class BondedRuntime {
     private var snapshotScheduled = false
     private var firewallSyncScheduled = false
 
-    public init(dataDirectory: String, helperExecutable: String, legacyDataDirectories: [String] = []) {
+    public init(dataDirectory: String, helperExecutable: String, legacyDataDirectories: [String] = [], networkMonitor: NetworkMonitor = NetworkMonitor(), firewallClient: FirewallClient? = nil) {
         self.dataDirectory = URL(fileURLWithPath: dataDirectory, isDirectory: true)
         settingsStore = BondedSettingsStore(directory: dataDirectory, legacyDataDirectories: legacyDataDirectories)
         classifier = BondedApplicationClassifier()
         resolver = BondedProcessResolver(classifier: classifier)
-        firewall = FirewallClient(helperExecutable: helperExecutable)
+        monitor = networkMonitor
+        firewall = firewallClient ?? FirewallClient(helperExecutable: helperExecutable)
         excludedPids = [Int(getpid())]
         ownApplicationPath = bondedContainingApplication(Bundle.main.executablePath ?? "")
         settings = settingsStore.load()
@@ -48,42 +50,63 @@ public final class BondedRuntime {
 
     // MARK: Lifecycle
 
-    public func start() {
-        queue.sync {
+    public func start() throws {
+        try queue.sync {
             disposed = false
             blocker.load(settings.applicationRules)
             if settings.blockingEnabled {
                 settings.blockingEnabled = false
-                try? settingsStore.save(settings)
+                try settingsStore.save(settings)
             }
             firewall.initialize()
-            if firewall.status.state == "active" { try? firewall.configure(enabled: false, targets: []) }
-            if settings.monitoringEnabled { monitor.start() }
+            if firewall.status.state == "active" { try firewall.configure(enabled: false, targets: []) }
+            try applyMonitorPolicy()
             publishSnapshot()
         }
     }
 
-    public func stop() {
-        queue.sync {
+    public func stop() throws {
+        try queue.sync {
             guard !disposed else { return }
             disposed = true
-            monitor.stop()
+            var failures: [String] = []
+            do { try monitor.stop() } catch { failures.append(error.localizedDescription) }
             settings.blockingEnabled = false
-            try? firewall.disconnect()
-            try? settingsStore.save(settings)
+            do { try firewall.disconnect() } catch { failures.append(error.localizedDescription) }
+            do { try settingsStore.save(settings) } catch { failures.append(error.localizedDescription) }
             blocker.clearLearned()
+            if !failures.isEmpty { throw BondedRuntimeError(failures.joined(separator: "\n")) }
         }
     }
 
     // MARK: Commands (called on the feature-service request queue)
 
-    public func setMonitoring(_ enabled: Bool) -> JSONValue {
-        queue.sync {
+    public func setMonitoring(_ enabled: Bool) throws -> JSONValue {
+        try queue.sync {
             settings.monitoringEnabled = enabled
-            try? settingsStore.save(settings)
-            enabled ? monitor.start() : monitor.stop()
+            try settingsStore.save(settings)
+            try applyMonitorPolicy()
             publishSnapshot()
             return snapshot()
+        }
+    }
+
+    public func setMonitorWhenHidden(_ enabled: Bool) throws -> JSONValue {
+        try queue.sync {
+            settings.monitorWhenHidden = enabled
+            try settingsStore.save(settings)
+            try applyMonitorPolicy()
+            publishSnapshot()
+            return snapshot()
+        }
+    }
+
+    public func setUiVisible(_ visible: Bool) throws {
+        try queue.sync {
+            guard uiVisible != visible else { return }
+            uiVisible = visible
+            try applyMonitorPolicy()
+            publishSnapshot()
         }
     }
 
@@ -97,9 +120,9 @@ public final class BondedRuntime {
 
     public func uninstallFirewallHelper() throws -> JSONValue {
         try queue.sync {
-            if settings.blockingEnabled || firewall.status.state == "active" { try? firewall.configure(enabled: false, targets: []) }
+            if settings.blockingEnabled || firewall.status.state == "active" { try firewall.configure(enabled: false, targets: []) }
             settings.blockingEnabled = false
-            try? settingsStore.save(settings)
+            try settingsStore.save(settings)
             try firewall.uninstall()
             publishSnapshot()
             return snapshot()
@@ -176,10 +199,11 @@ public final class BondedRuntime {
         }
     }
 
-    public func restartMonitor() -> JSONValue {
-        queue.sync {
-            if !settings.monitoringEnabled { settings.monitoringEnabled = true; try? settingsStore.save(settings) }
-            monitor.restart()
+    public func restartMonitor() throws -> JSONValue {
+        try queue.sync {
+            if !settings.monitoringEnabled { settings.monitoringEnabled = true; try settingsStore.save(settings) }
+            if settings.monitoringEnabled && (uiVisible || settings.monitorWhenHidden) { try monitor.restart() }
+            else { try monitor.stop() }
             publishSnapshot()
             return snapshot()
         }
@@ -247,6 +271,11 @@ public final class BondedRuntime {
         }
     }
 
+    private func applyMonitorPolicy() throws {
+        if settings.monitoringEnabled && (uiVisible || settings.monitorWhenHidden) { monitor.start() }
+        else { try monitor.stop() }
+    }
+
     private func enforcedTargets() -> [String] {
         (settings.blockingEnabled && firewall.status.state == "active") ? blocker.targets() : []
     }
@@ -300,6 +329,7 @@ public final class BondedRuntime {
         var result: [String: JSONValue] = [
             "version": .number(3),
             "monitoringEnabled": .bool(settings.monitoringEnabled),
+            "monitorWhenHidden": .bool(settings.monitorWhenHidden),
             "blockingEnabled": .bool(enforced),
             "monitorStatus": .object(statusObject),
             "firewallStatus": .object(firewallJSON),

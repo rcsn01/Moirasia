@@ -54,6 +54,7 @@ export interface FeatureMode {
   describeFeature(id: FeatureId, shared: SharedFeatureState): FeatureStatus   // full per-feature composition
   setInstalled(id: FeatureId, installed: boolean): Promise<void>              // the two arms, verbatim
   resolveActive(id: FeatureId | undefined, instanceLoaded: boolean): FeatureId | undefined
+  setShellVisible(visible: boolean): void
   applyActive(id: FeatureId | undefined): void                                // native: setUiState + lazy load; local: no-op
   activate(id: FeatureId): void | Promise<void>                               // the two arms, verbatim
   shelf(action: 'open' | 'toggle'): Promise<void>                             // the collapsed twins' arms
@@ -129,6 +130,10 @@ export class NativeFeatureMode implements FeatureMode {
   resolveActive(id: FeatureId | undefined, _instanceLoaded: boolean): FeatureId | undefined {
     if (id !== undefined && !this.installed(id)) return undefined
     return id
+  }
+
+  setShellVisible(visible: boolean): void {
+    void this.#client.request('host.setUiState', { mainVisible: visible }).catch((error) => console.error('Could not update Moirasia window visibility', error))
   }
 
   applyActive(id: FeatureId | undefined): void {
@@ -318,6 +323,13 @@ export class LocalFeatureMode implements FeatureMode {
   resolveActive(id: FeatureId | undefined, instanceLoaded: boolean): FeatureId | undefined {
     if (id !== undefined && (!this.installed(id) || !instanceLoaded)) return undefined
     return id
+  }
+
+  setShellVisible(visible: boolean): void {
+    for (const id of this.#featureIds) {
+      const result = this.#links.instance(id)?.setShellVisible?.(visible)
+      if (result && typeof result.then === 'function') void result.catch((error) => console.error(`Feature '${id}' failed to update shell visibility`, error))
+    }
   }
 
   applyActive(_id: FeatureId | undefined): void { /* local statuses surface through command-returned snapshots only */ }

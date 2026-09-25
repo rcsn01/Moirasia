@@ -39,6 +39,7 @@ export class ApplicationController {
   openFeature(id: ApplicationId): void { this.features.activate(id) }
   rememberPage(page: ControllerPage): void { this.#page = page }
   reportPage(page: ControllerPage): void { this.rememberPage(page); this.features.setActive(isFeatureId(page) ? page : undefined) }
+  setShellVisible(visible: boolean): void { this.features.setShellVisible(visible) }
   suspendRenderer(): void { this.features.setActive(undefined) }
   restorablePage(): ControllerPage {
     if (!isFeatureId(this.#page)) return this.#page

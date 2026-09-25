@@ -67,6 +67,31 @@ describe('FeatureRuntime', () => {
     expect(runtime.statuses()).toEqual([{ id: 'amove', installed: true, loaded: true, restartPending: false }])
   })
 
+  it('pauses Bonded when the shell hides without unloading other features, then disposes them on quit', async () => {
+    const bonded = { setShellVisible: vi.fn(), dispose: vi.fn(async () => {}) }
+    const amove = { setShellVisible: vi.fn(), dispose: vi.fn(async () => {}) }
+    const runtime = new FeatureRuntime(await settingsWith(undefined), {
+      loaders: {
+        bonded: async () => ({ feature: { id: 'bonded', register: vi.fn(), ...bonded } }),
+        amove: async () => ({ feature: { id: 'amove', register: vi.fn(), ...amove } })
+      },
+      context: (id) => ({ ...CONTEXT, id, productId: id })
+    })
+
+    await runtime.syncAtLaunch()
+    runtime.setShellVisible(false)
+
+    expect(bonded.setShellVisible).toHaveBeenCalledWith(false)
+    expect(amove.setShellVisible).toHaveBeenCalledWith(false)
+    expect(bonded.dispose).not.toHaveBeenCalled()
+    expect(amove.dispose).not.toHaveBeenCalled()
+    expect(runtime.statuses().every((status) => status.loaded)).toBe(true)
+
+    await runtime.disposeAll()
+    expect(bonded.dispose).toHaveBeenCalledOnce()
+    expect(amove.dispose).toHaveBeenCalledOnce()
+  })
+
   it('installs mid-session once and treats repeated installs as no-ops', async () => {
     const fake = fakeFeature()
     const loader = vi.fn(async () => ({ feature: fake.feature }))

@@ -148,8 +148,7 @@ final class HostApplication: NSObject, NSApplicationDelegate {
                 self.server?.broadcast(HostEvent(event: "host.uiStateChanged", revision: self.revision, payload: .object(request.params)))
             }
         case "host.quitSuite":
-            client.send(.response(HostResponse(id: request.id, result: .object(["accepted": .bool(true)]))))
-            shutdown()
+            shutdown(replyTo: client, requestId: request.id)
         default:
             forward(request) { response in client.send(.response(response)) }
         }
@@ -257,17 +256,43 @@ final class HostApplication: NSObject, NSApplicationDelegate {
         chmod(lockPath, 0o600)
     }
 
-    func shutdown() {
-        stateQueue.async { [weak self] in
+    func shutdown() { shutdown(replyTo: nil, requestId: nil) }
+
+    private func shutdown(replyTo client: ClientConnection?, requestId: String?) {
+        stateQueue.async { [weak self, weak client] in
             guard let self, !self.shuttingDown else { return }
             self.shuttingDown = true
-            self.revision += 1
-            self.server?.broadcast(HostEvent(event: "host.willQuit", revision: self.revision, payload: .object([:])))
-            self.supervisor?.stop()
-            self.launcher.terminate()
-            self.server?.stop()
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) { NSApplication.shared.terminate(nil) }
+            let request = HostRequest(id: UUID().uuidString, method: "host.prepareToQuit")
+            self.forward(request) { [weak self, weak client] response in
+                guard let self else { return }
+                let failures = self.cleanupFailures(from: response)
+                if !failures.isEmpty {
+                    let message = failures.joined(separator: "\n")
+                    fputs("Moirasia shutdown cleanup failed: \(message)\n", stderr)
+                    if let client, let requestId {
+                        client.send(.response(HostResponse(id: requestId, error: HostError(code: "cleanup_failed", message: message))))
+                    }
+                } else if let client, let requestId {
+                    client.send(.response(HostResponse(id: requestId, result: .object(["accepted": .bool(true)]))))
+                }
+                self.stateQueue.async { [weak self] in self?.finishShutdown() }
+            }
         }
+    }
+
+    private func cleanupFailures(from response: HostResponse) -> [String] {
+        guard response.ok else { return [response.error?.localizedDescription ?? "MoirasiaFeatureService could not prepare to quit."] }
+        guard case .object(let result) = response.result, case .array(let values) = result["cleanupErrors"] else { return [] }
+        return values.compactMap(\.stringValue)
+    }
+
+    private func finishShutdown() {
+        revision += 1
+        server?.broadcast(HostEvent(event: "host.willQuit", revision: revision, payload: .object([:])))
+        supervisor?.stop()
+        launcher.terminate()
+        server?.stop()
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) { NSApplication.shared.terminate(nil) }
     }
 
     private func cleanup() {

@@ -32,9 +32,15 @@ public final class FirewallClient: @unchecked Sendable {
     private let statusLock = NSLock()
     private var currentStatus = BondedFirewallStatus(state: "not-installed", message: bondedFirewallMessage("not-installed"), helperInstalled: false, ruleCount: nil)
     private let helperExecutable: String
+    private let socketPathProvider: () -> String
+    private let installedCheck: () -> Bool
     public var onStatus: ((BondedFirewallStatus) -> Void)?
 
-    public init(helperExecutable: String) { self.helperExecutable = helperExecutable }
+    public init(helperExecutable: String, socketPath: @escaping () -> String = { "/var/run/\(FirewallClient.label).\(getuid()).sock" }, isInstalled: @escaping () -> Bool = { FileManager.default.fileExists(atPath: FirewallClient.installedExecutable) }) {
+        self.helperExecutable = helperExecutable
+        self.socketPathProvider = socketPath
+        self.installedCheck = isInstalled
+    }
 
     public var status: BondedFirewallStatus {
         statusLock.lock(); defer { statusLock.unlock() }
@@ -42,15 +48,18 @@ public final class FirewallClient: @unchecked Sendable {
     }
 
     public func initialize() {
+        var keepConnected = false
         do {
             try connect()
             let response = try request(operation: "status")
             guard response.ok else { throw BondedFirewallError.rejected(response.error ?? "The firewall helper rejected the request") }
-            setStatus(response.enabled ?? false ? "active" : "disabled", installed: true, ruleCount: response.ruleCount)
+            keepConnected = response.enabled ?? false
+            setStatus(keepConnected ? "active" : "disabled", installed: true, ruleCount: response.ruleCount)
         } catch {
             let installed = isInstalled()
             setStatus(installed ? "error" : "not-installed", installed: installed, ruleCount: nil)
         }
+        if !keepConnected { close() }
     }
 
     public func install() throws {
@@ -65,15 +74,16 @@ public final class FirewallClient: @unchecked Sendable {
                 let response = try request(operation: "status")
                 guard response.ok else { throw BondedFirewallError.rejected(response.error ?? "The firewall helper rejected the request") }
                 setStatus(response.enabled ?? false ? "active" : "disabled", installed: true, ruleCount: response.ruleCount)
+                if response.enabled != true { close() }
                 return
-            } catch { lastError = error }
+            } catch { close(); lastError = error }
         }
         setStatus("error", installed: true, ruleCount: nil)
         throw lastError ?? BondedFirewallError.helperDidNotStart
     }
 
     public func uninstall() throws {
-        try? configure(enabled: false, targets: [])
+        try configure(enabled: false, targets: [])
         close()
         try runElevated(executable: isInstalled() ? Self.installedExecutable : try helperSource(), operation: "--uninstall")
         setStatus("not-installed", installed: false, ruleCount: nil)
@@ -86,16 +96,24 @@ public final class FirewallClient: @unchecked Sendable {
         let response = try request(operation: "configure", enabled: enabled, targets: targets)
         if !response.ok {
             setStatus("error", installed: true, ruleCount: response.ruleCount)
+            close()
             throw BondedFirewallError.rejected(response.error ?? "The firewall helper rejected the request")
         }
         setStatus(response.enabled ?? false ? "active" : "disabled", installed: true, ruleCount: response.ruleCount)
+        if !enabled { close() }
     }
 
     public func disconnect() throws {
         var cleanupError: Error?
-        if socketFD != -1 { do { try configure(enabled: false, targets: []) } catch { cleanupError = error } }
+        let installed = isInstalled()
+        if installed {
+            do {
+                if socketFD == -1 { try connect() }
+                try configure(enabled: false, targets: [])
+            } catch { cleanupError = error }
+        }
         close()
-        if isInstalled() { setStatus(cleanupError == nil ? "disabled" : "error", installed: true, ruleCount: cleanupError == nil ? 0 : nil) }
+        setStatus(installed ? cleanupError == nil ? "disabled" : "error" : "not-installed", installed: installed, ruleCount: cleanupError == nil ? 0 : nil)
         if let cleanupError { throw cleanupError }
     }
 
@@ -105,7 +123,7 @@ public final class FirewallClient: @unchecked Sendable {
         if socketFD != -1 { return }
         let fd = socket(AF_UNIX, SOCK_STREAM, 0)
         guard fd >= 0 else { throw BondedFirewallError.unavailable("The firewall helper is available only on macOS") }
-        let path = Self.socketPath()
+        let path = socketPathProvider()
         var address = sockaddr_un()
         address.sun_family = sa_family_t(AF_UNIX)
         let pathBytes = Array(path.utf8)
@@ -198,7 +216,7 @@ public final class FirewallClient: @unchecked Sendable {
         return helperExecutable
     }
 
-    public func isInstalled() -> Bool { FileManager.default.fileExists(atPath: Self.installedExecutable) }
+    public func isInstalled() -> Bool { installedCheck() }
 
     private func runElevated(executable: String, operation: String) throws {
         func shellQuote(_ value: String) -> String { "'" + value.replacingOccurrences(of: "'", with: "'\"'\"'") + "'" }

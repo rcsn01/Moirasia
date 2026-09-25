@@ -47,10 +47,14 @@ final class BondedModule: BasicFeatureModule {
 
     override func start() throws {
         try super.start()
-        runtime.start()
+        do { try runtime.start() }
+        catch { try super.stop(); throw error }
     }
 
-    override func stop() { runtime.stop(); super.stop() }
+    override func stop() throws {
+        try super.stop()
+        try runtime.stop()
+    }
 
     override func snapshot() -> JSONValue { runtime.snapshot() }
 
@@ -60,7 +64,14 @@ final class BondedModule: BasicFeatureModule {
         case "bonded.getSnapshot", "bonded.snapshot": return snapshot()
         case "bonded.setMonitoring":
             guard let value = request.params["enabled"]?.boolValue else { throw invalidParams() }
-            return runtime.setMonitoring(value)
+            return try runtime.setMonitoring(value)
+        case "bonded.setMonitorWhenHidden":
+            guard let value = request.params["enabled"]?.boolValue else { throw invalidParams() }
+            return try runtime.setMonitorWhenHidden(value)
+        case "bonded.setUiState":
+            guard let value = request.params["mainVisible"]?.boolValue else { throw invalidParams() }
+            try runtime.setUiVisible(value)
+            return .object(["accepted": .bool(true)])
         case "bonded.installFirewallHelper": return try runtime.installFirewallHelper()
         case "bonded.uninstallFirewallHelper": return try runtime.uninstallFirewallHelper()
         case "bonded.setBlocking":
@@ -72,7 +83,7 @@ final class BondedModule: BasicFeatureModule {
         case "bonded.removeApplicationRule":
             guard let id = request.params["applicationRuleId"]?.stringValue else { throw invalidParams() }
             return try runtime.removeApplicationRule(id)
-        case "bonded.restartMonitor": return runtime.restartMonitor()
+        case "bonded.restartMonitor": return try runtime.restartMonitor()
         default: return try super.handle(request)
         }
     }
@@ -93,7 +104,7 @@ final class ShoutModule: BasicFeatureModule {
     }
 
     override func start() throws { try super.start(); runtime.start() }
-    override func stop() { runtime.stop(); super.stop() }
+    override func stop() throws { runtime.stop(); try super.stop() }
 
     override func snapshot() -> JSONValue {
         let state = runtime.snapshot
@@ -195,7 +206,7 @@ final class AmoveModule: BasicFeatureModule {
         try super.start()
         runtime.start()
     }
-    override func stop() { runtime.stop(); super.stop() }
+    override func stop() throws { runtime.stop(); try super.stop() }
 
     override func snapshot() -> JSONValue {
         let values = runtime.snapshotValues()

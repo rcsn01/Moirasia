@@ -1,5 +1,6 @@
 import XCTest
 import Foundation
+import Darwin
 import MoirasiaProtocol
 import ShoutAudioCore
 @testable import AmoveRuntime
@@ -87,6 +88,99 @@ final class NativeRuntimeTests: XCTestCase {
         XCTAssertFalse(persisted.contains("\"id\":\"app_"))
     }
 
+    func testBondedFirewallDisconnectReopensConnectionForConfirmedCleanup() throws {
+        let socketPath = "/tmp/bonded-fw-\(UUID().uuidString).sock"
+        defer { try? FileManager.default.removeItem(atPath: socketPath) }
+        let listener = socket(AF_UNIX, SOCK_STREAM, 0)
+        XCTAssertGreaterThanOrEqual(listener, 0)
+        defer { Darwin.close(listener) }
+        var address = sockaddr_un()
+        address.sun_family = sa_family_t(AF_UNIX)
+        let pathBytes = Array(socketPath.utf8) + [0]
+        XCTAssertLessThan(pathBytes.count, MemoryLayout.size(ofValue: address.sun_path))
+        withUnsafeMutableBytes(of: &address.sun_path) { $0.copyBytes(from: pathBytes) }
+        let bound = withUnsafePointer(to: &address) { pointer in
+            pointer.withMemoryRebound(to: sockaddr.self, capacity: 1) { Darwin.bind(listener, $0, socklen_t(MemoryLayout<sockaddr_un>.size)) }
+        }
+        XCTAssertEqual(bound, 0)
+        XCTAssertEqual(listen(listener, 2), 0)
+
+        let recorder = FirewallOperationRecorder()
+        let serverFinished = DispatchSemaphore(value: 0)
+        DispatchQueue.global().async {
+            defer { serverFinished.signal() }
+            var cleanupCount = 0
+            for _ in 0..<4 {
+                let connection = accept(listener, nil, nil)
+                guard connection >= 0 else { return }
+                defer { Darwin.close(connection) }
+                var bytes = Data()
+                var chunk = [UInt8](repeating: 0, count: 4096)
+                while !bytes.contains(0x0a) {
+                    let count = recv(connection, &chunk, chunk.count, 0)
+                    guard count > 0 else { return }
+                    bytes.append(contentsOf: chunk.prefix(count))
+                }
+                guard let request = try? JSONSerialization.jsonObject(with: bytes.prefix(upTo: bytes.firstIndex(of: 0x0a)!)) as? [String: Any],
+                      let id = request["id"] as? Int,
+                      let operation = request["operation"] as? String else { return }
+                recorder.append(operation)
+                if operation == "configure" { cleanupCount += 1 }
+                let accepted = operation != "configure" || cleanupCount == 1
+                var responseObject: [String: Any] = ["id": id, "ok": accepted, "enabled": false, "ruleCount": 0]
+                if !accepted { responseObject["error"] = "PF cleanup rejected" }
+                guard var response = try? JSONSerialization.data(withJSONObject: responseObject) else { return }
+                response.append(0x0a)
+                response.withUnsafeBytes { raw in
+                    if let base = raw.baseAddress { _ = Darwin.write(connection, base, raw.count) }
+                }
+            }
+        }
+
+        let client = FirewallClient(helperExecutable: "/missing/helper", socketPath: { socketPath }, isInstalled: { true })
+        client.initialize()
+        XCTAssertEqual(client.status.state, "disabled")
+        XCTAssertNoThrow(try client.disconnect())
+        XCTAssertEqual(client.status.state, "disabled")
+
+        let rejectedClient = FirewallClient(helperExecutable: "/missing/helper", socketPath: { socketPath }, isInstalled: { true })
+        rejectedClient.initialize()
+        XCTAssertThrowsError(try rejectedClient.disconnect()) { XCTAssertTrue($0.localizedDescription.contains("PF cleanup rejected")) }
+        XCTAssertEqual(rejectedClient.status.state, "error")
+
+        XCTAssertEqual(serverFinished.wait(timeout: .now() + 5), .success)
+        XCTAssertEqual(recorder.operations, ["status", "configure", "status", "configure"])
+    }
+
+    func testBondedRuntimePausesSamplingWhenHiddenAndHonorsBackgroundOptIn() throws {
+        let directory = temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let settingsURL = directory.appendingPathComponent("settings.json")
+        let originalSettings = Data("{\"version\":3,\"monitoringEnabled\":true,\"blockingEnabled\":false,\"applicationRules\":[]}".utf8)
+        try originalSettings.write(to: settingsURL)
+        let monitor = NetworkMonitor(executablePath: "/bin/sleep", arguments: ["30"], sampleInterval: 1, stopTimeout: 1)
+        let firewall = FirewallClient(helperExecutable: "/missing/BondedFirewallHelper", socketPath: { "/tmp/bonded-missing-\(UUID().uuidString).sock" }, isInstalled: { false })
+        let runtime = BondedRuntime(dataDirectory: directory.path, helperExecutable: "/missing/BondedFirewallHelper", networkMonitor: monitor, firewallClient: firewall)
+
+        try runtime.start()
+        XCTAssertEqual(monitor.status.state, "stopped")
+        try runtime.setUiVisible(true)
+        XCTAssertEqual(monitor.status.state, "running")
+        try runtime.setUiVisible(false)
+        XCTAssertEqual(monitor.status.state, "stopped")
+        XCTAssertEqual(try Data(contentsOf: settingsURL), originalSettings)
+        _ = try runtime.setMonitorWhenHidden(true)
+        XCTAssertEqual(monitor.status.state, "running")
+        _ = try runtime.setMonitorWhenHidden(false)
+        XCTAssertEqual(monitor.status.state, "stopped")
+        try runtime.stop()
+        try runtime.stop()
+
+        let saved = try JSONDecoder().decode(JSONValue.self, from: Data(contentsOf: settingsURL))
+        XCTAssertEqual(saved["monitoringEnabled"]?.boolValue, true)
+        XCTAssertEqual(saved["monitorWhenHidden"]?.boolValue, false)
+    }
+
     func testBondedMonitorKeepsSuccessfulBoundedProcessRunning() {
         let runningAgain = expectation(description: "successful bounded monitor cycle")
         var runningUpdates = 0
@@ -100,7 +194,7 @@ final class NativeRuntimeTests: XCTestCase {
         }
         monitor.start()
         wait(for: [runningAgain], timeout: 0.75)
-        monitor.stop()
+        try? monitor.stop()
         XCTAssertFalse(retried)
     }
 
@@ -272,6 +366,13 @@ private func temporaryDirectory() -> URL {
     let directory = URL(fileURLWithPath: NSTemporaryDirectory(), isDirectory: true).appendingPathComponent("moirasia-native-test-\(UUID().uuidString)", isDirectory: true)
     try! FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
     return directory
+}
+
+private final class FirewallOperationRecorder {
+    private let lock = NSLock()
+    private var values: [String] = []
+    func append(_ operation: String) { lock.lock(); defer { lock.unlock() }; values.append(operation) }
+    var operations: [String] { lock.lock(); defer { lock.unlock() }; return values }
 }
 
 private final class TestPermissionProvider: MicrophonePermissionProvider {

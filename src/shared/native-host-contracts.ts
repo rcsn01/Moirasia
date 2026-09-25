@@ -124,6 +124,7 @@ export type NativeHostMutationMethod =
   | 'host.quitSuite'
   | 'host.setUiState'
   | 'bonded.setMonitoring'
+  | 'bonded.setMonitorWhenHidden'
   | 'bonded.installFirewallHelper'
   | 'bonded.uninstallFirewallHelper'
   | 'bonded.setBlocking'
@@ -212,6 +213,7 @@ function isLegacyFeatureServiceHealth(value: NativeHostSnapshotChangedPayload): 
 
 export type NativeHostUiState = {
   readonly processIds?: readonly number[]
+  readonly mainVisible?: boolean
   readonly mainFocused?: boolean
   readonly shelfVisible?: boolean
   readonly shortcutRecording?: boolean

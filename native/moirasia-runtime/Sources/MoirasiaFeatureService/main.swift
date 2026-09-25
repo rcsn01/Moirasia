@@ -20,7 +20,10 @@ let runtime = FeatureRuntime(userData: userData, bondedHelperExecutable: bondedH
     do { try writer.send(.event(event)) }
     catch { fputs("MoirasiaFeatureService could not publish event: \(error)\n", stderr) }
 }
-let signals = SignalCoordinator { runtime.stopAll(); exit(0) }
+let signals = SignalCoordinator {
+    for error in runtime.stopAll() { fputs("MoirasiaFeatureService cleanup failed: \(error)\n", stderr) }
+    exit(0)
+}
 _ = signals
 signal(SIGPIPE, SIG_IGN) // POSIX writes report EPIPE as an error, never as a signal
 let parent = ParentConnection(runtime: runtime, writer: writer)

@@ -9,6 +9,8 @@ final class FeatureRuntime {
     private var settings: [String: JSONValue] = [:]
     private var leases: [String: FeatureRuntimeLease] = [:]
     private var moduleErrors: [String: String] = [:]
+    private var shellVisible = false
+    private var shutdownErrors: [String]?
     private let emit: (HostEvent) -> Void
 
     init(userData: String, bondedHelperExecutable: String?, shoutDriverDirectory: String?, emit: @escaping (HostEvent) -> Void) {
@@ -22,13 +24,27 @@ final class FeatureRuntime {
         loadSettings()
     }
 
-    func stopAll() {
-        for module in modules.values { module.stop() }
-        for lease in leases.values { lease.release() }
-        leases.removeAll()
+    @discardableResult
+    func stopAll() -> [String] {
+        if let shutdownErrors { return shutdownErrors }
+        var failures: [String] = []
+        for id in modules.keys.sorted() {
+            guard let module = modules[id] else { continue }
+            do { try module.stop(); moduleErrors[id] = nil }
+            catch {
+                let message = errorMessage(error)
+                moduleErrors[id] = message
+                failures.append("\(id): \(message)")
+            }
+        }
+        for id in leases.keys.sorted() { leases[id]?.release(); leases[id] = nil }
+        shutdownErrors = failures
+        publishSnapshot()
+        return failures
     }
 
     func startInstalled() {
+        shutdownErrors = nil
         for id in modules.keys {
             let shouldStart = installed[id] ?? true
             installed[id] = shouldStart
@@ -46,11 +62,28 @@ final class FeatureRuntime {
             case "feature.setInstalled":
                 result = try setInstalled(request)
             case "host.setUiState":
-                // The Amove runtime needs the UI policy to decide global-hotkey dispatch.
+                // Amove uses UI focus for hotkey dispatch; Bonded uses visibility to pause sampling.
                 if let amove = modules["amove"], amove.isRunning {
                     _ = try? amove.handle(HostRequest(id: request.id, method: "amove.setUiState", params: request.params))
                 }
+                if let value = request.params["mainVisible"] {
+                    guard let visible = value.boolValue else { throw HostError(code: "invalid_params", message: "Window visibility must be a boolean.") }
+                    shellVisible = visible
+                    if let bonded = modules["bonded"], bonded.isRunning {
+                        do {
+                            _ = try bonded.handle(HostRequest(id: request.id, method: "bonded.setUiState", params: ["mainVisible": .bool(visible)]))
+                            moduleErrors["bonded"] = nil
+                        } catch {
+                            moduleErrors["bonded"] = errorMessage(error)
+                            publishSnapshot()
+                            throw error
+                        }
+                    }
+                }
                 result = .object(["accepted": .bool(true)])
+            case "host.prepareToQuit":
+                let failures = stopAll()
+                result = .object(["cleanupErrors": .array(failures.map(JSONValue.string))])
             case "host.retryFeature":
                 result = try retry(request)
             default:
@@ -84,7 +117,13 @@ final class FeatureRuntime {
                 throw HostError(code: "feature_start_failed", message: errorMessage(error))
             }
         } else {
-            modules[id]?.stop()
+            do { try modules[id]?.stop() }
+            catch {
+                let message = errorMessage(error)
+                moduleErrors[id] = message
+                publishSnapshot()
+                throw HostError(code: "feature_stop_failed", message: message)
+            }
             leases[id]?.release(); leases[id] = nil
             moduleErrors[id] = nil
             installed[id] = false
@@ -167,6 +206,9 @@ final class FeatureRuntime {
         }
         do {
             try module.start()
+            if id == "bonded" {
+                _ = try module.handle(HostRequest(id: UUID().uuidString, method: "bonded.setUiState", params: ["mainVisible": .bool(shellVisible)]))
+            }
             moduleErrors[id] = nil
         } catch {
             leases[id]?.release()
