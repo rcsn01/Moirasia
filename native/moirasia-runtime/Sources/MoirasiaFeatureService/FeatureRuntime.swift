@@ -11,7 +11,7 @@ final class FeatureRuntime {
     private var settings: [String: JSONValue] = [:]
     private var leases: [String: FeatureRuntimeLease] = [:]
     private var moduleErrors: [String: String] = [:]
-    private var shellVisible = false
+    private var hostUiState = HostUiState()
     private var shutdownErrors: [String]?
     private let emit: (HostEvent) -> Void
     private let stateQueueKey = DispatchSpecificKey<Bool>()
@@ -100,25 +100,7 @@ final class FeatureRuntime {
             case "feature.setInstalled":
                 result = try setInstalled(request)
             case "host.setUiState":
-                // Amove uses UI focus for hotkey dispatch; Bonded uses visibility to pause sampling.
-                if let amove = modules["amove"], amove.isRunning {
-                    _ = try? amove.handle(HostRequest(id: request.id, method: "amove.setUiState", params: request.params))
-                }
-                if let value = request.params["mainVisible"] {
-                    guard let visible = value.boolValue else { throw HostError(code: "invalid_params", message: "Window visibility must be a boolean.") }
-                    shellVisible = visible
-                    if let bonded = modules["bonded"], bonded.isRunning {
-                        do {
-                            _ = try bonded.handle(HostRequest(id: request.id, method: "bonded.setUiState", params: ["mainVisible": .bool(visible)]))
-                            moduleErrors["bonded"] = nil
-                        } catch {
-                            moduleErrors["bonded"] = errorMessage(error)
-                            publishSnapshot()
-                            throw error
-                        }
-                    }
-                }
-                result = .object(["accepted": .bool(true)])
+                result = try setHostUiState(request)
             case "host.prepareToQuit":
                 let failures = stopAll()
                 result = .object(["cleanupErrors": .array(failures.map(JSONValue.string))])
@@ -271,13 +253,17 @@ final class FeatureRuntime {
             let lockName = id == "bonded" ? "bonded-runtime.lock" : id == "shout" ? "shout-runtime.lock" : "amove-runtime.lock"
             leases[id] = try FeatureRuntimeLease(appData: appDataDirectory, lockName: lockName, host: "Moirasia")
         }
+        var didStart = false
         do {
             try module.start()
-            if id == "bonded" {
-                _ = try module.handle(HostRequest(id: UUID().uuidString, method: "bonded.setUiState", params: ["mainVisible": .bool(shellVisible)]))
-            }
+            didStart = true
+            try applyHostUiState(to: id, requestID: UUID().uuidString)
             moduleErrors[id] = nil
         } catch {
+            if didStart {
+                do { try module.stop() }
+                catch { fputs("MoirasiaFeatureService failed to stop \(id) after UI-state replay error: \(error)\n", stderr) }
+            }
             leases[id]?.release()
             leases[id] = nil
             throw error
@@ -289,5 +275,88 @@ final class FeatureRuntime {
         return url.lastPathComponent == "Moirasia" ? url.deletingLastPathComponent().path : userData
     }
 
-    private func errorMessage(_ error: Error) -> String { error.localizedDescription }
+    private struct HostUiState {
+        var mainVisible = false
+        var mainFocused = false
+        var shelfVisible = false
+    }
+
+    private func setHostUiState(_ request: HostRequest) throws -> JSONValue {
+        var updatedState = hostUiState
+        var updatesAmove = false
+        var updatesBonded = false
+
+        if let value = request.params["mainVisible"] {
+            guard let visible = value.boolValue else {
+                throw HostError(code: "invalid_params", message: "mainVisible must be a boolean.")
+            }
+            updatedState.mainVisible = visible
+            updatesBonded = true
+        }
+        if let value = request.params["mainFocused"] {
+            guard let focused = value.boolValue else {
+                throw HostError(code: "invalid_params", message: "mainFocused must be a boolean.")
+            }
+            updatedState.mainFocused = focused
+            updatesAmove = true
+        }
+        if let value = request.params["shelfVisible"] {
+            guard let visible = value.boolValue else {
+                throw HostError(code: "invalid_params", message: "shelfVisible must be a boolean.")
+            }
+            updatedState.shelfVisible = visible
+            updatesAmove = true
+        }
+
+        hostUiState = updatedState
+        var changedErrors = false
+        var firstError: Error?
+
+        if updatesAmove, let amove = modules["amove"], amove.isRunning {
+            do {
+                try applyHostUiState(to: "amove", requestID: request.id)
+                if moduleErrors.removeValue(forKey: "amove") != nil { changedErrors = true }
+            } catch {
+                if moduleErrors["amove"] != errorMessage(error) { changedErrors = true }
+                moduleErrors["amove"] = errorMessage(error)
+                firstError = error
+            }
+        }
+        if updatesBonded, let bonded = modules["bonded"], bonded.isRunning {
+            do {
+                try applyHostUiState(to: "bonded", requestID: request.id)
+                if moduleErrors.removeValue(forKey: "bonded") != nil { changedErrors = true }
+            } catch {
+                if moduleErrors["bonded"] != errorMessage(error) { changedErrors = true }
+                moduleErrors["bonded"] = errorMessage(error)
+                if firstError == nil { firstError = error }
+            }
+        }
+
+        if changedErrors { publishSnapshot() }
+        if let firstError { throw firstError }
+        return .object(["accepted": .bool(true)])
+    }
+
+    private func applyHostUiState(to id: String, requestID: String) throws {
+        guard let module = modules[id] else { return }
+        let request: HostRequest
+        switch id {
+        case "amove":
+            request = HostRequest(id: requestID, method: "amove.setUiState", params: [
+                "mainFocused": .bool(hostUiState.mainFocused),
+                "shelfVisible": .bool(hostUiState.shelfVisible)
+            ])
+        case "bonded":
+            request = HostRequest(id: requestID, method: "bonded.setUiState", params: ["mainVisible": .bool(hostUiState.mainVisible)])
+        default:
+            return
+        }
+        _ = try module.handle(request)
+    }
+
+    private func errorMessage(_ error: Error) -> String {
+        if let error = error as? HostError { return error.message }
+        return error.localizedDescription
+    }
 }

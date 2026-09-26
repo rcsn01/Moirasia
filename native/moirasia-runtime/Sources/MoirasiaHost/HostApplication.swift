@@ -195,7 +195,7 @@ final class HostApplication: NSObject, NSApplicationDelegate {
         // The UI is gone; global hotkeys must dispatch again.
         stateQueue.async { [weak self] in
             guard let self else { return }
-            let request = HostRequest(id: UUID().uuidString, method: "host.setUiState", params: ["mainFocused": .bool(false), "shelfVisible": .bool(false)])
+            let request = HostRequest(id: UUID().uuidString, method: "host.setUiState", params: ["mainVisible": .bool(false), "mainFocused": .bool(false), "shelfVisible": .bool(false)])
             self.forward(request) { _ in }
         }
     }

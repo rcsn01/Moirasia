@@ -104,8 +104,13 @@ public final class BondedRuntime {
     public func setUiVisible(_ visible: Bool) throws {
         try queue.sync {
             guard uiVisible != visible else { return }
+            let previousVisibility = uiVisible
             uiVisible = visible
-            try applyMonitorPolicy()
+            do { try applyMonitorPolicy() }
+            catch {
+                uiVisible = previousVisibility
+                throw error
+            }
             publishSnapshot()
         }
     }

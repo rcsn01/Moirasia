@@ -26,6 +26,8 @@ The shared `@moirasia/desktop-shell/native-feature-adapter` owns the structural 
 
 The root staging adapter runs the existing Amove, Bonded, and Shout native build commands, builds a deterministic plan from the shared artifact facet, and cleans only `native/staged/features` before copying. Suite artifacts are staged under `native/staged/features/<id>` and the root builder packages that clean tree once under `Contents/Resources/features/<id>`. Standalone product builders remain product-owned: Amove assets stay asar-embedded while native resources use `Resources/native`.
 
+The native `MoirasiaFeatureService` also retains desired shell visibility, main-window focus, and Amove shelf visibility in memory. It merges partial UI-state updates and applies focus/shelf state to Amove and visibility to Bonded on live updates and module startup. Amove owns its hotkey policy, Bonded owns its sampling conditions, and Shout consumes none of these facts. A service restart resets the retained values to false; reconnect resynchronization remains outside this path.
+
 The production Electron native host receives the Shout driver parent directory (`Resources/features/shout/driver`), while the feature context receives `ShoutMic.driver` itself. Direct-launch Swift/debug adapters retain their bundle-path form because the native feature service accepts both. Moirasia's build never builds or packages Exithibition or Orbis.
 
 ## Standalone-only surfaces
