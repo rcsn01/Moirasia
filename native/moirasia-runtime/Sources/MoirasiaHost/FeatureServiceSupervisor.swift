@@ -1,7 +1,13 @@
 import Foundation
 import MoirasiaProtocol
 
-final class FeatureServiceSupervisor {
+protocol FeatureServiceSupervisorDriving: AnyObject {
+    func start() throws
+    func stop()
+    func request(_ request: HostRequest, completion: @escaping (HostResponse, UInt64) -> Void)
+}
+
+final class FeatureServiceSupervisor: FeatureServiceSupervisorDriving {
     enum HealthState: String {
         case starting
         case running
@@ -9,9 +15,15 @@ final class FeatureServiceSupervisor {
         case stopped
     }
 
-    typealias EventHandler = (HostEvent) -> Void
+    typealias EventHandler = (HostEvent, UInt64) -> Void
     typealias ExitHandler = () -> Void
-    typealias HealthHandler = (_ state: HealthState, _ error: String?, _ restartCount: Int) -> Void
+    typealias HealthHandler = (_ state: HealthState, _ error: String?, _ restartCount: Int, _ generation: UInt64) -> Void
+
+    private struct PendingRequest {
+        let id: String
+        let generation: UInt64
+        let completion: (HostResponse, UInt64) -> Void
+    }
 
     private let executablePath: String
     private let userData: String
@@ -20,11 +32,11 @@ final class FeatureServiceSupervisor {
     private let healthHandler: HealthHandler
     private var process: Process?
     private var input: FileHandle?
-    private var decoder = LineDecoder()
-    private var pending: [String: (HostResponse) -> Void] = [:]
+    private var pending: [String: PendingRequest] = [:]
     private let lock = NSLock()
     private var restartCount = 0
     private var lifecycleGeneration: UInt64 = 0
+    private var reportedGeneration: UInt64 = 0
     private var stopped = true
     private var reportedStopped = false
 
@@ -48,11 +60,12 @@ final class FeatureServiceSupervisor {
         restartCount = 0
         lifecycleGeneration &+= 1
         let generation = lifecycleGeneration
+        reportedGeneration = generation
         lock.unlock()
-        report(.starting, error: nil, restartCount: 0)
+        report(.starting, error: nil, restartCount: 0, generation: generation)
         do {
             try launch(generation: generation)
-            report(.running, error: nil, restartCount: 0)
+            report(.running, error: nil, restartCount: 0, generation: generation)
         } catch {
             serviceFailed(generation: generation, error: error)
             throw error
@@ -65,33 +78,38 @@ final class FeatureServiceSupervisor {
         stopped = true
         lifecycleGeneration &+= 1
         let child = process
+        let stoppedGeneration = reportedGeneration
+        let stoppedRestartCount = restartCount
         process = nil
         input = nil
-        let callbacks = pending.values
+        let callbacks = Array(pending.values)
         pending.removeAll()
         let shouldReport = !reportedStopped
         reportedStopped = true
         lock.unlock()
 
         child?.terminate()
-        callbacks.forEach { $0(HostResponse(id: UUID().uuidString, error: HostError(code: "feature_service_unavailable", message: "MoirasiaFeatureService stopped."))) }
-        if shouldReport { report(.stopped, error: nil, restartCount: restartCount) }
+        callbacks.forEach { pending in
+            pending.completion(HostResponse(id: pending.id, error: HostError(code: "feature_service_unavailable", message: "MoirasiaFeatureService stopped.")), pending.generation)
+        }
+        if shouldReport { report(.stopped, error: nil, restartCount: stoppedRestartCount, generation: stoppedGeneration) }
     }
 
-    func request(_ request: HostRequest, completion: @escaping (HostResponse) -> Void) {
+    func request(_ request: HostRequest, completion: @escaping (HostResponse, UInt64) -> Void) {
         lock.lock()
+        let requestGeneration = lifecycleGeneration
         guard !stopped, let input else {
             lock.unlock()
-            completion(HostResponse(id: request.id, error: HostError(code: "feature_service_unavailable", message: "Feature service is not running.")))
+            completion(HostResponse(id: request.id, error: HostError(code: "feature_service_unavailable", message: "Feature service is not running.")), requestGeneration)
             return
         }
-        pending[request.id] = completion
+        pending[request.id] = PendingRequest(id: request.id, generation: requestGeneration, completion: completion)
         lock.unlock()
         do {
             try FramedWriter(handle: input).send(.request(request))
         } catch {
-            lock.lock(); pending.removeValue(forKey: request.id); lock.unlock()
-            completion(HostResponse(id: request.id, error: HostError(code: "feature_service_unavailable", message: error.localizedDescription)))
+            lock.lock(); let pendingRequest = pending.removeValue(forKey: request.id); lock.unlock()
+            pendingRequest?.completion(HostResponse(id: request.id, error: HostError(code: "feature_service_unavailable", message: error.localizedDescription)), requestGeneration)
         }
     }
 
@@ -115,7 +133,6 @@ final class FeatureServiceSupervisor {
         }
         process = child
         input = nil
-        decoder = LineDecoder()
         lock.unlock()
         do {
             try child.run()
@@ -136,10 +153,11 @@ final class FeatureServiceSupervisor {
         lock.unlock()
 
         let output = childOutput.fileHandleForReading
+        let childDecoder = LineDecoder()
         SafeIO.makeNonBlocking(output.fileDescriptor)
         output.readabilityHandler = { [weak self] handle in
             guard let result = SafeIO.drain(descriptor: handle.fileDescriptor) else { return }
-            if !result.data.isEmpty { self?.receive(result.data, generation: generation) }
+            if !result.data.isEmpty { self?.receive(result.data, generation: generation, decoder: childDecoder) }
             if result.ended {
                 handle.readabilityHandler = nil
                 self?.serviceExited(generation: generation, error: "MoirasiaFeatureService output closed.")
@@ -147,16 +165,26 @@ final class FeatureServiceSupervisor {
         }
     }
 
-    private func receive(_ data: Data, generation: UInt64) {
+    private func receive(_ data: Data, generation: UInt64, decoder: LineDecoder) {
         lock.lock(); let current = generation == lifecycleGeneration && !stopped; lock.unlock()
         guard current else { return }
         do {
             for message in try decoder.append(data) {
                 switch message {
-                case .event(let event): eventHandler(event)
+                case .event(let event):
+                    lock.lock(); let current = generation == lifecycleGeneration && !stopped; lock.unlock()
+                    if current { eventHandler(event, generation) }
                 case .response(let response):
-                    lock.lock(); let completion = pending.removeValue(forKey: response.id); lock.unlock()
-                    completion?(response)
+                    lock.lock()
+                    let pendingRequest: PendingRequest?
+                    if generation == lifecycleGeneration, !stopped,
+                       let currentRequest = pending[response.id], currentRequest.generation == generation {
+                        pendingRequest = pending.removeValue(forKey: response.id)
+                    } else {
+                        pendingRequest = nil
+                    }
+                    lock.unlock()
+                    if let pendingRequest { pendingRequest.completion(response, pendingRequest.generation) }
                 case .request: break
                 }
             }
@@ -170,29 +198,19 @@ final class FeatureServiceSupervisor {
         guard !stopped, generation == lifecycleGeneration, process != nil else { lock.unlock(); return }
         process = nil
         input = nil
-        let callbacks = pending.values
+        let callbacks = Array(pending.values)
         pending.removeAll()
         restartCount += 1
         let attempt = restartCount
+        lifecycleGeneration &+= 1
+        let nextGeneration = lifecycleGeneration
         lock.unlock()
-        callbacks.forEach { $0(HostResponse(id: UUID().uuidString, error: HostError(code: "feature_service_crashed", message: error))) }
-        report(.error, error: error, restartCount: attempt)
-        exitHandler()
-        guard attempt <= 3 else { return }
-        let delay = UInt64(250_000 * (1 << max(0, attempt - 1)))
-        lock.lock(); lifecycleGeneration &+= 1; let nextGeneration = lifecycleGeneration; lock.unlock()
-        DispatchQueue.global().asyncAfter(deadline: .now() + .microseconds(Int(delay))) { [weak self] in
-            guard let self else { return }
-            self.lock.lock(); let canRestart = !self.stopped && self.lifecycleGeneration == nextGeneration; self.lock.unlock()
-            guard canRestart else { return }
-            self.report(.starting, error: nil, restartCount: attempt)
-            do {
-                try self.launch(generation: nextGeneration)
-                self.report(.running, error: nil, restartCount: attempt)
-            } catch {
-                self.serviceFailed(generation: nextGeneration, error: error)
-            }
+        callbacks.forEach { pending in
+            pending.completion(HostResponse(id: pending.id, error: HostError(code: "feature_service_crashed", message: error)), pending.generation)
         }
+        report(.error, error: error, restartCount: attempt, generation: generation)
+        exitHandler()
+        scheduleRestart(after: attempt, generation: nextGeneration)
     }
 
     private func serviceFailed(generation: UInt64, error: Error) {
@@ -201,27 +219,38 @@ final class FeatureServiceSupervisor {
         guard !stopped, generation == lifecycleGeneration else { lock.unlock(); return }
         restartCount += 1
         let attempt = restartCount
+        lifecycleGeneration &+= 1
+        let nextGeneration = lifecycleGeneration
         lock.unlock()
-        report(.error, error: message, restartCount: attempt)
+        report(.error, error: message, restartCount: attempt, generation: generation)
         exitHandler()
+        scheduleRestart(after: attempt, generation: nextGeneration)
+    }
+
+    private func scheduleRestart(after attempt: Int, generation nextGeneration: UInt64) {
         guard attempt <= 3 else { return }
-        lock.lock(); lifecycleGeneration &+= 1; let nextGeneration = lifecycleGeneration; lock.unlock()
         let delay = UInt64(250_000 * (1 << max(0, attempt - 1)))
         DispatchQueue.global().asyncAfter(deadline: .now() + .microseconds(Int(delay))) { [weak self] in
-            guard let self else { return }
-            self.lock.lock(); let canRestart = !self.stopped && self.lifecycleGeneration == nextGeneration; self.lock.unlock()
-            guard canRestart else { return }
-            self.report(.starting, error: nil, restartCount: attempt)
+            guard let self, self.reportStarting(generation: nextGeneration, restartCount: attempt) else { return }
             do {
                 try self.launch(generation: nextGeneration)
-                self.report(.running, error: nil, restartCount: attempt)
+                self.report(.running, error: nil, restartCount: attempt, generation: nextGeneration)
             } catch {
                 self.serviceFailed(generation: nextGeneration, error: error)
             }
         }
     }
 
-    private func report(_ state: HealthState, error: String?, restartCount: Int) {
-        healthHandler(state, error, restartCount)
+    private func reportStarting(generation: UInt64, restartCount: Int) -> Bool {
+        lock.lock()
+        guard !stopped, lifecycleGeneration == generation else { lock.unlock(); return false }
+        reportedGeneration = generation
+        lock.unlock()
+        report(.starting, error: nil, restartCount: restartCount, generation: generation)
+        return true
+    }
+
+    private func report(_ state: HealthState, error: String?, restartCount: Int, generation: UInt64) {
+        healthHandler(state, error, restartCount, generation)
     }
 }
