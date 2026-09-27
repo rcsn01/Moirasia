@@ -1,233 +1,199 @@
-# Implementation plan: serialize native Feature host event publication
+# Implementation plan: serialize pending login-item retries
 
 ## Decision
 
-Deepen the existing `FeatureRuntime` in the native Feature host. It already owns module lifecycle, snapshots, and the revision value, so it is the narrowest owner for ordering those facts. Reuse the serial queue that already orders ParentConnection requests. Construct it once in `main.swift` and pass the same queue instance to both `FeatureRuntime` and `ParentConnection`. Route module snapshot hooks onto that queue asynchronously. Route semantic hooks inline only when they already run on the queue, and asynchronously otherwise.
+Deepen the existing `ApplicationController` so pending login-item retries use the same per-application queue as explicit commands. Today `#action` queues `open`, `quit`, and `setLoginItem`, while `refresh()` calls `#retryPending()` directly. The visible shell polls `refresh()` every two seconds, but `SwiftApplicationAgent.setLoginItem()` can take up to five seconds. Retries can overlap explicit changes, and serializing them without coalescing would let each poll add another failed retry to the queue.
 
-Suppress a per-feature snapshot when its JSON payload matches that feature's last payload passed to `emit`. Keep every `host.snapshotChanged` publication and every semantic event while the Feature host is active, including `ui.toggleShelf`. Drop hook work processed after shutdown completes. Do not change the wire protocol, the external host's revision restamping, or `FramedWriter`'s output lock.
+Keep the public `ApplicationController` interface and `ApplicationAgent` seam unchanged. Add a private snapshot-reconciliation helper, a generic queue helper, and a private per-ID retry-promise map; add no module or public seam. Tests will exercise the behavior through the Controller and its existing injected fake agent.
 
-## Settled decisions
+## Expected behavior
 
-These choices are settled; no implementation decisions remain open.
+- For one application, explicit commands and automatic login-item retries run in the order they enter that application's queue.
+- Per-application queues remain keyed by ID. Explicit commands for different applications can run concurrently; each `#retryPending()` invocation retains its sequential `APPLICATION_IDS` loop, so that pass does not run different IDs' retries concurrently.
+- A retry rechecks its pending flag and the latest reconciled installed status/path inside its queued turn. A user command may have cleared the pending flag while the retry waited.
+- When the pending flag is still set at retry scheduling, overlapping public refreshes for one ID share its queued or running retry promise. They do not append repeated attempts while a five-second agent call is still running. A later refresh can retry again if the pending flag remains set after that promise settles.
+- A rejected retry agent call remains silent and leaves the pending flag set. Explicit command failures continue to populate the application error. Their existing error behavior does not change.
+- `refresh()` still reads the application snapshot, waits for each retry it schedules or joins while the pending flag is set, emits one controller snapshot, and returns the latest state.
+- An explicit command still performs a final application snapshot before returning. That internal snapshot reconciliation will not run retries. Background retries run from public `refresh()` calls, including the initial and periodic shell refreshes. This avoids queue re-entry and cross-application wait cycles.
+- No renderer, native agent, settings format, or IPC changes are needed.
 
-| Decision | Applied choice | Reason |
+## Decisions settled with recommended defaults
+
+The user asked to apply the recommended answer to each clarification. These are the choices used in this plan.
+
+| Question | Applied decision | Reason |
 |---|---|---|
-| Scope | Native Feature host event publication only | The issue is in Swift `FeatureRuntime`, not the TypeScript Feature runtime or renderer. |
-| Deepened module | Keep `FeatureRuntime`; do not add a separate event-publisher type | Revision, module snapshots, and event emission already meet there. A second publisher would split ownership again. |
-| Queue ownership | Reuse one serial queue for both FeatureRuntime state and ParentConnection request ordering | Construct one queue in `main.swift` and inject the same instance into both modules. The main-thread signal path also enters that queue through FeatureRuntime. |
-| ParentConnection | Keep the current request/connection policy on the shared queue | ParentConnection retains frame and request ordering. FeatureRuntime state and publication callbacks use that same queue, so no second runtime queue or extra request hop is introduced. |
-| Callback behavior | Snapshot hooks always enqueue asynchronously. Semantic hooks run inline only when already on the shared queue, otherwise enqueue asynchronously. | A module must not wait for FeatureRuntime while it is calling a snapshot hook. Inline semantic events from an in-queue request preserve their current order before the response. |
-| Duplicate snapshots | Suppress a per-feature snapshot event when its JSON payload equals the last payload passed to `emit` for that feature | These events are state snapshots. Equal payloads carry no new state. The host-wide snapshot still reports installed/running/error state. |
-| Other events | Never deduplicate `host.snapshotChanged` or named semantic events | Host snapshots include aggregate status. Semantic events such as `ui.toggleShelf` represent actions, not state. |
-| Revision | Increment only when an event is handed to `emit`, on the shared queue | The `UInt64` event revision is strictly increasing until its existing overflow boundary. The full snapshot stores it as a JSON `Double`, which is exact only through 2^53. Keep this existing representation and protocol unchanged. |
-| Protocol and host | Keep `HostEvent`, payload schemas, HostApplication restamping, and TypeScript clients unchanged | The host already restamps events from the Feature host on its own serial queue. This plan fixes the upstream owner without changing the wire contract. |
-| Test seam | Inject fake `FeatureModule` instances through an internal initializer and test the executable target with `@testable import` | This exercises the real FeatureRuntime publication path without starting PF, audio, or hotkey work. A Swift 6.4 temporary package check confirmed that a test target can depend on and import an executable target. |
-| Domain vocabulary | Update the existing `Feature host` entry in `CONTEXT.md`; add no new term | Event revision and publication ownership belong to the existing Feature host concept. |
-| Out of scope | No changes to product commands, Bonded policy, Shout audio behavior, host revision restamping, or renderer subscriptions | Those are not required to serialize and test event publication. |
+| What is in scope? | The pending login-item retry in `ApplicationController.#retryPending()` and its interaction with queued application commands. | This is the state-changing path that bypasses the queue. |
+| Which module owns the change? | Keep `ApplicationController`; add no new module. | It already owns application facts, retries, error reporting, and command ordering. |
+| What sits behind the seam? | Keep the existing `ApplicationAgent` seam and its production `SwiftApplicationAgent` and test fake. | The tests already substitute an agent and can control asynchronous calls. A second seam is unnecessary. |
+| What is serialized? | Use one queue per `ApplicationId` for commands and retries. Commands on distinct IDs remain concurrent. Keep `#retryPending()` sequential in catalog order, and let overlapping refreshes share one retry promise per ID. | This extends the existing per-application rule without a global lock or a backlog of duplicate retries. |
+| How does a queued retry decide whether to run? | Recheck the settings flag and latest reconciled installed status/path inside its queued turn. | An explicit command can resolve the pending work while the retry waits. The retry uses Controller state already refreshed by an agent snapshot; it does not take another agent snapshot inside the queue. |
+| How are overlapping retries handled? | When pending remains set, concurrent refreshes await the same queued or running retry for one ID. A later refresh can retry again if pending remains after it settles. | The visible shell polls every two seconds and the agent call times out after five seconds. Without coalescing, failed retries can pile up and delay explicit commands. |
+| How is refresh divided? | Public `refresh()` reconciles the snapshot and then retries. The final refresh inside `#action` reconciles only. | Calling retry orchestration while an action holds its queue can deadlock, including when two actions hold different application queues. |
+| What happens to failures? | Keep rejected retry agent calls silent and pending. Keep explicit command errors visible. | A background attempt is best effort; a user command must still report failure. |
+| Is the public interface changing? | No. Preserve controller methods, the injected `ApplicationAgent` shape, and snapshot fields. | Tests can verify ordering through existing methods. |
+| Do domain docs change? | Sharpen the existing `Controller` glossary entry to include automatic pending retries. Add no new domain term or ADR. | The glossary should describe the expanded ownership accurately. |
 
 ## Current evidence
 
-- `native/moirasia-runtime/Sources/MoirasiaFeatureService/ParentConnection.swift:15, 23-35, 63-78` creates a serial connection queue and routes requests, startup, and parent shutdown through it.
-- `native/moirasia-runtime/Sources/MoirasiaFeatureService/FeatureRuntime.swift:8, 16-24, 56-105` stores the mutable revision and installs module hooks. The hooks call publication methods directly on their caller's thread.
-- No root Moirasia ADRs were found under `docs/adr/`; this plan does not reopen a recorded decision.
-- `native/moirasia-runtime/Sources/MoirasiaFeatureService/FeatureRuntime.swift:167-180` increments the same plain `UInt64` revision in host snapshot, feature snapshot, and semantic event paths. `snapshot()` writes `Double(revision)` into the full payload (`native/moirasia-runtime/Sources/MoirasiaFeatureService/FeatureRuntime.swift:155-164`), so exact payload/envelope equality is bounded by Double's integer precision.
-- `native/moirasia-runtime/Sources/MoirasiaFeatureService/FeatureRuntime.swift:94-97` publishes a feature snapshot after a successful non-read command.
-- `native/moirasia-runtime/Sources/MoirasiaFeatureService/FeatureModules.swift:37-46, 94-104, 193-203` forwards Bonded, Shout, and Amove callbacks through the hooks. Bonded schedules snapshots on its own queue (`native/moirasia-runtime/Sources/BondedRuntime/BondedRuntime.swift:288-292`); Shout calls its snapshot hook on the caller's thread (`native/moirasia-runtime/Sources/ShoutRuntime/ShoutRuntime.swift:190-214`); Amove invokes its hooks inline from an action (`native/moirasia-runtime/Sources/AmoveRuntime/AmoveRuntime.swift:86-95, 135-140`).
-- Bonded commands can publish through both `FeatureRuntime`'s post-command path and a later runtime callback. Amove's `performAction` request runs on ParentConnection's queue and can emit `ui.toggleShelf` before its response (`native/moirasia-runtime/Sources/MoirasiaFeatureService/FeatureModules.swift:235-242`, `native/moirasia-runtime/Sources/AmoveRuntime/AmoveRuntime.swift:86-95`). Hotkey actions instead enter through the AppKit event handler (`native/moirasia-runtime/Sources/AmoveRuntime/AmoveRuntime.swift:29-37`, `native/moirasia-runtime/Sources/AmoveRuntime/HotkeyRegistry.swift:183-205`), outside ParentConnection's queue.
-- Shout's helper replies run on the engine queue (`native/moirasia-runtime/Sources/ShoutRuntime/AudioEngine/ShoutEngine.swift:21, 126-129`). `ShoutRuntime.snapshot` and its callback-driven mutations have no shared lock or serial queue (`native/moirasia-runtime/Sources/ShoutRuntime/ShoutRuntime.swift:49-54, 190-214`); the FeatureRuntime queue does not make those module-owned accesses thread-safe.
-- `native/moirasia-runtime/Sources/MoirasiaFeatureService/SignalCoordinator.swift:5-10` runs the SIGTERM handler on the main queue. `native/moirasia-runtime/Sources/MoirasiaFeatureService/main.swift:23-25` calls `runtime.stopAll()` directly there, outside ParentConnection's request queue.
-- `native/moirasia-runtime/Sources/MoirasiaProtocol/Protocol.swift:251-262` protects framed writes with a lock. That lock prevents interleaved bytes; it does not protect FeatureRuntime's revision or state. The FeatureService emit closure logs writer failures instead of propagating them (`native/moirasia-runtime/Sources/MoirasiaFeatureService/main.swift:19-22`).
-- `native/moirasia-runtime/Sources/MoirasiaHost/HostApplication.swift:171-180` receives events on its state queue and assigns the outward host revision. Keep this behavior as the final cross-source ordering point.
-- `src/main/native-host/client.ts:191-219` consumes the host revision. `packages/desktop-shell/src/native-feature-adapter.ts:64-84` supports both `getSnapshot()` and per-feature snapshot events. Bonded and Shout renderers fetch an initial snapshot before subscribing (`apps/integrated/Bonded/src/renderer/App.tsx:196-200`, `apps/integrated/Shout/src/renderer/App.tsx:134-138`); Amove does the same in its native controller (`apps/integrated/Amove/src/main/native-feature.ts:105-110`). Suppressing an equal update does not remove the initial state read.
-- `native/moirasia-runtime/Package.swift` currently keeps `MoirasiaFeatureService` out of the Swift test target's dependencies. The existing `MoirasiaProtocolTests` cover Bonded, Shout, and Amove runtimes, but not FeatureRuntime orchestration.
+- `src/main/application-controller.ts:21` stores one queue per `ApplicationId`.
+- `src/main/application-controller.ts:31-35` implements `refresh()` by reading `ApplicationAgent.snapshot()`, updating application facts, running `#retryPending()`, and emitting a snapshot.
+- `src/main/application-controller.ts:36,50,53-61` routes `open`, `quit`, and explicit `setLoginItem` through `#action`.
+- `src/main/application-controller.ts:66-81` serializes an action and holds its queue turn through a final refresh. It rechecks installation state after the wait and rebuilds the current agent record.
+- `src/main/application-controller.ts:83-89` runs pending retries directly. It reads a status and calls `agent.setLoginItem()` without entering `#queues`.
+- `src/main/shell-window.ts:94-98, 109, 143` polls `controller.refresh()` every two seconds while visible and also refreshes on focus and window creation. `src/main/ipc.ts:16` exposes refresh to the renderer; `src/main/ipc.ts:47` handles explicit login-item changes.
+- `src/main/application-controller.ts:96-98` runs agent snapshots with a five-second timeout; `src/main/application-controller.ts:103-108` gives login-item commands the same timeout.
+- The catalog has four IDs in order: Amove, Vox, Bonded, Shout (`packages/desktop-shell/src/application-catalog.ts:18-24`). The macOS agent currently reports only Amove, Vox, and Bonded (`native/application-agent/main.swift:5-6, 112-113`); the Controller maps missing Shout records to uninstalled/no path. Its snapshot computes `installed` and `path` with separate lookups (`native/application-agent/main.swift:113`), so the path check still matters if installation changes between them. Do not treat this plan as adding Shout agent support.
+- `LoginItemControlResult.status` includes `requires-approval` (`packages/desktop-shell/src/index.ts:24-29`), and the login-item control returns it when macOS requires approval (`packages/desktop-shell/src/login-item-control.ts:24-29`).
+- `tests/application-controller.test.ts:152-182` covers same-application command ordering and concurrency across different applications, but both ordering checks currently use zero-delay timers. Replace those waits with deterministic fake-agent call-entry signals/barriers while extending the fake.
+- `tests/application-controller.test.ts:184-220` covers explicit login-item changes, automatic retry success, and silent retry failure. It does not interleave a retry with an explicit command or another refresh, and it does not cover a missing path or non-enabled retry result.
+- `tests/application-controller.test.ts:11-62` already provides a scripted `ApplicationAgent` fake with call logging, gates, and failure controls. Extend that fake rather than exporting a queue or adding another test-only seam.
+- `CONTEXT.md` already defines the `Controller` term. No root `docs/adr/` directory exists, and this change does not reverse a recorded decision.
 
-## Target behavior
+## Architecture
 
-### State ownership
+`ApplicationController` remains the one deepened module. Its interface continues to own the application snapshot and command outcomes. Its private per-application queue becomes the shared ordering mechanism for commands and retries targeting one application. A private map of queued/running retry promises coalesces overlapping refreshes by ID. `SwiftApplicationAgent` remains the production adapter; the scripted test fake remains the test adapter.
 
-`FeatureRuntime` and `ParentConnection` receive the same serial queue, labeled `com.moirasia.feature-service.state`, constructed once in `main.swift`. Initialize the module map, hooks, and settings before exposing the runtime. After initialization, keep every access to FeatureRuntime state on that queue:
+Keep public snapshot reads outside the per-application queue except for the final snapshot that `#action` currently awaits before releasing its turn. A retry reads the latest `ApplicationStatus` already reconciled into Controller state; it does not take a fresh agent snapshot after waiting. Snapshot reads do not mutate login-item settings, but they can overlap commands and update the status used by a queued retry.
 
-- Read the `modules` map there; do not change it after initialization.
-- Keep `revision`, `settings`, `installed`, `leases`, `moduleErrors`, `shellVisible`, `shutdownErrors`, and the emitted-snapshot cache there.
-- Run `handle(_:)`, `startInstalled()`, and `stopAll()` there.
-- Build snapshots and emit all three event types there.
-- Route `publishHook` and `eventHook` work from Bonded, Shout, and Amove through that queue.
+The deletion test says to keep both pieces of current behavior. Removing the retry loses login-item repair; removing the queue lets same-application writes race. The change concentrates retry ordering in the queue the Controller already owns.
 
-Keep the existing synchronous internal call shape. `handle(_:)`, `startInstalled()`, and `stopAll()` use a queue-specific key: if already on the shared queue, they execute inline; otherwise they synchronously enter it. This prevents deadlock when `host.prepareToQuit` reaches `stopAll()` from inside `handle(_:)`, and serializes the SIGTERM path with incoming requests.
+## Required invariants
 
-ParentConnection uses this same queue to serialize decoded requests and write their responses in order. Its calls into FeatureRuntime execute inline on the queue. The queue is a construction-time dependency, not a new protocol or an additional serialization hop.
-
-### Event and revision rules
-
-| Event path | Proposed rule |
-|---|---|
-| `host.snapshotChanged` | Always emit when the existing runtime calls `publishSnapshot()`. Increment revision once and include that revision in the full snapshot payload. |
-| `<feature>.snapshot` | Capture the module snapshot on the FeatureRuntime queue. If it equals the last payload passed to `emit` for that feature, do not emit or increment revision. Otherwise cache it, increment revision, and pass the event to `emit`. |
-| Named event such as `ui.toggleShelf` | While active, always emit. Increment revision once. Never compare it with snapshot payloads. Drop hooks queued after shutdown completes. |
-| `host.getSnapshot` response | Return the revision observed on the FeatureRuntime queue with the corresponding aggregate snapshot. Do not emit an event for the read. |
-| Host-forwarded revision | Leave HostApplication's existing `max(hostRevision + 1, incomingEvent.revision)` rule unchanged. |
-
-The snapshot cache lives only for the FeatureRuntime process. It records the last payload passed to `emit`, not confirmed wire delivery: the production emitter catches and logs writer failures, and this plan adds no retry. An identical module snapshot on a start/stop transition does not require a per-feature event because `host.snapshotChanged` always carries the changed feature status. A newly started Feature host begins with an empty cache and publishes its initial snapshots.
-
-FeatureRuntime's event envelope uses `UInt64`, while the full snapshot stores the revision as `Double`; exact field equality is guaranteed only through 2^53. Tests assert that equality at their ordinary revision values. No representation or overflow-policy change is included.
-
-Queue submission order, not wall-clock timing, determines the shutdown boundary. Hook work submitted ahead of the `stopAll()` block runs first. Work submitted behind it, including off-queue hooks produced while a module is stopping, runs after `stopAll()` sets `shutdownErrors` and is dropped. A semantic hook called inline from the shared queue during `module.stop()` runs before that marker is set and is emitted before the shutdown snapshot. Successful shutdown stores an empty, non-`nil` `shutdownErrors` array. `startInstalled()` resets the marker before startup; production calls it only from `ParentConnection.start()`.
-
-### Preserve the writer lock
-
-Responses and FeatureRuntime events use the same queue after this change. Keep `FramedWriter`'s lock unchanged. Removing a protocol-level framing safeguard is unrelated to this refactor.
+1. A queued `open`, `quit`, explicit login-item change, or automatic retry for one ID never overlaps another queued operation for that ID.
+2. Queue insertion order determines command/retry order. An explicit request submitted while a retry is in flight waits behind it. A retry submitted behind an explicit request waits, then rechecks whether it still has work.
+3. Queue state remains keyed by `ApplicationId`. Explicit operations for different IDs can run concurrently. Each `#retryPending()` invocation retains its current sequential `APPLICATION_IDS` order; this is not a global queue or a promise that retries across concurrent refreshes are serialized.
+4. At most one automatic retry per ID may be queued or running. If pending is still set when an overlapping refresh reaches retry scheduling, it awaits that same promise instead of adding another retry. After it settles, a later refresh may retry again if pending remains.
+5. The queue recovers after a rejected operation so one failed call does not poison later work.
+6. A retry checks `pendingLoginItems[id]` again after waiting. If the flag is gone, it makes no agent call.
+7. A retry reads the latest reconciled `ApplicationStatus` when its turn starts, not a fresh agent snapshot. It skips an application that is no longer installed or has no path in that state.
+8. A retry calls `setLoginItem(path, id, true)` and stores every returned login-item result. It clears pending only when the returned status is `enabled`; `requires-approval` and other non-enabled results remain pending.
+9. A rejected retry agent call stays silent and leaves the pending flag set. If `clearPending()` rejects after an enabled retry result, its in-memory flag has already been removed before persistence (`src/main/settings.ts:29-32`), and the retry catch swallows the failure. For an explicit `setLoginItem`, the same persistence failure propagates through `#action` and becomes a visible command error even though the in-memory flag was removed. Preserve both existing paths; do not claim persistence failure rolls the flag back or expand this plan into persistence recovery.
+10. An explicit `setLoginItem` keeps its current behavior: it runs through `#action`, stores its result, clears pending on either `enabled` or `disabled`, and records a failed command on the application status.
+11. `#action` must not await a pending retry while holding its queue turn. Its final snapshot reconciliation is snapshot-only and remains in the existing `finally` path. This prevents self-deadlock and cross-application wait cycles while preserving reconciliation after both successful and failed commands.
+12. Public `refresh()` reconciles the application snapshot, awaits each retry it schedules or joins while pending remains set, emits once after retry outcomes land, and returns a snapshot that includes those outcomes.
+13. No queue state, retry-promise map, pending flag, or new field is added to persisted settings or the renderer contract.
 
 ## Implementation sequence
 
-### 1. Add direct FeatureRuntime test access
+### 1. Add deterministic interleaving tests
 
-**Files**
+Edit `tests/application-controller.test.ts` first.
 
-- `native/moirasia-runtime/Package.swift`
-- New `native/moirasia-runtime/Tests/MoirasiaProtocolTests/FeatureRuntimeTests.swift`
-- `native/moirasia-runtime/Sources/MoirasiaFeatureService/FeatureRuntime.swift`
-- `native/moirasia-runtime/Sources/MoirasiaFeatureService/FeatureModule.swift`
-- `native/moirasia-runtime/Sources/MoirasiaFeatureService/ParentConnection.swift`
-- `native/moirasia-runtime/Sources/MoirasiaFeatureService/main.swift`
+Extend `makeAgent()` so tests can gate `open`, `quit`, and `setLoginItem` by application and direction, return chosen `LoginItemControlResult` statuses, and expose deterministic call-entry signals, including for `snapshot()`. Track active and maximum simultaneous `setLoginItem` calls. Replace the existing zero-delay waits in the same-ID and different-ID tests with deterministic signals/barriers. Reuse the existing deferred-promise helper; do not add a queue test seam.
 
-**Work**
+Add or extend these cases through the public Controller interface:
 
-1. Add `MoirasiaFeatureService` to the `MoirasiaProtocolTests` target dependencies.
-2. Import it with `@testable import MoirasiaFeatureService` in the new test file. Name its `XCTestCase` class `FeatureRuntimeTests` so the focused SwiftPM filter selects the suite.
-3. Add an internal initializer that accepts `userData`, the serial queue, and a `[String: FeatureModule]` map. Require each map key to equal its module's `id`. Make the production initializer accept that same queue and delegate with the existing Bonded, Shout, and Amove module construction.
-4. Install the same publish and semantic-event hooks for injected and production modules. Keep `FeatureModule` internal and do not add a package product.
-5. Use a fake `BasicFeatureModule` that can update a JSON snapshot and fire either hook. Protect fake snapshot state with a lock or deterministic queue handoff so the test itself has no data race.
-6. Give every fixture a unique temporary `userData` directory. The injected initializer still reads `userData/settings.json`; do not point tests at real application data. Avoid `startInstalled()` and retry paths so fixtures do not acquire Runtime leases or start hardware-backed modules.
+1. **Retry then explicit change.** Load application records, mark Amove pending, and start `refresh()`. Hold the automatic `setLoginItem(amove, true)` call on a gate. Submit `setLoginItem(amove, false)`. While the retry remains gated, drain the known promise/microtask chain and assert the call log has not gained the explicit `off`; an unqueued implementation would enter before the gate is released. Release the gate and await both calls. Assert the order is `on`, then `off`, maximum active calls is one, the final login-item result is disabled, and the pending flag is clear.
+2. **Explicit change makes a queued retry obsolete.** Load application records, mark Amove pending, and hold an explicit `setLoginItem(amove, false)` after it enters the queue. Start a public `refresh()` and use its snapshot-entry signal plus a deterministic microtask barrier to ensure it has queued a retry behind that command. Release the explicit call. Assert its disabled result is stored and it clears the pending flag. Assert the queued retry rechecks the flag and does not issue `setLoginItem(amove, true)`.
+3. **Overlapping refreshes share one retry.** Mark Amove pending, hold the first automatic retry, and start a second `refresh()`. Use its snapshot-entry signal plus a deterministic microtask barrier to ensure it has reached retry scheduling while pending remains set, before releasing the first gate. Release with an enabled result. Await both refreshes and assert one `on` call total, both refreshes include the settled result, and maximum active calls is one.
+4. **A later refresh retries after a failed attempt.** Extend the existing silent-retry-failure test: after the first refresh settles with the pending flag intact, clear the fake failure and call `refresh()` again. Assert a second attempt runs and clears pending. This proves the coalescing entry is removed after settlement rather than suppressing all future retries.
+5. **A queued retry uses the latest reconciled installed state.** Load application records, mark Amove pending, and hold `open(amove)` in its queue. Start a public refresh. Use a snapshot-entry signal, then drain the known promise/microtask chain while the open gate remains closed so the refresh has reconciled its captured installed record and queued the retry. Change the fake records so Amove is uninstalled, then release `open`. Its final snapshot reconciliation updates Controller state before the retry turn. Assert the retry makes no login-item call and leaves pending set.
+6. **An installed record without a path is skipped.** Give Vox an installed record with no path, mark it pending, and call `refresh()`. Assert no `setLoginItem` call occurs and pending remains. This is distinct from the uninstalled-after-wait case.
+7. **A non-enabled retry result remains pending.** Return `requires-approval` for the automatic `on` call. Assert the result is stored, pending remains, and no application error is added. This is a result value the production login-item control can return.
+8. **Action-final reconciliation does not retry.** Load application records, mark Amove and Vox pending, and make the explicit `setLoginItem(amove, false)` call fail. Assert the final snapshot reconciliation performs no automatic `on` calls for either ID and both pending flags remain set. Clear the fake failure, call public `refresh()`, and assert both pending retries then run. This covers the failed command's own ID and another application's pending work.
+9. **Different applications remain concurrent.** Keep the existing test that gates one application's action while another application's action proceeds. It protects per-ID command concurrency. Do not infer from this test that the sequential retry loop runs different IDs concurrently.
 
-The test-target dependency pattern was checked in a temporary SwiftPM package using the repository's Swift 6.4 toolchain. The executable target compiled as a test dependency and its `@testable` module imported without running its top-level `main.swift` code.
+Keep the existing tests for explicit result storage and visible command errors. The second case above pins explicit `disabled` result storage and pending clearing; retain the existing enabled-result and silent-agent-failure retry assertions. The current suite has no test for a missing retry path or a non-enabled retry result, so add the cases above rather than leaving those as conditional work.
 
-### 2. Share the runtime state queue
+Run the focused tests before changing production code. The interleaving cases should fail against the current direct retry path.
 
-**Files**
+### 2. Extract snapshot reconciliation from retry orchestration
 
-- `native/moirasia-runtime/Sources/MoirasiaFeatureService/main.swift`
-- `native/moirasia-runtime/Sources/MoirasiaFeatureService/ParentConnection.swift`
-- `native/moirasia-runtime/Sources/MoirasiaFeatureService/FeatureRuntime.swift`
-- `native/moirasia-runtime/Sources/MoirasiaFeatureService/FeatureModule.swift`
+In `src/main/application-controller.ts`, move the body that reads `agent.snapshot()` and rebuilds `#applications` into a private snapshot-reconciliation helper.
 
-**Work**
+The helper must preserve existing behavior:
 
-1. Construct one serial queue labeled `com.moirasia.feature-service.state` in `main.swift` before creating the runtime and connection. Pass that exact queue object to both initializers.
-2. Replace ParentConnection's privately created queue with the injected queue. Preserve its existing order of startup, requests, close, and stop operations.
-3. Store the shared queue in FeatureRuntime and set a queue-specific marker during initialization.
-4. Route `handle(_:)`, `startInstalled()`, and `stopAll()` through a reentrant queue helper. Calls from ParentConnection already on the shared queue execute inline. The SIGTERM call from the main queue synchronously enters the same queue.
-5. Ensure the `host.prepareToQuit` branch can call `stopAll()` without nested-sync deadlock. The queue-specific helper must execute inline when already on the shared queue.
-6. Change `publishHook` to enqueue snapshot publication asynchronously. The closure must not synchronously wait for FeatureRuntime while Bonded, Shout, or Amove is publishing.
-7. Change `eventHook` to emit inline only when already on the shared queue. When invoked from a module-owned queue, enqueue asynchronously. This keeps in-queue request-triggered semantic events ahead of their response without blocking external callback queues. Check `shutdownErrors` in the inline path and again when either hook's queued work runs.
-8. Update the `FeatureModule` hook comments to say callbacks may fire from a module-owned queue and that FeatureRuntime schedules snapshot publication. Keep the hook types unchanged.
-9. Run all mutations of runtime dictionaries, status fields, settings, and revision on the shared queue. Keep initialization-only settings loading before the runtime is exposed.
-10. Make `publishSnapshot`, `publishFeatureSnapshot`, and `emitFeatureEvent` on-queue operations. Keep their event names and payload shapes unchanged.
-11. Add a per-feature cache of `JSONValue` snapshots. Use its existing `Equatable` conformance, with no serialization, hashing, or generic diff layer. Skip `<feature>.snapshot` only when that feature's payload equals its own last payload passed to `emit`. Store the payload before calling `emit`. The closure logs writer failures and does not return success, so do not roll back the cache or revision after a failed write.
-12. Keep host snapshot emissions unconditional. Keep named semantic events unconditional while active. Increment revision only for an event that passes the suppression and shutdown checks and is handed to `emit`.
-13. Ignore module-hook work that runs after `stopAll()` has completed. Reset the shutdown marker in `startInstalled()` as it does today.
-14. Leave ParentConnection framing, request IDs, response order, HostApplication revision rewriting, and the existing `FramedWriter` lock unchanged.
+- Rebuild all four application statuses from catalog facts and agent records.
+- Preserve each prior `loginItem` result and any current application error.
+- Update `#applications` only. Do not run retries or emit from this helper.
 
-### 3. Add focused Swift tests
+Then make public `refresh()` perform these steps in order:
 
-**File**
+1. Reconcile the application snapshot.
+2. Run `#retryPending()`, joining any retry already queued or running for an ID.
+3. Emit once.
+4. Return `snapshot()`.
 
-- `native/moirasia-runtime/Tests/MoirasiaProtocolTests/FeatureRuntimeTests.swift`
+Change the final refresh in `#action` to call the snapshot-only helper and emit the same final controller update. Keep it in the current `finally` path so reconciliation runs after both success and failure; do not call public `refresh()`, because public refresh starts retries and can re-enter a queue already held by `#action`. Preserve the current error behavior if this final snapshot itself fails.
 
-**Required cases**
+Keep `#action`'s current checks and behavior: reject an initially uninstalled application, recheck installed state inside the queued turn, rebuild the record from current status, clear prior errors before the operation, record explicit operation failures, and reconcile application facts before the turn completes.
 
-1. **Concurrent semantic callbacks are serialized and nonblocking.** Hold the test queue behind a semaphore, fire many named-event hooks from concurrent queues, and assert every hook call returns before releasing the queue. In the test emitter, record whether each call runs on the injected serial queue using a queue-specific marker. Release the queue, drain it with `host.getSnapshot`, and use a thread-safe recorder to assert every event arrives once, every emit ran on that queue, and revisions strictly increase. Running every emit on the same serial queue proves they cannot overlap without a flaky stress assertion.
-2. **Request plus callback yields one changed feature snapshot.** Have a fake module mutate its snapshot and fire `publishHook` inside `handle`. The normal post-command path emits the new value; the queued hook sees the same value and emits nothing extra. Use a follow-up `host.getSnapshot` call as a queue barrier before asserting.
-3. **Off-queue snapshot hooks do not block and still publish changes.** Hold the test queue behind a semaphore, change a fake module's snapshot on its module queue, fire `publishHook`, and assert the hook call returns before releasing the test queue. Then drain the queue and assert the changed payload emits once with the next revision.
-4. **The snapshot cache is per feature.** Give two fake modules the same initial JSON payload and fire both hooks; drain the queue with `host.getSnapshot` and assert both feature events emit. Re-fire an unchanged payload and drain again; assert both are suppressed. Change one module's payload, fire its hook, drain again, and assert only that feature emits, without affecting the other feature's cache.
-5. **Host snapshots remain unconditional.** Start a fake module directly, without acquiring a FeatureRuntime lease, then send `feature.setInstalled` with `installed: false` twice while its module snapshot payload stays unchanged. Assert both `host.snapshotChanged` events emit, each payload revision matches its event revision at these ordinary counter values, and the repeated per-feature snapshot is suppressed.
-6. **Semantic events are not coalesced and request ordering is preserved.** Have a fake module's request handler call `eventHook("ui.toggleShelf")` twice while `handle` runs on the shared queue. Assert both events are emitted before the response is returned, each with its own increasing revision.
-7. **Snapshot reads observe the serialized revision.** After queued work drains, request `host.getSnapshot` and assert its revision matches the last emitted event revision at the test's ordinary counter values.
-8. **Shutdown ordering and late hooks are explicit.** First enqueue a changed snapshot hook before calling `host.prepareToQuit`; assert it emits before the shutdown snapshot. In the fake module's `stop()`, invoke a semantic hook inline and assert it emits before the final host snapshot. Also arrange a callback on the fake module's own queue, release it only after `host.prepareToQuit` returns, and fire both hooks with a changed snapshot. After a `host.getSnapshot` queue barrier, assert those late hooks emitted nothing. Account for the host and per-feature snapshots that `stopAll()` itself emits. Use successful shutdown to verify the empty-but-non-`nil` shutdown marker.
+### 3. Share the per-application queue
 
-Use explicit semaphores and queue barriers rather than sleeps. The event recorder and fake snapshot state must be thread-safe; do not rely on a stress assertion over revision values alone.
+Factor the existing queue chaining into one private generic helper used by both `#action` and `#retryPending`.
 
-### 4. Keep the domain glossary aligned
+The helper should:
 
-**File**
+- Select the previous promise for the same `ApplicationId`, or an already-resolved promise if there is none.
+- Recover from a rejected previous operation before running the next operation.
+- Append the new operation and store its promise under that ID.
+- Return the new operation's typed promise to its caller.
 
-- `CONTEXT.md`
+Keep the queue map private. Do not export a lock, queue interface, or queue class. A private generic helper is enough because the existing `ApplicationAgent` injection already gives tests a second adapter at the seam.
 
-Update the existing `Feature host` entry to say that the native Feature host also serializes module snapshot and semantic-event publication and owns its native event revision. Do not add a separate `Feature event publisher` term. The existing `Feature runtime` term names the TypeScript runtime and should remain distinct.
+`#action` uses this helper for its existing application commands. `#retryPending` uses it for the automatic login-item write. Keep the queue turn around explicit operation plus final snapshot reconciliation, as today. A retry's queue turn includes its eligibility checks, agent call, result update, and pending-flag clear so another writer cannot split that transition.
 
-## Verification plan
+### 4. Route each retry through its queue
+
+Keep the retry loop in `#retryPending()` and preserve the current `APPLICATION_IDS` iteration order. For each ID:
+
+- Skip it early when the settings snapshot has no pending flag.
+- If that ID already has a queued or running retry promise, await that promise instead of enqueueing a duplicate.
+- Otherwise enter that ID's queue and store its promise in a private per-ID retry map before yielding. Remove the entry in `finally`, only if it still points to that same promise, so later refreshes can retry work that remains pending.
+- Inside the queued operation, read settings again. Return without an agent call if the pending flag was cleared while this retry waited.
+- Read the latest reconciled application status from `#applications`. Return if it is no longer installed or its path is absent. Do not query `agent.snapshot()` again inside the queued operation.
+- Call `agent.setLoginItem(status.path, id, true)`.
+- Store every returned `loginItem` result.
+- Clear the pending setting only for `enabled`; leave it set for every other returned status.
+- Preserve the current best-effort catch around the retry and pending-flag update. A rejected agent call remains silent and leaves the pending flag set. If persistence rejects after `clearPending()` has removed the in-memory flag, do not claim that value is restored or expand this plan into persistence recovery.
+
+The retry promises and the queue remain private. Keep the loop sequential; a single refresh does not run retry agent calls for different IDs in parallel. Do not call `refresh()` from inside a retry operation. In particular, a retry queue turn must not trigger another `#retryPending()` pass.
+
+The catalog contains four IDs, but the current macOS agent snapshot reports only Amove, Vox, and Bonded. The Controller sees Shout as uninstalled/no path and skips it. Preserve that current behavior; adding Shout support is outside this change.
+
+### 5. Update the domain glossary
+
+In `CONTEXT.md`, sharpen the existing `Controller` entry so it says the Controller owns per-application serialization for `open`, `quit`, explicit login-item changes, and pending login-item retries. Preserve the existing description of application facts and command ordering. Add no new term.
+
+No ADR is needed. No architecture document needs a change for this focused Controller behavior.
+
+### 6. Verify
 
 Run checks in this order:
 
-1. Focused Swift tests:
-   ```sh
-   swift test --package-path native/moirasia-runtime --filter FeatureRuntimeTests
-   ```
-2. Full native runtime tests:
-   ```sh
-   swift test --package-path native/moirasia-runtime
-   ```
-3. Runtime host and feature-service build through the repository script:
-   ```sh
-   pnpm runtime:build
-   ```
-   This script removes and recreates the ignored `native/staged/runtime` directory. Preserve any locally needed staged files there before running it; the current directory contains generated host and FeatureService binaries and app bundles.
-4. Existing TypeScript event-consumer tests, without changing their contract:
-   ```sh
-   pnpm exec vitest run tests/native-host-client.test.ts tests/native-feature-adapter.test.ts
-   ```
-   Both paths exist under the root `tests/` directory.
-5. Final diff review:
-   ```sh
-   git diff --check
-   git diff -- CONTEXT.md native/moirasia-runtime/Package.swift \\
-     native/moirasia-runtime/Sources/MoirasiaFeatureService/main.swift \\
-     native/moirasia-runtime/Sources/MoirasiaFeatureService/ParentConnection.swift \\
-     native/moirasia-runtime/Sources/MoirasiaFeatureService/FeatureRuntime.swift \\
-     native/moirasia-runtime/Sources/MoirasiaFeatureService/FeatureModule.swift \\
-     native/moirasia-runtime/Tests/MoirasiaProtocolTests/FeatureRuntimeTests.swift
-   ```
+1. `pnpm exec vitest run tests/application-controller.test.ts`
+2. `pnpm typecheck`
+3. `pnpm test`
 
-### Manual native-mode check
-
-On macOS with the native Feature host enabled:
-
-1. Open Bonded and observe its native snapshot subscription.
-2. Toggle monitoring once. Confirm the command resolves and FeatureRuntime emits one `bonded.snapshot` event for an identical post-command/callback state. The command response still carries its own snapshot. If the module state changes before the queued callback is handled, confirm the distinct follow-up event reaches the adapter.
-3. Leave Bonded running until a monitor status or observed-flow update arrives. Confirm background updates still reach the adapter.
-4. Trigger Amove's shelf hotkey. Confirm `ui.toggleShelf` still reaches the host exactly once per action.
-5. Quit the suite while a module callback is active. If a Shout command is in flight, allow its existing ten-second completion timeout before treating the wait as a deadlock. Confirm shutdown completes without a post-shutdown event and all output remains valid framed JSON lines.
-6. Restart the suite and confirm the fresh Feature host publishes initial snapshots with a fresh process-local cache. Verify `host.getSnapshot` reports the revision for that new Feature host process; do not compare it with revisions from the previous process.
-
-## Acceptance criteria
-
-- Every FeatureRuntime mutable field is read and written on the one shared serial queue after construction.
-- Requests, startup, shutdown, snapshots, module snapshot hooks, and named event hooks share one revision owner.
-- The FeatureRuntime `UInt64` revision increases strictly for each event handed to `emit` until its existing overflow boundary. A writer failure does not roll back the revision or cache, and no handed-off event has a duplicate or regressing revision.
-- Identical per-feature snapshot payloads do not generate repeated per-feature events. Changed payloads do.
-- `host.snapshotChanged` remains unconditional. Each semantic hook that passes the shutdown check is handed to `emit` once; in-queue request events remain ahead of their response. Writer errors remain logged and are not retried.
-- ParentConnection and FeatureRuntime use the same queue object and still process requests in order. HostApplication still restamps revisions. FramedWriter retains its lock.
-- Existing event and response schemas do not change.
-- FeatureRuntime tests exercise asynchronous hooks through the injected serial queue. Production passes the same queue object to FeatureRuntime and ParentConnection.
-- Focused and full Swift tests plus the runtime build pass.
-- No changes to Bonded enforcement policy, Shout audio operations, Amove hotkey actions, renderer contracts, or TypeScript host clients. Off-queue event publication is serialized as specified above.
+The focused suite verifies observable ordering through the Controller interface. Typechecking catches queue helper and promise typing errors. The full suite provides broad regression coverage, but do not claim it directly verifies shell polling or the refresh IPC handler: `tests/shell-window.test.ts` covers window lifecycle without asserting refresh cadence, and there is no dedicated IPC refresh test. The public Controller interface remains unchanged, so no shell or IPC code needs modification. This plan changes no rendered UI, so browser testing is not needed.
 
 ## Risks and limits
 
-- **A module snapshot may change before its queued hook runs.** The hook carries only a signal, not a frozen payload, so FeatureRuntime reads the latest module snapshot when it handles the hook. Snapshot events represent current state, not every intermediate transition. A different payload still emits; only equal per-feature payloads coalesce. Named semantic events remain separate and are never coalesced.
-- **Feature snapshot equality affects notification counts.** Only equal per-feature payloads are suppressed. FeatureRuntime's full `host.snapshotChanged` payload still publishes aggregate feature status and snapshots. HostApplication's health-only `host.snapshotChanged` events remain outside this cache and unchanged. Tests establish this separation explicitly.
-- **Shutdown ordering follows queue submission order.** A hook submitted ahead of the `stopAll()` block runs first; one submitted behind it runs after. A semantic hook invoked inline during `module.stop()` is emitted before the shutdown marker; off-queue hooks queued during the stop are dropped after the marker is set. Tests cover callbacks on both sides of that boundary.
-- **The FeatureRuntime queue does not make module snapshots thread-safe.** Bonded serializes its snapshot access on its own queue. Amove locks the state returned by `snapshotValues()`. Shout's `ShoutRuntime.snapshot` and its callback-driven mutations share no lock or serial queue, so a background Shout update can overlap `ShoutModule.snapshot()`. This plan leaves that pre-existing module-level synchronization issue unchanged; it only serializes FeatureRuntime state and event emission.
-- **Concurrent off-queue callbacks are ordered by queue submission, not by when source actions began.** Preserve the stronger before-response guarantee only for semantic hooks invoked inline while request handling is already on the shared queue.
-- **The shared queue can delay shutdown behind an active request.** Shout request handling can wait up to ten seconds in `waitForCompletion` (`native/moirasia-runtime/Sources/MoirasiaFeatureService/FeatureModules.swift:180-187`); the SIGTERM handler on the main queue waits synchronously to enter the shared queue. Keep this serialization so shutdown does not race an in-flight request, and allow for that existing timeout in the manual quit check.
-- **Host-level re-sequencing can hide some upstream ordering defects.** Tests target the native FeatureRuntime directly, before HostApplication rewrites the revision.
-- **Revision representation has existing high-value limits.** FeatureRuntime and HostApplication use ordinary `UInt64` increments, which trap at overflow. FeatureRuntime encodes the full-snapshot revision as `Double`, so it stops representing every integer exactly above 2^53. This plan keeps both existing representations and makes no overflow/schema change; tests assert exact equality at ordinary revision values.
+- **Retry timing after an action.** The old `#action` final `refresh()` retried every pending ID, including the command's own ID when an explicit login-item operation failed and left its flag set. The new internal snapshot-only reconciliation will not. Pending retries will run at the next public `refresh()`. That normally occurs at shell creation, focus, explicit refresh, or the visible-window polling interval. The plan chooses this timing change over retry orchestration inside a held queue, which can deadlock.
+- **Pending state changes while waiting.** The pre-queue check is only an optimization. The in-queue check is required for correctness.
+- **Snapshot freshness stays unchanged.** Public `ApplicationAgent.snapshot()` calls stay outside the per-application queue, and concurrent refreshes can complete their snapshots out of order. A retry checks the latest status written into Controller state, not a fresh agent snapshot taken after the wait or necessarily the newest OS observation. The app can be removed or moved after that snapshot; the control call may then fail and remain pending for a later refresh. This plan coalesces retries, not snapshot requests, and does not add global agent serialization.
+- **Each refresh retry pass remains sequential across IDs.** Keep the current loop order. Per-ID queues allow explicit commands on other IDs to proceed. This does not add a global lock across concurrent refreshes.
+- **Polling must not build a retry backlog.** The visible shell polls every two seconds, and the login-item executable has a five-second timeout. Share one queued/running retry promise per ID across overlapping refreshes. After it settles, a later refresh may retry again if pending remains.
+- **No user-facing error for a failed agent retry.** It continues to wait for the next refresh, matching current behavior. A failed settings write follows the existing store semantics and is not redesigned here.
 
-## Non-goals
+## Out of scope
 
-- Change the `HostEvent` protocol, version, payload schema, event names, or TypeScript decoders.
-- Move revision ownership into `MoirasiaHost` or remove its event restamping.
-- Change module command responses, module snapshot contents, or `host.getSnapshot` fields.
-- Change Bonded, Shout, or Amove runtime policies or their internal queue designs.
-- Deduplicate host-wide snapshots or semantic events.
-- Add event persistence, replay, retries, new metrics, or a new publisher package.
-- Expand this change into other architecture-review candidates.
+- Changing the Swift application agent or its command protocol.
+- Changing explicit command error messages or login-item result handling.
+- Serializing work globally across applications.
+- Adding locks to `ShellSettingsStore` or changing settings persistence.
+- Moving retries to `ShellWindowLifecycle`, IPC, or a new module.
+- Changing refresh intervals, retry backoff, or adding retry telemetry.
+- Adding renderer controls, UI states, or new application status fields.
+- Revisiting native Feature host recovery or any unrelated recent architecture work.
+
+## Completion criteria
+
+- Every `ApplicationController` call to `ApplicationAgent.setLoginItem()` for an application, whether explicit or automatic, runs in that application's existing serialized queue.
+- The interleaving tests prove no same-application overlap, stale pending flags and uninstalled/pathless applications are skipped, and overlapping refreshes that still observe pending work share one retry promise.
+- A later refresh can retry again after an agent rejection or non-enabled result leaves pending set.
+- Explicit commands on different application IDs remain independent; retry calls within one `#retryPending()` pass remain sequential in catalog order.
+- Retry failure, explicit error reporting, setting-clear rules, and controller snapshots keep the behaviors listed above.
+- The Controller term in `CONTEXT.md` reflects retry ownership.
+- The focused tests, typecheck, and full test suite pass.

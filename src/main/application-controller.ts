@@ -18,7 +18,8 @@ export interface ApplicationAgent { snapshot(): Promise<readonly AgentRecord[]>;
 export class ApplicationController {
   #applications: ApplicationStatus[] = applicationCatalog.entries.map(({ id, label, bundleId }) => ({ id, label, bundleId, installed: false, running: false }))
   #listeners = new Set<(snapshot: ControllerSnapshot) => void>()
-  #queues = new Map<ApplicationId, Promise<ControllerSnapshot>>()
+  #queues = new Map<ApplicationId, Promise<unknown>>()
+  #retryPromises = new Map<ApplicationId, Promise<void>>()
   #errors = new Map<ApplicationId, string>()
   #page: ControllerPage = 'general'
   readonly #disposeFeatureStatus: () => void
@@ -29,8 +30,7 @@ export class ApplicationController {
   snapshot(): ControllerSnapshot { return { applications: structuredClone(this.#applications), appearances: this.appearances.get(), features: this.features.statuses() } }
   subscribe(listener: (snapshot: ControllerSnapshot) => void): () => void { this.#listeners.add(listener); return () => this.#listeners.delete(listener) }
   async refresh(): Promise<ControllerSnapshot> {
-    const records = await this.agent.snapshot()
-    this.#applications = APPLICATION_IDS.map((id) => { const record = records.find((item) => item.id === id); const prior = this.#applications.find((item) => item.id === id); const error = this.#errors.get(id); const { label, bundleId } = applicationCatalog.get(id); return { id, label, bundleId, installed: record?.installed ?? false, running: record?.running ?? false, ...(record?.path ? { path: record.path } : {}), ...(prior?.loginItem ? { loginItem: prior.loginItem } : {}), ...(error !== undefined ? { error } : {}) } })
+    await this.#reconcileApplications()
     await this.#retryPending(); this.#emit(); return this.snapshot()
   }
   async open(id: ApplicationId): Promise<ControllerSnapshot> { return this.#action(id, async (record) => { await this.agent.open(record) }) }
@@ -63,30 +63,55 @@ export class ApplicationController {
   openLoginItemsSettings(): Promise<void> { return this.agent.openLoginItemsSettings() }
   close(): void { this.#disposeFeatureStatus(); this.appearances.close() }
 
-  /** Serialized per application: a queued turn re-checks installed state, rebuilds its record from it, and runs the operation before the finally-refresh. */
+  /** Serialized per application: a queued turn re-checks installed state, rebuilds its record, and reconciles before releasing the turn. */
   async #action(id: ApplicationId, operation: (record: AgentRecord) => Promise<void>): Promise<ControllerSnapshot> {
     const current = this.#applications.find((item) => item.id === id)
     if (!current?.installed) throw new Error(`${applicationCatalog.get(id).label} is not installed.`)
-    const run = (this.#queues.get(id) ?? Promise.resolve()).catch(() => undefined).then(async (): Promise<ControllerSnapshot> => {
+    return this.#enqueue(id, async (): Promise<ControllerSnapshot> => {
       this.#errors.delete(id); this.#emit()
       const status = this.#applications.find((item) => item.id === id)
       if (!status?.installed) throw new Error(`${applicationCatalog.get(id).label} is not installed.`)
       const record = { id, installed: status.installed, running: status.running, ...(status.path ? { path: status.path } : {}) }
       try { await operation(record) }
       catch (error) { this.#errors.set(id, message(error)); throw error }
-      finally { await this.refresh() }
+      finally { await this.#reconcileApplications(); this.#emit() }
       return this.snapshot()
     })
-    this.#queues.set(id, run)
-    return run
   }
+  /** Rebuild application facts from the agent snapshot without retrying or emitting. */
+  async #reconcileApplications(): Promise<void> {
+    const records = await this.agent.snapshot()
+    this.#applications = APPLICATION_IDS.map((id) => { const record = records.find((item) => item.id === id); const prior = this.#applications.find((item) => item.id === id); const error = this.#errors.get(id); const { label, bundleId } = applicationCatalog.get(id); return { id, label, bundleId, installed: record?.installed ?? false, running: record?.running ?? false, ...(record?.path ? { path: record.path } : {}), ...(prior?.loginItem ? { loginItem: prior.loginItem } : {}), ...(error !== undefined ? { error } : {}) } })
+  }
+  /** Retry pending login-item work inside the same per-application queue as explicit commands. */
   async #retryPending(): Promise<void> {
     for (const id of APPLICATION_IDS) {
       if (!this.settings.get().pendingLoginItems[id]) continue
-      const status = this.#applications.find((item) => item.id === id)
-      if (!status?.installed || !status.path) continue
-      try { const result = await this.agent.setLoginItem(status.path, id, true); this.#applications = this.#applications.map((item) => item.id === id ? { ...item, loginItem: result } : item); if (result.status === 'enabled') await this.settings.clearPending(id) } catch { /* retry on next refresh */ }
+      const existing = this.#retryPromises.get(id)
+      if (existing) { await existing.catch(() => undefined); continue }
+      let attempt: Promise<void>
+      attempt = this.#enqueue(id, async (): Promise<void> => {
+        try {
+          if (!this.settings.get().pendingLoginItems[id]) return
+          const status = this.#applications.find((item) => item.id === id)
+          if (!status?.installed || !status.path) return
+          const result = await this.agent.setLoginItem(status.path, id, true)
+          this.#applications = this.#applications.map((item) => item.id === id ? { ...item, loginItem: result } : item)
+          if (result.status === 'enabled') await this.settings.clearPending(id)
+        } catch { /* retry on next refresh */ }
+      }).finally(() => {
+        if (this.#retryPromises.get(id) === attempt) this.#retryPromises.delete(id)
+      })
+      this.#retryPromises.set(id, attempt)
+      await attempt
     }
+  }
+  /** Append an operation to one application's queue; a rejected operation never poisons later turns. */
+  #enqueue<T>(id: ApplicationId, operation: () => Promise<T>): Promise<T> {
+    const previous = this.#queues.get(id) ?? Promise.resolve()
+    const run = previous.catch(() => undefined).then(operation)
+    this.#queues.set(id, run)
+    return run
   }
   #emit(): void { const snapshot = this.snapshot(); for (const listener of this.#listeners) listener(snapshot) }
 }

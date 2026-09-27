@@ -26,36 +26,70 @@ function deferred(): { promise: Promise<void>; resolve: () => void } {
   return { promise, resolve }
 }
 
-/** Scripted ApplicationAgent: call log, mutable snapshot records, optional per-call gates, and fail switches. */
+/** Deterministic microtask barrier: lets already-scheduled promise continuations run without timer sleeps. */
+async function drain(rounds = 6): Promise<void> { for (let index = 0; index < rounds; index += 1) await Promise.resolve() }
+
+/** Scripted ApplicationAgent: call log, mutable records, per-call gates and entry signals, and failure/result controls. */
 function makeAgent(records: FakeRecord[] = []) {
   const calls: string[] = []
   const opens: FakeRecord[] = []
   const gates = new Map<string, { promise: Promise<void>; resolve: () => void }>()
-  const state: { failOpen?: Error | undefined; failSetLogin?: Error | undefined } = {}
+  const state: { failOpen?: Error | undefined; failSetLogin?: Error | undefined; setLoginStatus?: LoginItemControlResult['status'] | undefined; setLoginResults?: Partial<Record<string, LoginItemControlResult['status']>> } = {}
+  const signals = new Map<string, { promise: Promise<void>; resolve: () => void }[]>()
+  const counts = new Map<string, number>()
   let current = records
+  let activeSetLoginItems = 0
+  let maxSetLoginItems = 0
+  const signalFor = (key: string, index: number) => {
+    const list = signals.get(key) ?? []
+    while (list.length <= index) list.push(deferred())
+    signals.set(key, list)
+    return list[index]!
+  }
+  const entered = (key: string): void => {
+    const index = counts.get(key) ?? 0
+    counts.set(key, index + 1)
+    signalFor(key, index).resolve()
+  }
   const agent: ApplicationAgent = {
-    async snapshot() { calls.push('snapshot'); return current },
+    async snapshot() { calls.push('snapshot'); entered('snapshot'); return current },
     async open(record) {
       calls.push(`open:${record.id}`)
       opens.push(record)
+      entered(`open:${record.id}`)
       if (state.failOpen) throw state.failOpen
       await gates.get(`open:${record.id}`)?.promise
       current = current.map((item) => item.id === record.id ? { ...item, running: true } : item)
     },
     async quit(record) {
       calls.push(`quit:${record.id}`)
+      entered(`quit:${record.id}`)
       await gates.get(`quit:${record.id}`)?.promise
       current = current.map((item) => item.id === record.id ? { ...item, running: false } : item)
       return true
     },
     async setLoginItem(_bundlePath, id, enabled) {
-      calls.push(`setLoginItem:${id}:${enabled ? 'on' : 'off'}`)
-      if (state.failSetLogin) throw state.failSetLogin
-      return controlResult(enabled ? 'enabled' : 'disabled', id)
+      const key = `setLoginItem:${id}:${enabled ? 'on' : 'off'}`
+      calls.push(key)
+      activeSetLoginItems += 1
+      maxSetLoginItems = Math.max(maxSetLoginItems, activeSetLoginItems)
+      entered(key)
+      try {
+        if (state.failSetLogin) throw state.failSetLogin
+        await gates.get(key)?.promise
+        const status = state.setLoginResults?.[`${id}:${enabled ? 'on' : 'off'}`] ?? state.setLoginStatus ?? (enabled ? 'enabled' : 'disabled')
+        return controlResult(status, id)
+      } finally { activeSetLoginItems -= 1 }
     },
     async openLoginItemsSettings() { calls.push('openLoginItemsSettings') }
   }
-  return { agent, calls, opens, gates, state, setRecords: (next: FakeRecord[]) => { current = next } }
+  return {
+    agent, calls, opens, gates, state,
+    setRecords: (next: FakeRecord[]) => { current = next },
+    entry: (key: string, occurrence = 1): Promise<void> => signalFor(key, occurrence - 1).promise,
+    activeSetLoginItems: (): number => activeSetLoginItems,
+    maxSetLoginItems: (): number => maxSetLoginItems
+  }
 }
 
 /** Structural FeatureRuntime fake: the controller touches only subscribe/statuses/setActive/activate/setInstalled/relaunch. */
@@ -156,7 +190,8 @@ describe('ApplicationController', () => {
     agent.gates.set('open:amove', gate)
     const first = controller.open('amove')
     const second = controller.quit('amove')
-    await new Promise((resolve) => setTimeout(resolve, 0))
+    await agent.entry('open:amove')
+    await drain()
     expect(agent.calls).toEqual(['snapshot', 'open:amove'])
     gate.resolve()
     const afterOpen = await first
@@ -173,7 +208,7 @@ describe('ApplicationController', () => {
     agent.gates.set('open:amove', gate)
     const first = controller.open('amove')
     const second = controller.quit('vox')
-    await new Promise((resolve) => setTimeout(resolve, 0))
+    await agent.entry('quit:vox')
     expect(agent.calls).toContain('quit:vox')
     gate.resolve()
     const [afterOpen, afterQuit] = await Promise.all([first, second])
@@ -210,14 +245,150 @@ describe('ApplicationController', () => {
     expect(settings.get().pendingLoginItems).toEqual({})
   })
 
-  it('keeps a failing retry pending and stays silent', async () => {
+  it('keeps a failing retry pending and silent, then retries on the next refresh', async () => {
     const { controller, settings, agent } = await makeController({ records: APP_RECORDS })
     await settings.update({ pendingLoginItems: { vox: true } })
     agent.state.failSetLogin = new Error('control failed')
-    const snapshot = await controller.refresh()
+    const first = await controller.refresh()
     expect(agent.calls).toContain('setLoginItem:vox:on')
     expect(settings.get().pendingLoginItems).toEqual({ vox: true })
+    expect(first.applications.find(({ id }) => id === 'vox')?.error).toBeUndefined()
+
+    agent.state.failSetLogin = undefined
+    const second = await controller.refresh()
+    expect(agent.calls.filter((call) => call === 'setLoginItem:vox:on')).toHaveLength(2)
+    expect(second.applications.find(({ id }) => id === 'vox')?.loginItem?.status).toBe('enabled')
+    expect(settings.get().pendingLoginItems).toEqual({})
+  })
+
+  it('runs a pending retry ahead of a later explicit change for the same application', async () => {
+    const { controller, settings, agent } = await makeController({ records: APP_RECORDS })
+    await controller.refresh()
+    await settings.update({ pendingLoginItems: { amove: true } })
+    const retryGate = deferred()
+    agent.gates.set('setLoginItem:amove:on', retryGate)
+    agent.state.setLoginResults = { 'amove:on': 'requires-approval' }
+
+    const refreshing = controller.refresh()
+    await agent.entry('setLoginItem:amove:on')
+    const explicit = controller.setLoginItem('amove', false)
+    await drain()
+    const callsWhileGated = [...agent.calls]
+    const activeWhileGated = agent.activeSetLoginItems()
+
+    retryGate.resolve()
+    await refreshing
+    const afterExplicit = await explicit
+    expect(callsWhileGated).toEqual(['snapshot', 'snapshot', 'setLoginItem:amove:on'])
+    expect(activeWhileGated).toBe(1)
+    expect(agent.calls).toEqual(['snapshot', 'snapshot', 'setLoginItem:amove:on', 'setLoginItem:amove:off', 'snapshot'])
+    expect(agent.maxSetLoginItems()).toBe(1)
+    expect(afterExplicit.applications.find(({ id }) => id === 'amove')?.loginItem?.status).toBe('disabled')
+    expect(settings.get().pendingLoginItems).toEqual({})
+  })
+
+  it('skips a queued retry when an explicit change clears the pending flag first', async () => {
+    const { controller, settings, agent } = await makeController({ records: APP_RECORDS })
+    await controller.refresh()
+    await settings.update({ pendingLoginItems: { amove: true } })
+    const explicitGate = deferred()
+    agent.gates.set('setLoginItem:amove:off', explicitGate)
+    agent.state.setLoginResults = { 'amove:on': 'requires-approval' }
+
+    const explicit = controller.setLoginItem('amove', false)
+    await agent.entry('setLoginItem:amove:off')
+    const refreshing = controller.refresh()
+    await agent.entry('snapshot', 2)
+    await drain()
+    explicitGate.resolve()
+
+    const afterExplicit = await explicit
+    await refreshing
+    expect(agent.calls).toEqual(['snapshot', 'setLoginItem:amove:off', 'snapshot', 'snapshot'])
+    expect(afterExplicit.applications.find(({ id }) => id === 'amove')?.loginItem?.status).toBe('disabled')
+    expect(settings.get().pendingLoginItems).toEqual({})
+  })
+
+  it('shares one pending retry across overlapping refreshes', async () => {
+    const { controller, settings, agent } = await makeController({ records: APP_RECORDS })
+    await controller.refresh()
+    await settings.update({ pendingLoginItems: { amove: true } })
+    const retryGate = deferred()
+    agent.gates.set('setLoginItem:amove:on', retryGate)
+
+    const first = controller.refresh()
+    await agent.entry('setLoginItem:amove:on')
+    const second = controller.refresh()
+    await agent.entry('snapshot', 2)
+    await drain()
+    retryGate.resolve()
+
+    const [firstSnapshot, secondSnapshot] = await Promise.all([first, second])
+    expect(agent.calls.filter((call) => call === 'setLoginItem:amove:on')).toHaveLength(1)
+    expect(agent.maxSetLoginItems()).toBe(1)
+    expect(firstSnapshot.applications.find(({ id }) => id === 'amove')?.loginItem?.status).toBe('enabled')
+    expect(secondSnapshot.applications.find(({ id }) => id === 'amove')?.loginItem?.status).toBe('enabled')
+    expect(settings.get().pendingLoginItems).toEqual({})
+  })
+
+  it('skips a queued retry when the application is no longer installed when its turn starts', async () => {
+    const { controller, settings, agent } = await makeController({ records: APP_RECORDS })
+    await controller.refresh()
+    await settings.update({ pendingLoginItems: { amove: true } })
+    const openGate = deferred()
+    agent.gates.set('open:amove', openGate)
+
+    const opening = controller.open('amove')
+    await agent.entry('open:amove')
+    const refreshing = controller.refresh()
+    await agent.entry('snapshot', 2)
+    await drain()
+    agent.setRecords([{ id: 'vox', installed: true, running: true, path: '/Applications/Vox.app' }])
+    openGate.resolve()
+
+    await opening
+    await refreshing
+    expect(agent.calls).toEqual(['snapshot', 'open:amove', 'snapshot', 'snapshot'])
+    expect(settings.get().pendingLoginItems).toEqual({ amove: true })
+  })
+
+  it('skips a pending retry for an installed application without a path', async () => {
+    const { controller, settings, agent } = await makeController({ records: [{ id: 'vox', installed: true, running: false }] })
+    await settings.update({ pendingLoginItems: { vox: true } })
+
+    const snapshot = await controller.refresh()
+    expect(agent.calls).toEqual(['snapshot'])
+    expect(settings.get().pendingLoginItems).toEqual({ vox: true })
+    expect(snapshot.applications.find(({ id }) => id === 'vox')?.loginItem).toBeUndefined()
+  })
+
+  it('keeps a pending retry for a non-enabled login-item result', async () => {
+    const { controller, settings, agent } = await makeController({ records: APP_RECORDS })
+    await settings.update({ pendingLoginItems: { vox: true } })
+    agent.state.setLoginStatus = 'requires-approval'
+
+    const snapshot = await controller.refresh()
+    expect(snapshot.applications.find(({ id }) => id === 'vox')?.loginItem).toMatchObject({ status: 'requires-approval', appId: 'vox' })
+    expect(settings.get().pendingLoginItems).toEqual({ vox: true })
     expect(snapshot.applications.find(({ id }) => id === 'vox')?.error).toBeUndefined()
+  })
+
+  it('does not run pending retries from an action-final snapshot reconciliation', async () => {
+    const { controller, settings, agent } = await makeController({ records: APP_RECORDS })
+    await controller.refresh()
+    await settings.update({ pendingLoginItems: { amove: true, vox: true } })
+    agent.state.failSetLogin = new Error('control failed')
+
+    await expect(controller.setLoginItem('amove', false)).rejects.toThrow('control failed')
+    expect(agent.calls).toEqual(['snapshot', 'setLoginItem:amove:off', 'snapshot'])
+    expect(settings.get().pendingLoginItems).toEqual({ amove: true, vox: true })
+
+    agent.state.failSetLogin = undefined
+    const snapshot = await controller.refresh()
+    expect(agent.calls).toEqual(['snapshot', 'setLoginItem:amove:off', 'snapshot', 'snapshot', 'setLoginItem:amove:on', 'setLoginItem:vox:on'])
+    expect(snapshot.applications.find(({ id }) => id === 'amove')?.loginItem?.status).toBe('enabled')
+    expect(snapshot.applications.find(({ id }) => id === 'vox')?.loginItem?.status).toBe('enabled')
+    expect(settings.get().pendingLoginItems).toEqual({})
   })
 
   it('fans feature-status changes out to subscribers and gates restorable pages on installed-and-loaded features', async () => {
