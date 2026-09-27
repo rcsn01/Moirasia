@@ -275,40 +275,10 @@ final class FeatureRuntime {
         return url.lastPathComponent == "Moirasia" ? url.deletingLastPathComponent().path : userData
     }
 
-    private struct HostUiState {
-        var mainVisible = false
-        var mainFocused = false
-        var shelfVisible = false
-    }
-
     private func setHostUiState(_ request: HostRequest) throws -> JSONValue {
-        var updatedState = hostUiState
-        var updatesAmove = false
-        var updatesBonded = false
-
-        if let value = request.params["mainVisible"] {
-            guard let visible = value.boolValue else {
-                throw HostError(code: "invalid_params", message: "mainVisible must be a boolean.")
-            }
-            updatedState.mainVisible = visible
-            updatesBonded = true
-        }
-        if let value = request.params["mainFocused"] {
-            guard let focused = value.boolValue else {
-                throw HostError(code: "invalid_params", message: "mainFocused must be a boolean.")
-            }
-            updatedState.mainFocused = focused
-            updatesAmove = true
-        }
-        if let value = request.params["shelfVisible"] {
-            guard let visible = value.boolValue else {
-                throw HostError(code: "invalid_params", message: "shelfVisible must be a boolean.")
-            }
-            updatedState.shelfVisible = visible
-            updatesAmove = true
-        }
-
-        hostUiState = updatedState
+        _ = try hostUiState.apply(request.params)
+        let updatesAmove = request.params["mainFocused"] != nil || request.params["shelfVisible"] != nil
+        let updatesBonded = request.params["mainVisible"] != nil
         var changedErrors = false
         var firstError: Error?
 

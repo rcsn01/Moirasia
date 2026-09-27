@@ -18,20 +18,6 @@ final class HostUiStateRecovery {
     typealias ReplaySender = (HostRequest, UInt64, @escaping (HostResponse, UInt64) -> Void) -> Void
     typealias RestoredAnnouncer = ([String: JSONValue]) -> Void
 
-    private struct HostUiState: Equatable {
-        var mainVisible = false
-        var mainFocused = false
-        var shelfVisible = false
-
-        var params: [String: JSONValue] {
-            [
-                "mainVisible": .bool(mainVisible),
-                "mainFocused": .bool(mainFocused),
-                "shelfVisible": .bool(shelfVisible)
-            ]
-        }
-    }
-
     private let sendReplay: ReplaySender
     private let announceRestored: RestoredAnnouncer
 
@@ -86,19 +72,10 @@ final class HostUiStateRecovery {
     /// Merges a UI-state patch into the recovery copy. All recognized fields
     /// must be valid or nothing is absorbed; a no-op patch changes nothing.
     func retain(_ params: [String: JSONValue]) {
-        var updates: [String: Bool] = [:]
-        for key in ["mainVisible", "mainFocused", "shelfVisible"] {
-            guard let value = params[key] else { continue }
-            guard let boolean = value.boolValue else { return }
-            updates[key] = boolean
-        }
-
-        var next = hostUiState
-        if let value = updates["mainVisible"] { next.mainVisible = value }
-        if let value = updates["mainFocused"] { next.mainFocused = value }
-        if let value = updates["shelfVisible"] { next.shelfVisible = value }
-        guard next != hostUiState else { return }
-        hostUiState = next
+        let changed: Bool
+        do { changed = try hostUiState.apply(params) }
+        catch { return }
+        guard changed else { return }
         if replayInFlightGeneration != nil { replayStateChanged = true }
     }
 
