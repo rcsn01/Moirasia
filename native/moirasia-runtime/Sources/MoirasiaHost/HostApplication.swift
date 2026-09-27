@@ -17,20 +17,6 @@ struct HostConfiguration {
 final class HostApplication: NSObject, NSApplicationDelegate {
     typealias SupervisorFactory = (@escaping FeatureServiceSupervisor.EventHandler, @escaping FeatureServiceSupervisor.HealthHandler) -> FeatureServiceSupervisorDriving
 
-    private struct HostUiState: Equatable {
-        var mainVisible = false
-        var mainFocused = false
-        var shelfVisible = false
-
-        var params: [String: JSONValue] {
-            [
-                "mainVisible": .bool(mainVisible),
-                "mainFocused": .bool(mainFocused),
-                "shelfVisible": .bool(shelfVisible)
-            ]
-        }
-    }
-
     private let configuration: HostConfiguration
     private let supervisorFactory: SupervisorFactory
     private let runtimeDirectory: URL
@@ -48,13 +34,7 @@ final class HostApplication: NSObject, NSApplicationDelegate {
     private var serviceState: FeatureServiceSupervisor.HealthState = .starting
     private var serviceError: String?
     private var serviceRestartCount = 0
-    private var hostUiState = HostUiState()
-    private var activeGeneration: UInt64?
-    private var generationTerminal = false
-    private var initialSnapshotReceived = false
-    private var initialReplayAttempted = false
-    private var replayInFlightGeneration: UInt64?
-    private var replayStateChanged = false
+    private var uiStateRecovery: HostUiStateRecovery!
     private var shuttingDown = false
     private let stateQueue = DispatchQueue(label: "com.moirasia.host.state")
 
@@ -72,6 +52,24 @@ final class HostApplication: NSObject, NSApplicationDelegate {
         self.settings = ShellSettingsStore(userData: configuration.userData)
         self.launcher = ElectronLauncher(applicationPath: configuration.applicationPath)
         super.init()
+        self.uiStateRecovery = HostUiStateRecovery(
+            sendReplay: { [weak self] request, fallbackGeneration, completion in
+                guard let self else { return }
+                guard let supervisor = self.supervisor else {
+                    completion(HostResponse(id: request.id, error: HostError(code: "feature_service_unavailable", message: "MoirasiaFeatureService is not running.")), fallbackGeneration)
+                    return
+                }
+                supervisor.request(request) { [weak self] response, requestGeneration in
+                    guard let self else { return }
+                    self.stateQueue.async { completion(response, requestGeneration) }
+                }
+            },
+            announceRestored: { [weak self] params in
+                guard let self else { return }
+                self.revision += 1
+                self.server?.broadcast(HostEvent(event: "host.uiStateChanged", revision: self.revision, payload: .object(params)))
+            }
+        )
     }
 
     func start() throws {
@@ -167,7 +165,7 @@ final class HostApplication: NSObject, NSApplicationDelegate {
         case "host.retryFeature":
             forward(request) { response in client.send(.response(response)) }
         case "host.setUiState":
-            mergeHostUiState(request.params)
+            uiStateRecovery.retain(request.params)
             forward(request) { [weak self, weak client] response in
                 guard let self else { return }
                 self.stateQueue.async {
@@ -186,15 +184,11 @@ final class HostApplication: NSObject, NSApplicationDelegate {
     }
 
     private func forward(_ request: HostRequest, completion: @escaping (HostResponse) -> Void) {
-        forwardTagged(request) { response, _ in completion(response) }
-    }
-
-    private func forwardTagged(_ request: HostRequest, completion: @escaping (HostResponse, UInt64) -> Void) {
         guard let supervisor else {
-            completion(HostResponse(id: request.id, error: HostError(code: "feature_service_unavailable", message: "MoirasiaFeatureService is not running.")), activeGeneration ?? 0)
+            completion(HostResponse(id: request.id, error: HostError(code: "feature_service_unavailable", message: "MoirasiaFeatureService is not running.")))
             return
         }
-        supervisor.request(request, completion: completion)
+        supervisor.request(request) { response, _ in completion(response) }
     }
 
     private func injectSettings(_ response: HostResponse) -> HostResponse {
@@ -205,14 +199,8 @@ final class HostApplication: NSObject, NSApplicationDelegate {
 
     private func receive(_ event: HostEvent, generation: UInt64) {
         stateQueue.async { [weak self] in
-            guard let self, self.activeGeneration == generation, !self.generationTerminal else { return }
-            if event.event == "host.snapshotChanged", !self.initialSnapshotReceived, self.isFullSnapshot(event.payload) {
-                self.initialSnapshotReceived = true
-                if !self.initialReplayAttempted {
-                    self.initialReplayAttempted = true
-                    self.sendUiStateReplay(generation: generation)
-                }
-            }
+            guard let self else { return }
+            guard self.uiStateRecovery.accept(event: event, generation: generation) else { return }
             self.revision = max(self.revision + 1, event.revision)
             let payload = event.event == "host.snapshotChanged" ? self.withSettings(event.payload) : event.payload
             let rewritten = HostEvent(event: event.event, revision: self.revision, payload: payload)
@@ -225,22 +213,13 @@ final class HostApplication: NSObject, NSApplicationDelegate {
     private func receiveHealth(state: FeatureServiceSupervisor.HealthState, error: String?, restartCount: Int, generation: UInt64) {
         stateQueue.async { [weak self] in
             guard let self else { return }
-            if state == .starting {
-                if let activeGeneration = self.activeGeneration, generation <= activeGeneration { return }
-                self.activeGeneration = generation
-                self.generationTerminal = false
-                self.initialSnapshotReceived = false
-                self.initialReplayAttempted = false
-                self.replayInFlightGeneration = nil
-                self.replayStateChanged = false
-            } else {
-                guard self.activeGeneration == generation, !self.generationTerminal else { return }
-                if state == .error || state == .stopped {
-                    self.generationTerminal = true
-                    self.replayInFlightGeneration = nil
-                    self.replayStateChanged = false
-                }
+            let observation: HostUiStateRecovery.GenerationObservation
+            switch state {
+            case .starting: observation = .started
+            case .running: observation = .running
+            case .error, .stopped: observation = .ended
             }
+            guard self.uiStateRecovery.acceptGeneration(observation, generation: generation) else { return }
             self.serviceState = state
             self.serviceError = error
             self.serviceRestartCount = restartCount
@@ -254,71 +233,10 @@ final class HostApplication: NSObject, NSApplicationDelegate {
         stateQueue.async { [weak self] in
             guard let self else { return }
             let params: [String: JSONValue] = ["mainVisible": .bool(false), "mainFocused": .bool(false), "shelfVisible": .bool(false)]
-            self.mergeHostUiState(params)
+            self.uiStateRecovery.retain(params)
             let request = HostRequest(id: UUID().uuidString, method: "host.setUiState", params: params)
             self.forward(request) { _ in }
         }
-    }
-
-    private func mergeHostUiState(_ params: [String: JSONValue]) {
-        var updates: [String: Bool] = [:]
-        for key in ["mainVisible", "mainFocused", "shelfVisible"] {
-            guard let value = params[key] else { continue }
-            guard let boolean = value.boolValue else { return }
-            updates[key] = boolean
-        }
-
-        var next = hostUiState
-        if let value = updates["mainVisible"] { next.mainVisible = value }
-        if let value = updates["mainFocused"] { next.mainFocused = value }
-        if let value = updates["shelfVisible"] { next.shelfVisible = value }
-        guard next != hostUiState else { return }
-        hostUiState = next
-        if replayInFlightGeneration != nil { replayStateChanged = true }
-    }
-
-    private func isFullSnapshot(_ payload: JSONValue) -> Bool {
-        guard let object = payload.objectValue,
-              object["version"]?.numberValue == 1,
-              object["revision"]?.numberValue != nil,
-              object["settings"]?.objectValue != nil,
-              object["features"]?.arrayValue != nil else { return false }
-        return true
-    }
-
-    private func sendUiStateReplay(generation: UInt64) {
-        guard activeGeneration == generation, !generationTerminal else { return }
-        let request = HostRequest(id: UUID().uuidString, method: "host.setUiState", params: hostUiState.params)
-        replayStateChanged = false
-        replayInFlightGeneration = generation
-        forwardTagged(request) { [weak self] response, requestGeneration in
-            guard let self else { return }
-            self.stateQueue.async {
-                self.completeUiStateReplay(response, generation: requestGeneration)
-            }
-        }
-    }
-
-    private func completeUiStateReplay(_ response: HostResponse, generation: UInt64) {
-        guard activeGeneration == generation,
-              !generationTerminal,
-              replayInFlightGeneration == generation else { return }
-        replayInFlightGeneration = nil
-
-        let transportFailure = ["feature_service_crashed", "feature_service_unavailable"].contains(response.error?.code ?? "")
-        if transportFailure {
-            replayStateChanged = false
-            return
-        }
-        if replayStateChanged {
-            replayStateChanged = false
-            sendUiStateReplay(generation: generation)
-            return
-        }
-        guard response.ok else { return }
-
-        revision += 1
-        server?.broadcast(HostEvent(event: "host.uiStateChanged", revision: revision, payload: .object(hostUiState.params)))
     }
 
     private func publishSnapshotChanged() {

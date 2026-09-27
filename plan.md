@@ -1,199 +1,234 @@
-# Implementation plan: serialize pending login-item retries
+# Implementation plan: concentrate child-generation UI-state recovery in MoirasiaHost
 
 ## Decision
 
-Deepen the existing `ApplicationController` so pending login-item retries use the same per-application queue as explicit commands. Today `#action` queues `open`, `quit`, and `setLoginItem`, while `refresh()` calls `#retryPending()` directly. The visible shell polls `refresh()` every two seconds, but `SwiftApplicationAgent.setLoginItem()` can take up to five seconds. Retries can overlap explicit changes, and serializing them without coalescing would let each poll add another failed retry to the queue.
+Deepen `HostApplication` by extracting its parent-side recovery slice into one internal module, `HostUiStateRecovery`. Today the recovery machine is spread across the host: the memory-only copy plus six flags live as instance fields (`HostApplication.swift:51-57`), and the rules around one replay — generation fencing, the first-full-snapshot gate, coalescing of in-flight changes, outcome handling — are spread across `receive` (`:206-223`), `receiveHealth` (`:225-250`), `mergeHostUiState` (`:263-278`), and the replay send/complete pair (`:289-322`). `f07ad0c` (replay after child restart) introduced the whole machine in one change and had to reason about all of those paths at once; `3d84939` (serialize Feature host events) and `2c3cd4b` (retain UI state) shaped the child-side event serialization and retention that the machine coordinates with.
 
-Keep the public `ApplicationController` interface and `ApplicationAgent` seam unchanged. Add a private snapshot-reconciliation helper, a generic queue helper, and a private per-ID retry-promise map; add no module or public seam. Tests will exercise the behavior through the Controller and its existing injected fake agent.
+The new module owns that machine: the recovery copy, generation fencing, the first-full-snapshot replay gate, coalescing of changes that land while a replay is in flight, and the replay outcome handling. `HostApplication` keeps every I/O concern: the control server, the parent revision, settings injection, the supervisor transport, the launcher, and the status item. The change is behavior-preserving. All ten `HostRecoveryTests` must pass without modification; they pin behavior at the host's external seam and are the gate for the extraction.
+
+The deletion test says the module earns its keep: delete it and the copy, the six flags, and the four methods scatter back across `HostApplication`'s callbacks, so the complexity concentrates here instead of moving.
 
 ## Expected behavior
 
-- For one application, explicit commands and automatic login-item retries run in the order they enter that application's queue.
-- Per-application queues remain keyed by ID. Explicit commands for different applications can run concurrently; each `#retryPending()` invocation retains its sequential `APPLICATION_IDS` loop, so that pass does not run different IDs' retries concurrently.
-- A retry rechecks its pending flag and the latest reconciled installed status/path inside its queued turn. A user command may have cleared the pending flag while the retry waited.
-- When the pending flag is still set at retry scheduling, overlapping public refreshes for one ID share its queued or running retry promise. They do not append repeated attempts while a five-second agent call is still running. A later refresh can retry again if the pending flag remains set after that promise settles.
-- A rejected retry agent call remains silent and leaves the pending flag set. Explicit command failures continue to populate the application error. Their existing error behavior does not change.
-- `refresh()` still reads the application snapshot, waits for each retry it schedules or joins while the pending flag is set, emits one controller snapshot, and returns the latest state.
-- An explicit command still performs a final application snapshot before returning. That internal snapshot reconciliation will not run retries. Background retries run from public `refresh()` calls, including the initial and periodic shell refreshes. This avoids queue re-entry and cross-application wait cycles.
-- No renderer, native agent, settings format, or IPC changes are needed.
+Nothing observable changes. The behaviors that must survive the extraction exactly:
 
-## Decisions settled with recommended defaults
+1. A `host.setUiState` patch carrying a subset of the three recognized fields (`mainVisible`, `mainFocused`, `shelfVisible`) merges into the recovery copy; unknown keys and empty params change nothing; a patch containing any malformed recognized field absorbs nothing (all-or-nothing), while the request is still forwarded verbatim and the child's error is returned to the client.
+2. Retention is unconditional on the child's outcome: a patch retained while the child is unavailable is replayed on the next generation.
+3. After a supervised child restart, the parent replays the full retained copy exactly once, after the first full `host.snapshotChanged` event of the new generation. Partial or malformed snapshot payloads never trigger a replay, and later full snapshots in the same generation do not re-trigger one.
+4. Changes retained while a replay is in flight coalesce into one trailing replay when that replay completes, carrying the full copy. The chain repeats only while further changes land during in-flight replays; each completion sends at most one trailing replay.
+5. A replay that fails with a transport error (`feature_service_crashed`, `feature_service_unavailable`) clears the dirty flag and waits for the next generation. A product error is never retried for its own sake — no announcement, no resend — but a change retained while it was in flight still gets its one trailing replay, and a clean product-error completion ends the cycle without looping.
+6. A successful replay (initial or trailing) bumps the parent revision once and broadcasts `host.uiStateChanged` with the full copy params. A replay superseded by a trailing replay announces nothing until the trailing replay succeeds.
+7. Events and health observations from stale or terminal generations are dropped: no broadcast, no health-fact update, no replay completion effect.
+8. `desktopApplicationExited` retains all-false values and still forwards the reset request to the child even when the copy already holds false, ignoring the response.
+9. Everything else (revision monotonicity, settings injection into snapshot payloads, health payload broadcasting, launcher shows on `ui.openShell`/`ui.toggleShelf`, shutdown) is untouched.
+
+## Decisions settled with recommended answers
 
 The user asked to apply the recommended answer to each clarification. These are the choices used in this plan.
 
 | Question | Applied decision | Reason |
 |---|---|---|
-| What is in scope? | The pending login-item retry in `ApplicationController.#retryPending()` and its interaction with queued application commands. | This is the state-changing path that bypasses the queue. |
-| Which module owns the change? | Keep `ApplicationController`; add no new module. | It already owns application facts, retries, error reporting, and command ordering. |
-| What sits behind the seam? | Keep the existing `ApplicationAgent` seam and its production `SwiftApplicationAgent` and test fake. | The tests already substitute an agent and can control asynchronous calls. A second seam is unnecessary. |
-| What is serialized? | Use one queue per `ApplicationId` for commands and retries. Commands on distinct IDs remain concurrent. Keep `#retryPending()` sequential in catalog order, and let overlapping refreshes share one retry promise per ID. | This extends the existing per-application rule without a global lock or a backlog of duplicate retries. |
-| How does a queued retry decide whether to run? | Recheck the settings flag and latest reconciled installed status/path inside its queued turn. | An explicit command can resolve the pending work while the retry waits. The retry uses Controller state already refreshed by an agent snapshot; it does not take another agent snapshot inside the queue. |
-| How are overlapping retries handled? | When pending remains set, concurrent refreshes await the same queued or running retry for one ID. A later refresh can retry again if pending remains after it settles. | The visible shell polls every two seconds and the agent call times out after five seconds. Without coalescing, failed retries can pile up and delay explicit commands. |
-| How is refresh divided? | Public `refresh()` reconciles the snapshot and then retries. The final refresh inside `#action` reconciles only. | Calling retry orchestration while an action holds its queue can deadlock, including when two actions hold different application queues. |
-| What happens to failures? | Keep rejected retry agent calls silent and pending. Keep explicit command errors visible. | A background attempt is best effort; a user command must still report failure. |
-| Is the public interface changing? | No. Preserve controller methods, the injected `ApplicationAgent` shape, and snapshot fields. | Tests can verify ordering through existing methods. |
-| Do domain docs change? | Sharpen the existing `Controller` glossary entry to include automatic pending retries. Add no new domain term or ADR. | The glossary should describe the expanded ownership accurately. |
+| What is in scope? | The parent-side recovery slice of `HostApplication`: the memory-only recovery copy, generation fencing, the first-full-snapshot replay gate, replay coalescing, and replay outcomes. | One rule spread across five call paths is the friction; nothing else in the host changes. |
+| Which module owns the change? | A new internal module, `HostUiStateRecovery`, in `native/moirasia-runtime/Sources/MoirasiaHost/HostUiStateRecovery.swift`. `HostApplication` remains the host orchestrator and owns all I/O. | The recovery machine is one concept and deserves one module; no existing module fits, and the child-side `FeatureRuntime` already owns in-child retention. |
+| Is a new package target or protocol added? | No. The module is internal to the `MoirasiaHost` executable target; no protocol, no port, no `Package.swift` change. | One adapter means a hypothetical seam. Nothing varies across a port in production; new files are picked up by the existing target globs. |
+| What is the interface? | Three transition methods (`accept(event:generation:)`, `acceptGeneration(_:generation:)`, `retain(_:)`) plus two constructor-injected effect closures (`sendReplay`, `announceRestored`). | Depth: three methods hide validation, fencing, gating, coalescing, and outcome handling behind a small interface. |
+| How is health reported to the module? | A neutral `GenerationObservation` enum (`.started`, `.running`, `.ended`) mapped at the call site; `.error` and `.stopped` both map to `.ended`. | The module is a generation state machine, not a supervisor observer; it should not reference `FeatureServiceSupervisor`. |
+| What do the effect closures do? | `sendReplay` forwards a tagged `host.setUiState` through the supervisor and hops the completion to the state queue exactly once; with no supervisor it completes immediately with `feature_service_unavailable`, tagged with the caller's generation. `announceRestored` bumps the parent revision and broadcasts `host.uiStateChanged` with the full copy params. | The module owns the rules; the host owns transport and revision. Production wiring and test captures are two adapters at the internal seam, so the seam is real. |
+| What happens to `forwardTagged`? | The replay send is its only caller that consumes the tag; `forward` (`:189`) wraps it and always drops the tag. After the extraction the replay send moves into the module's `sendReplay` effect, `forward` becomes its only remaining caller, and `forwardTagged` inlines into `forward` with the identical nil-supervisor error code and message. | Deletion test: the module absorbs the tagged path; the untagged `forward` keeps its exact behavior. |
+| Is the flag set simplified? | `initialReplayAttempted` collapses into `initialSnapshotReceived`. Both always flip together in the gate and reset together on `.started`, so the inner check is always true when reached. The module holds the copy plus five flags. | Provable equivalence (below): both flags are written only in the gate branch (`:210`, `:212`) and in the `.started` reset (`:232-233`), so they are always equal and the inner check is dead. |
+| What is the threading contract? | The module is single-threaded by contract: every call occurs on the host state queue. No locks, no queue injection, no `DispatchSpecificKey` assertion. | The host already serializes every call site; assertions would add interface weight for no behavioral gain. The contract is documented in the module's doc comment. |
+| How is the module constructed? | In `HostApplication.init`, immediately after `super.init()`, into a `private var uiStateRecovery: HostUiStateRecovery!`; both closures capture `self` weakly. The constructor signature does not change. | Swift forbids capturing self before phase 1 completes, and an IUO property is implicitly nil-initialized; weak captures avoid a retain cycle. `main.swift:36` and the `HostRecoveryTests` harness are untouched. |
+| Which tests survive? | All ten `HostRecoveryTests` pass unchanged; they pin behavior at the host's socket seam. New `HostUiStateRecoveryTests` target the module's interface directly. The supervisor and FeatureRuntime suites are untouched. | The interface is the test surface: the host suite keeps crossing the host's external seam; the module suite crosses the internal seam. Editing the host suite would hide wiring regressions. |
+| Is the copy persisted? | No. It stays memory-only, as `CONTEXT.md` and `docs/architecture/standalone-applications.md:29` record. | No confirmed requirement; persistence would change crash-recovery semantics and belongs to a future decision. |
+| Do the domain docs change? | Add the **Host UI-state recovery** term to `CONTEXT.md`. The term is already present in the current working tree as an uncommitted edit, inserted after the Feature host entry; executing this step means verifying its position and wording and keeping it. No ADR: no `docs/adr/` directory exists and nothing here reverses a recorded decision. | The module names a concept the glossary describes but does not name. |
 
 ## Current evidence
 
-- `src/main/application-controller.ts:21` stores one queue per `ApplicationId`.
-- `src/main/application-controller.ts:31-35` implements `refresh()` by reading `ApplicationAgent.snapshot()`, updating application facts, running `#retryPending()`, and emitting a snapshot.
-- `src/main/application-controller.ts:36,50,53-61` routes `open`, `quit`, and explicit `setLoginItem` through `#action`.
-- `src/main/application-controller.ts:66-81` serializes an action and holds its queue turn through a final refresh. It rechecks installation state after the wait and rebuilds the current agent record.
-- `src/main/application-controller.ts:83-89` runs pending retries directly. It reads a status and calls `agent.setLoginItem()` without entering `#queues`.
-- `src/main/shell-window.ts:94-98, 109, 143` polls `controller.refresh()` every two seconds while visible and also refreshes on focus and window creation. `src/main/ipc.ts:16` exposes refresh to the renderer; `src/main/ipc.ts:47` handles explicit login-item changes.
-- `src/main/application-controller.ts:96-98` runs agent snapshots with a five-second timeout; `src/main/application-controller.ts:103-108` gives login-item commands the same timeout.
-- The catalog has four IDs in order: Amove, Vox, Bonded, Shout (`packages/desktop-shell/src/application-catalog.ts:18-24`). The macOS agent currently reports only Amove, Vox, and Bonded (`native/application-agent/main.swift:5-6, 112-113`); the Controller maps missing Shout records to uninstalled/no path. Its snapshot computes `installed` and `path` with separate lookups (`native/application-agent/main.swift:113`), so the path check still matters if installation changes between them. Do not treat this plan as adding Shout agent support.
-- `LoginItemControlResult.status` includes `requires-approval` (`packages/desktop-shell/src/index.ts:24-29`), and the login-item control returns it when macOS requires approval (`packages/desktop-shell/src/login-item-control.ts:24-29`).
-- `tests/application-controller.test.ts:152-182` covers same-application command ordering and concurrency across different applications, but both ordering checks currently use zero-delay timers. Replace those waits with deterministic fake-agent call-entry signals/barriers while extending the fake.
-- `tests/application-controller.test.ts:184-220` covers explicit login-item changes, automatic retry success, and silent retry failure. It does not interleave a retry with an explicit command or another refresh, and it does not cover a missing path or non-enabled retry result.
-- `tests/application-controller.test.ts:11-62` already provides a scripted `ApplicationAgent` fake with call logging, gates, and failure controls. Extend that fake rather than exporting a queue or adding another test-only seam.
-- `CONTEXT.md` already defines the `Controller` term. No root `docs/adr/` directory exists, and this change does not reverse a recorded decision.
+- `native/moirasia-runtime/Sources/MoirasiaHost/HostApplication.swift:51-57` — the recovery copy (`hostUiState`) plus the six flags (`activeGeneration`, `generationTerminal`, `initialSnapshotReceived`, `initialReplayAttempted`, `replayInFlightGeneration`, `replayStateChanged`).
+- `:47-50` — `revision`, `serviceState`, `serviceError`, `serviceRestartCount` stay host-owned; they are broadcast facts, not recovery state.
+- `:169-180` — the `host.setUiState` handler merges into the copy, forwards the client request verbatim, and on success broadcasts `host.uiStateChanged` with the request params (the patch, not the full copy).
+- `:188-198` — `forward` wraps `forwardTagged` and drops the tag; `forwardTagged`'s nil-supervisor branch completes with `feature_service_unavailable` tagged `activeGeneration ?? 0`. `forward` (`:189`) and the replay send inside `sendUiStateReplay` (`:294`) are its only callers, and the replay send is the only one that consumes the tag.
+- `:206-223` — `receive` fences on `activeGeneration == generation && !generationTerminal` (`:208`), runs the gate (`:209-215`), then bumps the revision, injects settings, broadcasts, and shows the launcher.
+- `:225-250` — `receiveHealth`: a newer `.starting` resets the generation flags (`:228-235`); other states are accepted only for the active non-terminal generation (`:237`); `.error`/`.stopped` mark terminal and clear replay state (`:238-242`); accepted observations update the health facts and broadcast the health payload (`:244-248`).
+- `:252-261` — `desktopApplicationExited` merges all-false and forwards the reset unconditionally, ignoring the response.
+- `:263-278` — `mergeHostUiState` validates all recognized fields before absorbing anything (a present-but-non-boolean value returns without applying any key), merges, and marks `replayStateChanged` when a replay is in flight.
+- `:280-287` — `isFullSnapshot` requires `version == 1`, a `revision` number, a `settings` object, and a `features` array.
+- `:289-300` — `sendUiStateReplay` guards the active generation, builds a fresh-UUID `host.setUiState` request from the full copy, clears the dirty flag, records the in-flight generation, and forwards tagged with a state-queue hop.
+- `:302-322` — `completeUiStateReplay` guards the active, non-terminal, matching in-flight generation; transport failures clear the dirty flag and wait for the next generation; a dirty flag sends one trailing replay; success bumps the revision and broadcasts the full copy.
+- `native/moirasia-runtime/Tests/MoirasiaProtocolTests/HostRecoveryTests.swift:21-285` — ten tests pin the behaviors: partial merge and replay after snapshot, malformed field does not partially update, unavailable update retained for the next generation, only a complete snapshot after starting triggers replay, later full snapshots do not re-trigger, stale/terminal callbacks cannot complete recovery, in-flight changes coalesce into one trailing request, a product error still delivers one trailing request when a change landed in flight and never loops while transport failures wait for the next generation, successful replay uses an increasing parent revision and existing payload, desktop exit updates the copy before forwarding.
+- `native/moirasia-runtime/Tests/MoirasiaProtocolTests/FeatureServiceSupervisorTests.swift` — pins supervisor generation tagging and pending-request completion; untouched by this plan.
+- `native/moirasia-runtime/Package.swift` — `MoirasiaHost` executable target; `MoirasiaProtocolTests` already uses `@testable import MoirasiaHost`, so an internal module is directly testable with no manifest change.
+- `native/moirasia-runtime/Sources/MoirasiaHost/main.swift:36` — the only production construction site; the default `supervisorFactory` path. `HostApplication`'s constructor signature does not change.
+- `CONTEXT.md:10` — the Feature host term records the recovery copy as memory-only and the replay-after-first-full-snapshot rule. `docs/architecture/standalone-applications.md:29` adds that recovery across a full `MoirasiaHost` restart and Electron reconnect resynchronization remain outside this path.
+- `f07ad0c` introduced this machine in one change and had to reason about every one of those paths at once; `3d84939` and `2c3cd4b` never touched the host recovery paths — they shaped the child-side event serialization and retention the machine coordinates with.
 
 ## Architecture
 
-`ApplicationController` remains the one deepened module. Its interface continues to own the application snapshot and command outcomes. Its private per-application queue becomes the shared ordering mechanism for commands and retries targeting one application. A private map of queued/running retry promises coalesces overlapping refreshes by ID. `SwiftApplicationAgent` remains the production adapter; the scripted test fake remains the test adapter.
+`HostUiStateRecovery` is a deep module: a small interface over a large implementation.
 
-Keep public snapshot reads outside the per-application queue except for the final snapshot that `#action` currently awaits before releasing its turn. A retry reads the latest `ApplicationStatus` already reconciled into Controller state; it does not take a fresh agent snapshot after waiting. Snapshot reads do not mutate login-item settings, but they can overlap commands and update the status used by a queued retry.
+```swift
+/// Owns the parent-side recovery copy of reported host UI state and the
+/// replay cycle that restores it after a supervised child restart.
+///
+/// Contract: every method must be called on the host state queue. The module
+/// is not thread-safe. The copy is memory-only; recovery across a full
+/// `MoirasiaHost` restart and Electron reconnect resynchronization are
+/// outside this module.
+final class HostUiStateRecovery {
+    enum GenerationObservation {
+        case started   // a new child generation is starting
+        case running    // the active generation is running
+        case ended      // the active generation errored or stopped
+    }
 
-The deletion test says to keep both pieces of current behavior. Removing the retry loses login-item repair; removing the queue lets same-application writes race. The change concentrates retry ordering in the queue the Controller already owns.
+    typealias ReplaySender = (HostRequest, UInt64, @escaping (HostResponse, UInt64) -> Void) -> Void
+    typealias RestoredAnnouncer = ([String: JSONValue]) -> Void
+
+    init(sendReplay: @escaping ReplaySender, announceRestored: @escaping RestoredAnnouncer)
+
+    /// Fences stale or terminal generations and drives the first-full-snapshot
+    /// replay gate. Returns false when the host must drop the event.
+    @discardableResult
+    func accept(event: HostEvent, generation: UInt64) -> Bool
+
+    /// Fences stale observations; a new `.started` resets per-generation state
+    /// and `.ended` marks the generation terminal. Returns false when the host
+    /// must drop the observation.
+    @discardableResult
+    func acceptGeneration(_ observation: GenerationObservation, generation: UInt64) -> Bool
+
+    /// Merges a UI-state patch into the recovery copy. All recognized fields
+    /// must be valid or nothing is absorbed; a no-op patch changes nothing.
+    func retain(_ params: [String: JSONValue])
+}
+```
+
+The implementation behind that interface: the copy struct, `activeGeneration`, `generationTerminal`, `initialSnapshotReceived`, `replayInFlightGeneration`, `replayStateChanged`, the all-or-nothing validation, the full-snapshot shape check, and the replay send/complete cycle with coalescing and outcome classes.
+
+The dependency category is in-process: pure state plus two effect closures, so the module is tested directly with no adapter. The closures are the module's internal seam, and it is a real one: `HostApplication` supplies the production implementation (supervisor transport with one queue hop; revision bump plus broadcast), and the new tests supply captures. The external seams are untouched: `FeatureServiceSupervisorDriving` keeps its two adapters (production `FeatureServiceSupervisor` and `FakeSupervisor`), the control server socket protocol, the event names, and the revision scheme do not change.
+
+`HostApplication` constructs the module right after `super.init()`:
+
+```swift
+private var uiStateRecovery: HostUiStateRecovery!
+
+// init, immediately after super.init():
+self.uiStateRecovery = HostUiStateRecovery(
+    sendReplay: { [weak self] request, fallbackGeneration, completion in
+        guard let self else { return }
+        guard let supervisor = self.supervisor else {
+            completion(HostResponse(id: request.id, error: HostError(code: "feature_service_unavailable", message: "MoirasiaFeatureService is not running.")), fallbackGeneration)
+            return
+        }
+        supervisor.request(request) { [weak self] response, requestGeneration in
+            guard let self else { return }
+            self.stateQueue.async { completion(response, requestGeneration) }
+        }
+    },
+    announceRestored: { [weak self] params in
+        guard let self else { return }
+        self.revision += 1
+        self.server?.broadcast(HostEvent(event: "host.uiStateChanged", revision: self.revision, payload: .object(params)))
+    }
+)
+```
+
+The call-site rewires are small:
+
+- `receive` replaces its fence and gate with `guard self.uiStateRecovery.accept(event: event, generation: generation) else { return }`, then keeps the revision, settings injection, broadcast, and launcher logic unchanged. The gate sends the replay before the host broadcasts the event, exactly as today (`:209-219` order).
+- `receiveHealth` maps the health state to an observation (`.starting` → `.started`, `.error`/`.stopped` → `.ended`, otherwise `.running`), fences with `acceptGeneration`, then keeps the health-fact update and health payload broadcast unchanged.
+- The `host.setUiState` handler calls `uiStateRecovery.retain(request.params)` in place of `mergeHostUiState`, keeping the verbatim forward and the patch broadcast on success.
+- `desktopApplicationExited` calls `uiStateRecovery.retain(params)` for the all-false reset and keeps the unconditional forward.
+- `forward` inlines the supervisor-nil branch (the tag was always dropped) and `forwardTagged` is deleted.
+- The recovery copy and the six flag fields (`:51-57`), the private `HostUiState` struct, and the four private methods are deleted from `HostApplication`.
+
+Locality: every future recovery change (a fourth UI-state fact, a different coalescing rule, retry-on-product-error) lands in one file with its own tests. Leverage: the host's callbacks shrink to "ask the module, then do host I/O".
 
 ## Required invariants
 
-1. A queued `open`, `quit`, explicit login-item change, or automatic retry for one ID never overlaps another queued operation for that ID.
-2. Queue insertion order determines command/retry order. An explicit request submitted while a retry is in flight waits behind it. A retry submitted behind an explicit request waits, then rechecks whether it still has work.
-3. Queue state remains keyed by `ApplicationId`. Explicit operations for different IDs can run concurrently. Each `#retryPending()` invocation retains its current sequential `APPLICATION_IDS` order; this is not a global queue or a promise that retries across concurrent refreshes are serialized.
-4. At most one automatic retry per ID may be queued or running. If pending is still set when an overlapping refresh reaches retry scheduling, it awaits that same promise instead of adding another retry. After it settles, a later refresh may retry again if pending remains.
-5. The queue recovers after a rejected operation so one failed call does not poison later work.
-6. A retry checks `pendingLoginItems[id]` again after waiting. If the flag is gone, it makes no agent call.
-7. A retry reads the latest reconciled `ApplicationStatus` when its turn starts, not a fresh agent snapshot. It skips an application that is no longer installed or has no path in that state.
-8. A retry calls `setLoginItem(path, id, true)` and stores every returned login-item result. It clears pending only when the returned status is `enabled`; `requires-approval` and other non-enabled results remain pending.
-9. A rejected retry agent call stays silent and leaves the pending flag set. If `clearPending()` rejects after an enabled retry result, its in-memory flag has already been removed before persistence (`src/main/settings.ts:29-32`), and the retry catch swallows the failure. For an explicit `setLoginItem`, the same persistence failure propagates through `#action` and becomes a visible command error even though the in-memory flag was removed. Preserve both existing paths; do not claim persistence failure rolls the flag back or expand this plan into persistence recovery.
-10. An explicit `setLoginItem` keeps its current behavior: it runs through `#action`, stores its result, clears pending on either `enabled` or `disabled`, and records a failed command on the application status.
-11. `#action` must not await a pending retry while holding its queue turn. Its final snapshot reconciliation is snapshot-only and remains in the existing `finally` path. This prevents self-deadlock and cross-application wait cycles while preserving reconciliation after both successful and failed commands.
-12. Public `refresh()` reconciles the application snapshot, awaits each retry it schedules or joins while pending remains set, emits once after retry outcomes land, and returns a snapshot that includes those outcomes.
-13. No queue state, retry-promise map, pending flag, or new field is added to persisted settings or the renderer contract.
+1. Generation fencing is exact. A `.started` observation is accepted only when `activeGeneration == nil || generation > activeGeneration`; a repeated or older `.started` is dropped without resetting anything. `.running` and `.ended` are accepted only when `activeGeneration == generation && !generationTerminal`. Events are accepted only under that same predicate, and a nil `activeGeneration` drops both.
+2. On an accepted `.started`: `activeGeneration = generation`, and `generationTerminal`, `initialSnapshotReceived`, `replayInFlightGeneration`, `replayStateChanged` are all cleared. On an accepted `.ended`: `generationTerminal = true`, `replayInFlightGeneration = nil`, `replayStateChanged = false`.
+3. The replay gate opens once per generation: for an accepted event named `host.snapshotChanged` whose payload is a full snapshot (object with `version == 1`, a numeric `revision`, a `settings` object, and a `features` array) while `initialSnapshotReceived` is false, the flag is set and exactly one replay is sent. No later full snapshot in that generation re-triggers it.
+4. A replay request is `HostRequest(id: UUID().uuidString, method: "host.setUiState", params: <all three copy values>)`; the id is fresh on every send, including trailing replays.
+5. `retain` absorbs nothing when any recognized field is present but non-boolean; when all present fields are valid it merges them, and a patch that leaves the copy unchanged does not mark a replay dirty. A changed patch retained while a replay is in flight sets the dirty flag.
+6. A replay completion is honored only when `activeGeneration == generation && !generationTerminal && replayInFlightGeneration == generation`. The completion tag is the supervisor's send-time generation; a completion tagged otherwise (including a crash between gate and send) is dropped.
+7. Transport failures (`feature_service_crashed`, `feature_service_unavailable`) clear the dirty flag and produce no announcement and no immediate resend; the next generation's gate is the only retry path. A product error produces no announcement and no resend of itself, but the dirty-flag check precedes the ok check: a change retained while the replay was in flight still gets its one trailing replay after a product error, and a clean product-error completion (no dirty flag) ends the cycle — no loop.
+8. A dirty flag at completion sends exactly one trailing replay; the superseded replay announces nothing. Only a successful (initial or trailing) replay calls `announceRestored` once, with the full copy params.
+9. A replay completion reaches the module exactly once. With a supervisor, the host's `sendReplay` closure hops the completion to the state queue exactly once; with no supervisor the closure completes immediately — synchronously on the state queue — and the module must tolerate that re-entry, because the completion only clears state the send just set. The module never touches queues.
+10. The `host.setUiState` handler still forwards the client request verbatim, broadcasts the request params (not the copy) on success, and absorbs patches regardless of the child's response. `desktopApplicationExited` still forwards the all-false reset even when the copy already holds false, ignoring the response.
+11. The recovery copy stays memory-only; no file, defaults domain, or settings key is added.
+12. No wire protocol, event name, revision scheme, `HostApplication` constructor signature, or `FeatureServiceSupervisorDriving` change.
 
 ## Implementation sequence
 
-### 1. Add deterministic interleaving tests
+### 1. Add the module and its direct tests
 
-Edit `tests/application-controller.test.ts` first.
+Create `native/moirasia-runtime/Sources/MoirasiaHost/HostUiStateRecovery.swift` with the interface and the full state machine. Create `native/moirasia-runtime/Tests/MoirasiaProtocolTests/HostUiStateRecoveryTests.swift` with a small harness: the module constructed with recording closures, where `sendReplay` captures `(request, generation, completion)` and tests drive completions synchronously with an explicit tag, and `announceRestored` captures the announced params. No sockets, no queues, no timeouts. Tests open a generation with `acceptGeneration(.started, ...)` before gating replays, because events and observations are dropped while `activeGeneration` is nil.
 
-Extend `makeAgent()` so tests can gate `open`, `quit`, and `setLoginItem` by application and direction, return chosen `LoginItemControlResult` statuses, and expose deterministic call-entry signals, including for `snapshot()`. Track active and maximum simultaneous `setLoginItem` calls. Replace the existing zero-delay waits in the same-ID and different-ID tests with deterministic signals/barriers. Reuse the existing deferred-promise helper; do not add a queue test seam.
+Add these cases through the module's interface:
 
-Add or extend these cases through the public Controller interface:
+1. **Partial retention and unknown keys.** `retain(["mainVisible": true])` is reflected in the next replay's params; `retain(["page": "settings"])` and `retain([:])` change nothing.
+2. **All-or-nothing validation.** After absorbing `mainVisible: true`, a patch containing `mainFocused: "true"` plus `shelfVisible: false` absorbs nothing; the next replay still carries the pre-patch copy.
+3. **A no-op patch does not mark a replay dirty.** Gate a replay, retain a patch equal to the current values, complete the replay; no trailing replay is sent.
+4. **One replay per generation after the first full snapshot.** A full snapshot sends one replay; a second full snapshot sends none; payloads missing `version`, `revision`, `settings`, or `features` never trigger one.
+5. **Stale- and future-generation events are dropped.** After generation 2 starts, a full snapshot tagged generation 1 neither sends a replay nor returns true; an event tagged generation 3 before generation 3's `.started` is dropped the same way.
+6. **New-generation reset and repeated `.started`.** After generation 1 ends, `.started` generation 2 reopens the gate; a second `.started` for generation 2 is dropped; an older `.started` is dropped.
+7. **A terminal generation drops everything.** After `.ended`, events for that generation return false, a completion for the in-flight replay is dropped (no announcement, no trailing replay), and `.running` returns false.
+8. **In-flight changes coalesce into one trailing replay.** Retain two patches while a replay is in flight; completing the first with success sends exactly one trailing replay carrying the full copy and announces nothing for the superseded success; completing the trailing replay announces once with the full copy.
+9. **Transport failures wait for the next generation.** Completing with `feature_service_crashed` (and separately `feature_service_unavailable`) announces nothing and resends nothing; the next generation's first full snapshot fires a fresh replay carrying the retained values.
+10. **Product errors neither loop nor announce.** A clean completion with a product error code announces nothing and resends nothing, and a later full snapshot in the same generation does not refire. A product error with the dirty flag set still sends the one trailing replay — the dirty check precedes the ok check — and completing that trailing replay with a product error and no new changes ends the cycle.
+11. **Success announces the full copy with a fresh request.** The replay request carries a fresh UUID, method `host.setUiState`, and all three keys; the announcement receives the same full params.
+12. **A completion tagged with a different generation is dropped.** Complete the in-flight replay with the supervisor's send-time tag bumped past a simulated crash; no state changes.
 
-1. **Retry then explicit change.** Load application records, mark Amove pending, and start `refresh()`. Hold the automatic `setLoginItem(amove, true)` call on a gate. Submit `setLoginItem(amove, false)`. While the retry remains gated, drain the known promise/microtask chain and assert the call log has not gained the explicit `off`; an unqueued implementation would enter before the gate is released. Release the gate and await both calls. Assert the order is `on`, then `off`, maximum active calls is one, the final login-item result is disabled, and the pending flag is clear.
-2. **Explicit change makes a queued retry obsolete.** Load application records, mark Amove pending, and hold an explicit `setLoginItem(amove, false)` after it enters the queue. Start a public `refresh()` and use its snapshot-entry signal plus a deterministic microtask barrier to ensure it has queued a retry behind that command. Release the explicit call. Assert its disabled result is stored and it clears the pending flag. Assert the queued retry rechecks the flag and does not issue `setLoginItem(amove, true)`.
-3. **Overlapping refreshes share one retry.** Mark Amove pending, hold the first automatic retry, and start a second `refresh()`. Use its snapshot-entry signal plus a deterministic microtask barrier to ensure it has reached retry scheduling while pending remains set, before releasing the first gate. Release with an enabled result. Await both refreshes and assert one `on` call total, both refreshes include the settled result, and maximum active calls is one.
-4. **A later refresh retries after a failed attempt.** Extend the existing silent-retry-failure test: after the first refresh settles with the pending flag intact, clear the fake failure and call `refresh()` again. Assert a second attempt runs and clears pending. This proves the coalescing entry is removed after settlement rather than suppressing all future retries.
-5. **A queued retry uses the latest reconciled installed state.** Load application records, mark Amove pending, and hold `open(amove)` in its queue. Start a public refresh. Use a snapshot-entry signal, then drain the known promise/microtask chain while the open gate remains closed so the refresh has reconciled its captured installed record and queued the retry. Change the fake records so Amove is uninstalled, then release `open`. Its final snapshot reconciliation updates Controller state before the retry turn. Assert the retry makes no login-item call and leaves pending set.
-6. **An installed record without a path is skipped.** Give Vox an installed record with no path, mark it pending, and call `refresh()`. Assert no `setLoginItem` call occurs and pending remains. This is distinct from the uninstalled-after-wait case.
-7. **A non-enabled retry result remains pending.** Return `requires-approval` for the automatic `on` call. Assert the result is stored, pending remains, and no application error is added. This is a result value the production login-item control can return.
-8. **Action-final reconciliation does not retry.** Load application records, mark Amove and Vox pending, and make the explicit `setLoginItem(amove, false)` call fail. Assert the final snapshot reconciliation performs no automatic `on` calls for either ID and both pending flags remain set. Clear the fake failure, call public `refresh()`, and assert both pending retries then run. This covers the failed command's own ID and another application's pending work.
-9. **Different applications remain concurrent.** Keep the existing test that gates one application's action while another application's action proceeds. It protects per-ID command concurrency. Do not infer from this test that the sequential retry loop runs different IDs concurrently.
+Run `swift test --package-path native/moirasia-runtime --filter HostUiStateRecoveryTests`. Nothing else references the module yet, so the rest of the package stays green.
 
-Keep the existing tests for explicit result storage and visible command errors. The second case above pins explicit `disabled` result storage and pending clearing; retain the existing enabled-result and silent-agent-failure retry assertions. The current suite has no test for a missing retry path or a non-enabled retry result, so add the cases above rather than leaving those as conditional work.
+### 2. Rewire HostApplication
 
-Run the focused tests before changing production code. The interleaving cases should fail against the current direct retry path.
+- Add the `private var uiStateRecovery: HostUiStateRecovery!` property and construct it immediately after `super.init()` with the two weak closures shown above.
+- Replace the fence and gate in `receive` with the `accept(event:generation:)` call, keeping the revision, settings injection, broadcast, and launcher logic byte-for-byte otherwise.
+- Replace the fence in `receiveHealth` with the observation mapping plus `acceptGeneration(_:generation:)`, keeping the health-fact update and broadcast unchanged.
+- Replace `mergeHostUiState` with `retain` in the `host.setUiState` handler and in `desktopApplicationExited`.
+- Delete the recovery copy and the six flag fields (`:51-57`), the private `HostUiState` struct, `mergeHostUiState`, `isFullSnapshot`, `sendUiStateReplay`, `completeUiStateReplay`, and `forwardTagged`; inline the supervisor-nil branch into `forward` with the identical error code and message.
 
-### 2. Extract snapshot reconciliation from retry orchestration
+Run `swift test --package-path native/moirasia-runtime --filter HostRecoveryTests`. All ten tests must pass without modification. If one fails, the extraction drifted — the module's predicates, its completion ordering, or the host wiring; fix that, never the tests.
 
-In `src/main/application-controller.ts`, move the body that reads `agent.snapshot()` and rebuilds `#applications` into a private snapshot-reconciliation helper.
+### 3. Update the domain glossary
 
-The helper must preserve existing behavior:
+Add the **Host UI-state recovery** term to `CONTEXT.md`, inserted after the Feature host entry, naming the module path and its ownership. The term is already present in the current working tree as an uncommitted edit; verify its position and wording and keep it. Leave the Feature host entry unchanged; it still describes the behavior accurately. No ADR is needed.
 
-- Rebuild all four application statuses from catalog facts and agent records.
-- Preserve each prior `loginItem` result and any current application error.
-- Update `#applications` only. Do not run retries or emit from this helper.
+### 4. Verify
 
-Then make public `refresh()` perform these steps in order:
+1. `swift test --package-path native/moirasia-runtime --filter HostUiStateRecoveryTests`
+2. `swift test --package-path native/moirasia-runtime` (full package, including the unchanged `HostRecoveryTests`, `FeatureServiceSupervisorTests`, `FeatureRuntimeTests`, `ProtocolTests`, `NativeRuntimeTests`, and `SafeIOTests`)
+3. `node scripts/build-moirasia-runtime.mjs` (the release arm64 build the packaging path uses)
 
-1. Reconcile the application snapshot.
-2. Run `#retryPending()`, joining any retry already queued or running for an ID.
-3. Emit once.
-4. Return `snapshot()`.
-
-Change the final refresh in `#action` to call the snapshot-only helper and emit the same final controller update. Keep it in the current `finally` path so reconciliation runs after both success and failure; do not call public `refresh()`, because public refresh starts retries and can re-enter a queue already held by `#action`. Preserve the current error behavior if this final snapshot itself fails.
-
-Keep `#action`'s current checks and behavior: reject an initially uninstalled application, recheck installed state inside the queued turn, rebuild the record from current status, clear prior errors before the operation, record explicit operation failures, and reconcile application facts before the turn completes.
-
-### 3. Share the per-application queue
-
-Factor the existing queue chaining into one private generic helper used by both `#action` and `#retryPending`.
-
-The helper should:
-
-- Select the previous promise for the same `ApplicationId`, or an already-resolved promise if there is none.
-- Recover from a rejected previous operation before running the next operation.
-- Append the new operation and store its promise under that ID.
-- Return the new operation's typed promise to its caller.
-
-Keep the queue map private. Do not export a lock, queue interface, or queue class. A private generic helper is enough because the existing `ApplicationAgent` injection already gives tests a second adapter at the seam.
-
-`#action` uses this helper for its existing application commands. `#retryPending` uses it for the automatic login-item write. Keep the queue turn around explicit operation plus final snapshot reconciliation, as today. A retry's queue turn includes its eligibility checks, agent call, result update, and pending-flag clear so another writer cannot split that transition.
-
-### 4. Route each retry through its queue
-
-Keep the retry loop in `#retryPending()` and preserve the current `APPLICATION_IDS` iteration order. For each ID:
-
-- Skip it early when the settings snapshot has no pending flag.
-- If that ID already has a queued or running retry promise, await that promise instead of enqueueing a duplicate.
-- Otherwise enter that ID's queue and store its promise in a private per-ID retry map before yielding. Remove the entry in `finally`, only if it still points to that same promise, so later refreshes can retry work that remains pending.
-- Inside the queued operation, read settings again. Return without an agent call if the pending flag was cleared while this retry waited.
-- Read the latest reconciled application status from `#applications`. Return if it is no longer installed or its path is absent. Do not query `agent.snapshot()` again inside the queued operation.
-- Call `agent.setLoginItem(status.path, id, true)`.
-- Store every returned `loginItem` result.
-- Clear the pending setting only for `enabled`; leave it set for every other returned status.
-- Preserve the current best-effort catch around the retry and pending-flag update. A rejected agent call remains silent and leaves the pending flag set. If persistence rejects after `clearPending()` has removed the in-memory flag, do not claim that value is restored or expand this plan into persistence recovery.
-
-The retry promises and the queue remain private. Keep the loop sequential; a single refresh does not run retry agent calls for different IDs in parallel. Do not call `refresh()` from inside a retry operation. In particular, a retry queue turn must not trigger another `#retryPending()` pass.
-
-The catalog contains four IDs, but the current macOS agent snapshot reports only Amove, Vox, and Bonded. The Controller sees Shout as uninstalled/no path and skips it. Preserve that current behavior; adding Shout support is outside this change.
-
-### 5. Update the domain glossary
-
-In `CONTEXT.md`, sharpen the existing `Controller` entry so it says the Controller owns per-application serialization for `open`, `quit`, explicit login-item changes, and pending login-item retries. Preserve the existing description of application facts and command ordering. Add no new term.
-
-No ADR is needed. No architecture document needs a change for this focused Controller behavior.
-
-### 6. Verify
-
-Run checks in this order:
-
-1. `pnpm exec vitest run tests/application-controller.test.ts`
-2. `pnpm typecheck`
-3. `pnpm test`
-
-The focused suite verifies observable ordering through the Controller interface. Typechecking catches queue helper and promise typing errors. The full suite provides broad regression coverage, but do not claim it directly verifies shell polling or the refresh IPC handler: `tests/shell-window.test.ts` covers window lifecycle without asserting refresh cadence, and there is no dedicated IPC refresh test. The public Controller interface remains unchanged, so no shell or IPC code needs modification. This plan changes no rendered UI, so browser testing is not needed.
+There are no TypeScript, renderer, or IPC changes, so `pnpm typecheck`, `pnpm test`, and browser testing are unaffected.
 
 ## Risks and limits
 
-- **Retry timing after an action.** The old `#action` final `refresh()` retried every pending ID, including the command's own ID when an explicit login-item operation failed and left its flag set. The new internal snapshot-only reconciliation will not. Pending retries will run at the next public `refresh()`. That normally occurs at shell creation, focus, explicit refresh, or the visible-window polling interval. The plan chooses this timing change over retry orchestration inside a held queue, which can deadlock.
-- **Pending state changes while waiting.** The pre-queue check is only an optimization. The in-queue check is required for correctness.
-- **Snapshot freshness stays unchanged.** Public `ApplicationAgent.snapshot()` calls stay outside the per-application queue, and concurrent refreshes can complete their snapshots out of order. A retry checks the latest status written into Controller state, not a fresh agent snapshot taken after the wait or necessarily the newest OS observation. The app can be removed or moved after that snapshot; the control call may then fail and remain pending for a later refresh. This plan coalesces retries, not snapshot requests, and does not add global agent serialization.
-- **Each refresh retry pass remains sequential across IDs.** Keep the current loop order. Per-ID queues allow explicit commands on other IDs to proceed. This does not add a global lock across concurrent refreshes.
-- **Polling must not build a retry backlog.** The visible shell polls every two seconds, and the login-item executable has a five-second timeout. Share one queued/running retry promise per ID across overlapping refreshes. After it settles, a later refresh may retry again if pending remains.
-- **No user-facing error for a failed agent retry.** It continues to wait for the next refresh, matching current behavior. A failed settings write follows the existing store semantics and is not redesigned here.
+- **Predicate drift.** The fencing and gate predicates in the invariants are quoted from the current code. The easiest mistakes are accepting a repeated or older `.started` — resetting per-generation state would reopen the gate and replay again mid-generation — and treating a nil `activeGeneration` as accepting non-starting observations. The module tests mirror the exact predicates; the host suite pins the end-to-end outcomes.
+- **Queue-hop wiring.** With a supervisor, exactly one hop on a replay completion, inside the host's `sendReplay` closure. Two hops reorder completions; none races the module state. The nil-supervisor branch completes immediately where today's `forwardTagged` defers by one hop; that is equivalent, because the nil response is always a transport failure that only clears state the send just set, and every state-queue interleaving that can run in today's window — a patch, a `.started`, a terminal health observation, another event — leaves the same end state either way.
+- **Retain cycles.** Both effect closures capture `self` weakly. The host owns the module, so a strong capture would cycle.
+- **Init phase 1.** Swift forbids capturing self before all stored properties and `super.init()` complete; the IUO property assigned after `super.init()` sidesteps it. A `lazy var` also works (its first access is already serialized on the state queue) but makes construction timing implicit.
+- **Flag collapse.** The `initialReplayAttempted` collapse is provably equivalent: both flags are written only in the gate branch (`:210`, `:212`) and in the `.started` reset (`:232-233`), they start equal, and nothing else reads them, so they are always equal and the inner check is always true when reached. The module carries five flags.
+- **Completion tags.** Completions carry the supervisor's send-time generation, which can differ from the gate's generation after a crash between gate and send; the module guard drops the mismatch. This is the case the socket harness cannot reach cheaply and the module tests can.
+- **Single-threaded contract.** The module is not thread-safe by itself; the plan keeps every call site on the state queue. A dispatch-specific assertion would require queue injection and adds interface weight for no behavioral gain.
 
 ## Out of scope
 
-- Changing the Swift application agent or its command protocol.
-- Changing explicit command error messages or login-item result handling.
-- Serializing work globally across applications.
-- Adding locks to `ShellSettingsStore` or changing settings persistence.
-- Moving retries to `ShellWindowLifecycle`, IPC, or a new module.
-- Changing refresh intervals, retry backoff, or adding retry telemetry.
-- Adding renderer controls, UI states, or new application status fields.
-- Revisiting native Feature host recovery or any unrelated recent architecture work.
+- Any child-side `FeatureRuntime` or product-module change; in-child retention already lives there.
+- Persisting the recovery copy; recovery across a full `MoirasiaHost` restart; Electron reconnect resynchronization.
+- Supervisor restart policy, backoff, or generation tagging.
+- Wire protocol, event names, revision scheme, or settings-injection changes.
+- Moving health-fact broadcasting, the launcher, the status item, or shutdown into the module.
+- A public protocol or port for the module, or a second production adapter.
+- Any TypeScript, renderer, IPC, or packaging change.
 
 ## Completion criteria
 
-- Every `ApplicationController` call to `ApplicationAgent.setLoginItem()` for an application, whether explicit or automatic, runs in that application's existing serialized queue.
-- The interleaving tests prove no same-application overlap, stale pending flags and uninstalled/pathless applications are skipped, and overlapping refreshes that still observe pending work share one retry promise.
-- A later refresh can retry again after an agent rejection or non-enabled result leaves pending set.
-- Explicit commands on different application IDs remain independent; retry calls within one `#retryPending()` pass remain sequential in catalog order.
-- Retry failure, explicit error reporting, setting-clear rules, and controller snapshots keep the behaviors listed above.
-- The Controller term in `CONTEXT.md` reflects retry ownership.
-- The focused tests, typecheck, and full test suite pass.
+- One module owns the recovery copy and the generation/replay machine; `HostApplication` declares none of the recovery copy, the six flag fields, or the four methods.
+- The module's interface is three methods plus two effect closures; internal to the `MoirasiaHost` target; no protocol added.
+- All ten `HostRecoveryTests` pass unmodified.
+- The new `HostUiStateRecoveryTests` pass and cover the enumerated cases, including the mismatched-completion tag case.
+- The full package suite and the release arm64 build pass.
+- `CONTEXT.md` gains the Host UI-state recovery term; no ADR is created.
