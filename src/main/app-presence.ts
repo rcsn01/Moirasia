@@ -4,7 +4,7 @@ import { app, Menu, nativeImage, Tray } from 'electron'
 import type { AppPresenceMode } from '../shared/contracts'
 import { moirasiaHostSocketPath } from './paths'
 
-interface NativeMenuBarHostOptions {
+export interface NativeMenuBarHostOptions {
   readonly executable: string
   readonly applicationPath: string
   readonly pidPath?: string

@@ -1,232 +1,256 @@
-# Implementation plan: make native Host UI state one shared contract
+# Implementation plan: own host runtime selection in a Host ownership module
 
 ## Decision
 
-Introduce one shared `HostUiState` value in `MoirasiaProtocol` for three reported facts: `mainVisible`, `mainFocused`, and `shelfVisible`. The value owns their defaults, atomic patch validation, and complete serialization.
+Introduce `src/main/host-ownership.ts`, a `HostOwnership` module that owns which process hosts the suite — the policy layer that today sits inline in the composition root. The module owns:
 
-The two processes keep separate, process-local values:
+- native-runtime detection and host-option assembly (native MoirasiaHost vs. local menu-host agent),
+- construction of the `AppPresence` and the authenticated `NativeHostClient`,
+- the fail-fast native bootstrap (abort and rethrow; no local fallback),
+- the reconnect single-flight after disconnections,
+- recording of host-initiated quits (`host.willQuit`) and exit-to-host,
+- routing of native UI events (`ui.openShell`, `ui.toggleShelf`, `host.uiStateChanged`) to shell callbacks,
+- quit coordination: unsubscribe native events, preserve the host for a recorded exit-to-host, request `host.quitSuite` otherwise, and run Electron teardown as the final callback before closing the client; the composition root appends `app.quit()` in the returned promise's continuation.
 
-- `HostUiStateRecovery` in `MoirasiaHost` owns the parent recovery copy and its existing generation/replay state machine.
-- `FeatureRuntime` in `MoirasiaFeatureService` owns the child desired-state copy and applies it to running modules or on module startup. It keeps the existing consumer routing and per-module payload construction.
+`src/main/index.ts` keeps pure composition wiring only: settings load and the legacy-appearance migration, appearance, login-item settings, menu, updater, feature runtime / controller / shell-window construction, `UiLifetime` and `UiCommandRouter` wiring, launch intents, memory diagnostics, and the `before-quit` sequence — which now delegates the native leg to `void ownership.coordinateQuit(teardown).then(() => app.quit())`.
 
-They share a value type and its semantics, not mutable state. `HostApplication` continues to own transport, revision, event broadcast, and the desktop-exit reset request. Amove continues to own hotkey behavior; Bonded continues to own visibility-dependent monitoring. No product policy moves into `MoirasiaProtocol`.
+This is a behavior-preserving refactor. Spawn arguments, request methods, event routing, log lines, and the quit sequence are reproduced verbatim. The module is deep: callers learn ~7 members and get ~130 lines of policy that today cannot be tested at all.
 
-This is the narrowest useful seam: both executable targets already depend on `MoirasiaProtocol`, which owns the native wire value types. A new source file is automatically part of the existing target; no new package target, dependency, protocol, adapter, wire field, or protocol version is needed. The type remains a pure in-process value module and is tested directly through its interface.
-
-The previous `plan.md` described the extraction of `HostUiStateRecovery`, which is already present in the source. This plan replaces that completed plan with a proposed follow-up: centralizing the state defaults and patch validation duplicated between `HostUiStateRecovery` and `FeatureRuntime`.
+The previous `plan.md` (the shared `HostUiState` contract) shipped in `8c3eec9`; this plan replaces it.
 
 ## Design decisions
 
-The following choices define this proposal.
-
 | Decision | Applied answer | Why |
 |---|---|---|
-| Scope | Centralize the duplicated value defaults and atomic patch semantics shared by parent recovery and child application; use the value's full serialization for parent replay and reset. | The defaults and parsing are duplicated across both callers; the parent reset also repeats the complete three-key shape. Consumer routing has one owner in `FeatureRuntime` and stays there. |
-| Type name | `HostUiState`, following the existing private Swift type and the `Host UI-state recovery` glossary term. | Keeps the domain term recognizable without adding a new concept. |
-| Location | `native/moirasia-runtime/Sources/MoirasiaProtocol/HostUiState.swift`. | Host and Feature service already depend on this target; it is the shared owner of the cross-process control contract. |
-| Package shape | Add one source file; do not add a SwiftPM target or dependency. | Existing target membership is directory-based and both consumers import `MoirasiaProtocol`. |
-| Parent and child ownership | Keep independent `HostUiState` values in each process. | The copies have different lifetimes and purposes; sharing a mutable instance across processes is neither possible nor desired. |
-| Patch validation | The shared type validates recognized fields atomically and throws `HostError(code: "invalid_params", message: "<field> must be a boolean.")`. Unknown keys remain ignored. | Preserves the child’s exact public error behavior and gives parent recovery and the Feature service the same parser. |
-| Parent invalid-patch behavior | `HostUiStateRecovery` catches/ignores a validation error and continues to forward the original request as today. | The parent records only valid reported state; the Feature service remains responsible for returning the request error. |
-| Patch result | Return whether a valid patch changed the complete value. | Parent recovery needs this to avoid dirtying a replay for a no-op; FeatureRuntime selects consumers from key presence, because equal values still need to clear prior module errors. |
-| Routing ownership | Keep key-to-consumer routing and per-module payload construction in `FeatureRuntime`. | This logic has one current owner. Moving product identities and routing into the shared value type would add coupling without removing duplicated behavior. |
-| Serialization | Full parent replay, restored event, and desktop-exit reset continue to contain all three keys, including default `false` values. | Preserves current payload shape and behavior. |
-| Tests | Add direct `HostUiState` tests; retain existing Host recovery and Feature runtime tests. | Unit tests cover shared value semantics; FeatureRuntime tests already pin routing and payloads at the consumer boundary. |
-| Domain docs | Update the existing Host UI-state recovery and Feature host descriptions to name the shared `MoirasiaProtocol.HostUiState` value and distinguish the two process-local copies. | This sharpens existing glossary terms; it does not introduce a new domain term. |
-| ADR | Do not add an ADR. | There is no `docs/adr/` directory and this change does not reverse a recorded decision. |
+| Scope | The module owns runtime selection, bootstrap, reconnect, native event routing, and quit coordination. Settings, appearance, menu, updater, intents, memory diagnostics, and the Electron teardown body stay in `index.ts`. | Every one of these policies is host-runtime ownership; the rest is composition wiring that has no other home. |
+| Type name and location | `HostOwnership` in `src/main/host-ownership.ts`. | Follows house naming (`UiLifetime`, `ShellWindowLifecycle`); the term **Host ownership** is added to `CONTEXT.md` (applied alongside this plan). |
+| Construction shape | Static `acquire(options): Promise<HostOwnership>` for detection + bootstrap, then `start()` for subscriptions. | All-or-nothing bootstrap: the composition root gets a fully selected ownership or an exception, never a half-selected one. `start()` runs after `UiLifetime` exists, so no native callback can fire before the composition root is ready — today's implicit ordering becomes a guarantee. |
+| Local fallback | None. Native bootstrap failure aborts the spawned candidate, closes the client, and rethrows; the app quits (current `index.ts:81–85`). | Verbatim fail-fast. Silent degradation to local ownership would leave persistent state unowned. |
+| Dependency seams | `OwnedPresence` interface (`AppPresence` satisfies it structurally) and the existing `NativeHostClientLike`; both are injected through optional factory options. Production omits the factories; tests provide fakes. | Two real adapters per seam (production + test) justify the seam; matches the house pattern (`FeatureRuntime` takes an injected `nativeClient` in its tests). `AppPresence` and `NativeHostClient` keep their interfaces and their own tests unchanged. |
+| Detection policy | The module owns the `platform === 'darwin' && existsSync(...)` check and calls the `paths.ts` resolvers with an injected `resourcesPath`. `process.resourcesPath` and `process.platform` are read once in `index.ts` and passed in. | Keeps the policy behind the seam; `process.resourcesPath` is `undefined` under vitest, so injection is required for hermetic tests anyway. |
+| Quit shape | `coordinateQuit(teardown: () => Promise<void>): Promise<void>`. The module unsubscribes native events, makes the preserve decision, disposes presence, fires `host.quitSuite` when required, awaits `teardown()` after the request settles, closes the client once teardown resolves, and then resolves; the caller appends `app.quit()` in a `.then()` continuation (`void ownership.coordinateQuit(teardown).then(() => app.quit())`). | Reproduces today's `finish()` sequencing exactly (`index.ts:196–203`): the `quitSuite` request settles before teardown starts, and the client closes before `app.quit()` is requested. Moving `app.quit()` out of the teardown body into the caller's continuation is the one structural change — it lets the module own the close ordering without importing Electron. |
+| Dead `preserveNativeHost` call | Reproduced verbatim inside `coordinateQuit`. | Discovered while finalizing: `AppPresence.preserveNativeHost()` returns early when `usesNativeHost` is true, and its only call site (`index.ts:194`) requires `nativeSelected`, which implies the native candidate — so the call is a no-op in every reachable state. Deleting it is a behavior review question, not part of a behavior-preserving refactor. The method itself stays; it is tested directly for the local-agent case. |
+| Native UI event routing | The module subscribes `ui.openShell`/`ui.toggleShelf`/`host.uiStateChanged` and invokes `options.openShell` / `options.toggleShelf` / `options.shelfVisible` directly. `index.ts` keeps `UiCommandRouter` for `second-instance` argv intents only — the launch intent (`:164–170`) never routes through it, today or after — and the module's `toggleShelf` option still routes `{ kind: 'toggle-shelf' }` through the router via the composition-root closure. | The router's `#disposed` guard never covered native events in a reachable state: today the native subscriptions are removed before `commandRouter.dispose()` runs, inside the same synchronous quit block, so no native event can observe the disposed router. After the extraction `ui.openShell` bypasses the router entirely, `ui.toggleShelf` keeps the guard through the closure, and the quit block stays synchronous. Routing one concept through one module is the point of the extraction. |
+| `host.uiStateChanged` payload check | The inline payload check (`payload && typeof payload === 'object' && typeof payload.shelfVisible === 'boolean'`, `index.ts:149`) moves verbatim. | Typing the native event schemas (dead `NativeHostUiState`, the dropped `{page}` key) is the separate host UI-state contract candidate; do not mix scopes. |
+| Tests | New `tests/host-ownership.test.ts` driving the module through its interface with fake presence/client factories and a mocked `node:fs`. No existing test changes. | The interface is the test surface. Nothing today tests `index.ts` behavior (only source-string matching), so there is nothing to replace. |
+| Coverage | Add `src/main/host-ownership.ts` to `coverage.include` in `vitest.config.ts`. | The house list already names main-process modules with interface tests; `index.ts` was never listable. |
+| ADR | None. | There is no `docs/adr/` directory and this change reverses no recorded decision. |
 
 ## Current evidence and friction
 
-- `native/moirasia-runtime/Sources/MoirasiaHost/HostUiStateRecovery.swift:21-33` defines a private `HostUiState` with three default-false fields and a full `params` encoder. `:88-103` separately lists the field names, validates them, and assigns them one by one. `:116` and `:146` use that encoder for replay and announcement.
-- `native/moirasia-runtime/Sources/MoirasiaFeatureService/FeatureRuntime.swift:14` stores another `HostUiState`; `:278-282` defines a second private struct with the same three fields. `:284-338` repeats per-field parsing and maintains `updatesAmove`/`updatesBonded` flags. `:341-355` maps state into `amove.setUiState` and `bonded.setUiState` parameter dictionaries. That routing and projection exist only here, so they remain in `FeatureRuntime`.
-- `native/moirasia-runtime/Sources/MoirasiaHost/HostApplication.swift:231-238` manually rebuilds all three false values when the desktop application exits, retains the values, and forwards the reset.
-- `native/moirasia-runtime/Sources/MoirasiaFeatureService/FeatureModules.swift:71-74,256-258` consumes the per-module request shapes. Those handlers remain the product-command validation surface; `FeatureRuntime` continues to create the per-module payloads and the shared value does not own product runtime effects.
-- `native/moirasia-runtime/Package.swift` declares `MoirasiaProtocol`; `MoirasiaHost`, `MoirasiaFeatureService`, and `MoirasiaProtocolTests` already depend on it. Adding `HostUiState.swift` requires no manifest edit.
-- `native/moirasia-runtime/Tests/MoirasiaProtocolTests/FeatureRuntimeTests.swift:15-50` pins target selection, exact request payloads, and Amove-before-Bonded ordering. `:52-118` pins partial merge, ignored unknown/empty patches, and all-or-nothing validation. `:120-150` pins startup replay and defaults. `:152-231` pins independent error handling and the need to retry an unchanged desired value to clear an error. `:235-275` pins startup replay failure cleanup, lease release, original error propagation, and retry.
-- `native/moirasia-runtime/Tests/MoirasiaProtocolTests/HostUiStateRecoveryTests.swift` directly pins parent-copy semantics: partial merge, malformed-patch no-op, no-op patch not dirtying a replay, full payload shape, and recovery behavior. `HostRecoveryTests.swift` additionally exercises the host through its socket harness, including retention across an unavailable child update and the all-false desktop-exit reset. `HostApplication.swift:167-177` retains before forwarding and broadcasts the original request params on success.
-- `docs/architecture/standalone-applications.md` already states that the Feature runtime retains the three facts, applies focus/shelf to Amove and visibility to Bonded, and leaves product policies with those products. The change should make the ownership of the shared data semantics explicit without changing that division of responsibility.
-- Recent native-host work (`f07ad0c`, `2c3cd4b`, `bf0309e`) added UI-state retention, child-restart replay, and parent recovery. The field definitions and patch validation remain duplicated between the two native processes; `FeatureRuntime` remains the sole owner of product-specific routing.
+- `src/main/index.ts` is among the most-changed files under `src/` in the last 30 days of history (11 commits; only `features/runtime.ts` changed more often, at 12), and the only test that touches it asserts on its source text (`tests/platform-integration.test.ts:62, 67–68`).
+- `index.ts:42–58` detects the native runtime and assembles native and local host options inline.
+- `index.ts:60–64, 66–94` holds five mutable lets (`shellWindow`, `openShell`, `presence`, `nativeClient`, `nativeSelected`) and the bootstrap: native candidate + client construction, `waitForNativeHost`, `connectNativeHost`, fail-fast catch with `abortNativeBootstrap` + `close`. The local branch constructs presence with the agent options.
+- `index.ts:103` `preserveNativeMenuHost`, `:128` `nativeWillQuit`, `:129–137` the reconnect single-flight, `:138–151` the connection watcher, `host.willQuit` recording, and the three native UI subscriptions with inline payload validation — all as loose closures over the lets.
+- `index.ts:183–207` the `before-quit` handler interleaves native unsubscription, the preserve decision, `presence.preserveNativeHost()`/`dispose()`, the `host.quitSuite` request, and a `finish()` chain that disposes Electron, closes the client, and only then calls `app.quit()`.
+- `index.ts:216–226` `connectNativeHost` performs connect + bootstrap-snapshot validation with its own error logs.
+- `AppPresence` (`src/main/app-presence.ts`) and `NativeHostClient` (`src/main/native-host/client.ts`) are already deep modules with interface tests (`tests/app-presence.test.ts`, `tests/native-host-client.test.ts`). The missing module is the policy layer above them — selection, lifetime, and quit — which is exactly what cannot be tested through `index.ts`.
+- Deletion test: deleting `host-ownership.ts` would scatter all of the above back into the composition root, untestable. The complexity concentrates; the module earns its keep.
 
 ## Proposed module interface
 
-Keep the public interface small. The exact spelling can follow Swift conventions during implementation, but it must expose only the shared value contract, not queue behavior or product routing:
+```ts
+// src/main/host-ownership.ts
+import { existsSync } from 'node:fs'
+import { join } from 'node:path'
+import { AppPresence, type NativeMenuBarHostOptions } from './app-presence'
+import { applicationAgentPath, moirasiaFeatureServicePath, moirasiaHostPath, moirasiaHostSocketPath, moirasiaNativeFeaturePaths } from './paths'
+import { NativeHostClient } from './native-host/client'
+import type { NativeHostClientLike } from '../shared/native-host-contracts'
+import type { AppPresenceMode, ControllerPage } from '../shared/contracts'
 
-```swift
-public struct HostUiState: Equatable, Sendable {
-    public private(set) var mainVisible: Bool
-    public private(set) var mainFocused: Bool
-    public private(set) var shelfVisible: Bool
+/** The presence operations ownership relies on; `AppPresence` satisfies this structurally. */
+export interface OwnedPresence {
+  readonly mode: AppPresenceMode
+  apply(mode: AppPresenceMode): void
+  waitForNativeHost(timeoutMs?: number): Promise<boolean>
+  restartNativeHost(timeoutMs?: number): Promise<boolean>
+  preserveNativeHost(): void
+  abortNativeBootstrap(): void
+  dispose(): void
+}
 
-    public init()
+export type PresenceFactory = (options: { menuBarIconPath: string; open(): void; nativeHost?: NativeMenuBarHostOptions }) => OwnedPresence
+export type NativeClientFactory = (options: { socketPath: string; tokenPath: string }) => NativeHostClientLike
 
-    /// Returns true only when the complete value changes.
-    /// Every recognized key must be a Bool or this throws without mutation.
-    /// Unknown keys are ignored.
-    @discardableResult
-    public mutating func apply(_ params: [String: JSONValue]) throws -> Bool
+export interface HostOwnershipOptions {
+  readonly userData: string
+  readonly menuBarIconPath: string
+  readonly applicationPath: string
+  readonly resourcesPath: string
+  readonly platform: string
+  readonly initialPresence: AppPresenceMode
+  readonly openShell(page?: ControllerPage): void | Promise<void>
+  readonly toggleShelf(): void | Promise<void>
+  readonly shelfVisible(visible: boolean): void
+  readonly onAvailabilityChanged(): void
+  readonly createPresence?: PresenceFactory
+  readonly createClient?: NativeClientFactory
+}
 
-    /// Always encodes the complete state using all three keys.
-    public var params: [String: JSONValue] { get }
+export class HostOwnership {
+  static async acquire(options: HostOwnershipOptions): Promise<HostOwnership>
+  start(): void
+  get presence(): OwnedPresence
+  get nativeClient(): NativeHostClientLike | undefined
+  canExitToNativeHost(): boolean
+  exitToHost(): void
+  coordinateQuit(teardown: () => Promise<void>): Promise<void>
 }
 ```
 
-The module owns only the cross-process Host UI-state value contract:
-
-- Defaults are `false` for all three fields.
-- Recognized fields are `mainVisible`, `mainFocused`, and `shelfVisible`.
-- A patch may contain any subset. Empty and unknown-only patches are valid no-ops.
-- A present recognized field must be a JSON boolean. Parse and validate every recognized field before mutating state, so one malformed field rejects the whole patch.
-- `apply` returns whether the complete old and new values differ. An explicitly supplied value equal to the stored value returns `false`.
-- `params` always contains all three booleans.
-- Invalid fields throw the exact existing `HostError` code and message, checking in current field order: `mainVisible`, then `mainFocused`, then `shelfVisible`.
-
-`FeatureRuntime` continues to select Amove when `mainFocused` or `shelfVisible` is present, Bonded when `mainVisible` is present, and neither for unknown or empty patches. It builds Amove's payload from `mainFocused` and `shelfVisible`, and Bonded's from `mainVisible`, in its existing fixed Amove-then-Bonded order. Shout receives no UI-state request.
-
-The shared type does not own consumer routing or per-module payloads, replay generations, dirty/in-flight flags, queues, module lifecycle, request IDs, method strings, or module errors. It does not add `Codable`; `JSONValue` remains the existing wire representation.
+The module owns only host runtime policy. It does **not** own: presence and menu-host spawning (AppPresence), the socket protocol (`NativeHostClient`), settings storage (`ShellSettingsStore`), shell-window or IPC wiring, the feature runtime, or the Electron teardown body — which arrives as the `coordinateQuit` callback. `NativeMenuBarHostOptions` must be exported from `app-presence.ts` (it is currently module-private and the factory signature needs it).
 
 ## Required behavior and invariants
 
-1. **Independent ownership:** parent and child each store their own `HostUiState` value. Updating one copy does not mutate or reset the other.
-2. **All-or-nothing parse:** for a patch with any invalid recognized field, `apply` throws and leaves all fields unchanged. The `HostUiStateRecovery` caller ignores that error; the `FeatureRuntime` caller returns it through the existing `HostResponse` path.
-3. **Unknown/empty patch:** ignored keys do not change state or select a consumer. Empty and unknown-only patches remain successful no-ops in the Feature service.
-4. **Presence differs from change:** `FeatureRuntime` selects targets from recognized keys present in the patch, not from `apply`'s changed result. An explicit key selects its consumer even when its value is unchanged.
-5. **Parent replay dirtiness:** `HostUiStateRecovery` marks an in-flight replay dirty only when `apply` reports a changed value. An explicit no-op patch does not enqueue a trailing replay.
-6. **Feature error recovery:** `FeatureRuntime` reapplies every selected, running consumer even when `apply` returns `false`. This preserves the current behavior where reapplying the same desired values clears a previously recorded module error. Stopped modules retain desired state and receive it when they start.
-7. **Deterministic target order:** for patches selecting both consumers, FeatureRuntime handles Amove before Bonded. It still tries Bonded if Amove fails; the first propagated error and snapshot/error-update behavior remain unchanged.
-8. **Projection shape:** Amove receives exactly `mainFocused` and `shelfVisible`; Bonded receives exactly `mainVisible`; Shout receives no Host UI-state request. FeatureRuntime owns these projections.
-9. **Startup application:** after a product module starts, `FeatureRuntime` continues to apply the latest full projection even if no patch selected it in the current request. New runtime defaults still project all-false values.
-10. **Parent behavior:** `HostApplication` retains each valid patch before forwarding it, regardless of the response; malformed patches do not change the recovery copy but are still forwarded, and the forwarded response is returned as-is. On success, the host broadcasts the original patch params, while a successful recovery replay announces the complete copy. Desktop exit still retains and forwards all three false values, even if already false.
-11. **Wire compatibility:** request method names, IDs, event names, protocol version, params keys, values, success/error shape, parent revision behavior, and replay gating are unchanged.
-12. **Product ownership:** Amove's hotkey policy and Bonded's visibility/sampling policy stay inside their existing runtimes. The shared module only describes the UI-state values; `FeatureRuntime` owns consumer routing and payload construction.
-13. **No persistence change:** parent recovery stays in memory; no settings key, file, or recovery-across-host-restart behavior is introduced.
+1. **Detection:** native runtime is available iff `platform === 'darwin' && existsSync(moirasiaHostPath(resourcesPath)) && existsSync(moirasiaFeatureServicePath(resourcesPath))`. Native options are `{ executable: moirasiaHostPath(...), featureServicePath, applicationPath, userData, iconPath: menuBarIconPath, pidPath: join(userData, 'menu-host.pid'), bondedHelperPath, shoutDriverPath }` with feature paths from `moirasiaNativeFeaturePaths(resourcesPath)`. Local options on darwin are `{ executable: applicationAgentPath(resourcesPath), applicationPath, pidPath: join(userData, 'menu-host.pid') }`; non-darwin passes no `nativeHost` at all.
+2. **Fail-fast bootstrap, no fallback:** the native candidate is constructed with `open: () => { void Promise.resolve(options.openShell()).catch(console.error) }` and the client with `{ socketPath: moirasiaHostSocketPath(userData), tokenPath: join(userData, 'runtime', 'client.token') }`. Bootstrap order is `presence.apply(initialPresence)` → `waitForNativeHost()` → `client.connect()` → `client.getSnapshot()`; a missing snapshot logs `'MoirasiaHost returned an invalid snapshot.'`; connect errors log `'Could not connect to MoirasiaHost'`. Any failure runs `presence.abortNativeBootstrap()` + `client.close()`, logs `'Native Moirasia bootstrap failed; local ownership was not selected.'`, and rethrows. No second (local) presence is ever constructed.
+3. **Local branch:** presence is constructed with the local options (or none off-darwin), `apply(initialPresence)` runs, and `nativeClient` stays `undefined`. There is no catch on this branch — a local `apply` failure propagates out of `acquire` and quits the app through the composition root's `whenReady` catch, exactly as today's unguarded `index.ts:93`.
+4. **Accessors:** `presence` exposes the constructed presence; `nativeClient` is defined only in native mode; `canExitToNativeHost()` is `nativeSelected && client?.isConnected() === true`; `exitToHost()` records the preservation intent with that same condition evaluated at call time.
+5. **Subscriptions start only at `start()`**, registered exactly once, only in native mode: the connection watcher calls `onAvailabilityChanged()` on every event and triggers `#reconnect()` on `'disconnected'`; `host.willQuit` sets the internal flag; `ui.openShell` calls `options.openShell()`; `ui.toggleShelf` calls `options.toggleShelf()`; `host.uiStateChanged` calls `options.shelfVisible(visible)` only when the payload passes today's inline check verbatim — `payload && typeof payload === 'object' && typeof payload.shelfVisible === 'boolean'` (`index.ts:149`) — so a null or non-object payload is ignored and a non-boolean `shelfVisible` never reaches the callback.
+6. **Reconnect single-flight (verbatim):** no-op when not native, when no client, when the host initiated quit, or when a reconnect is already in flight; otherwise `await presence.restartNativeHost()` then `await client.connect()`. A thrown error at either step logs `'Could not reconnect to MoirasiaHost'`; a `false` restart returns silently and does not connect.
+7. **Quit coordination sequence (verbatim):** unsubscribe all native subscriptions → if the exit-to-host intent is recorded and the client is connected, `presence.preserveNativeHost()` (a documented no-op in native mode, see the design table) → `presence.dispose()` → if `nativeSelected && client?.isConnected() && !exitRecorded && !willQuit`, fire `client.request('host.quitSuite')` and run `teardown()` in its `.finally()` (errors log `'Could not coordinate native suite quit'`); otherwise run `teardown()` immediately. `teardown()` is awaited, then `client?.close()` runs, then the returned promise resolves and the caller's `app.quit()` continuation fires — the exact order of today's `finish()` (`index.ts:196–203`), where the close precedes `app.quit()`. A rejected `teardown` skips the close and the quit, exactly as a throw inside today's `finish()` does. The client is never closed before teardown completes, and `app.quit()` never runs before the client is closed.
+8. **No new policy:** no settings reads, no appearance, no menu, no intents inside the module; no protocol, `AppPresence`, `NativeHostClient`, or `paths.ts` behavior changes.
+
+## Migration map (`index.ts` → `HostOwnership`)
+
+| Today in `index.ts` | Moves to | Notes |
+|---|---|---|
+| `:42` `nativeRuntimeAvailable` | `acquire` (private) | verbatim, with injected `platform`/`resourcesPath` |
+| `:43–58` `nativeFeaturePaths`, `nativeHostOptions`, `localHostOptions` | `acquire` (private) | derived from injected options |
+| `:67–75` native `AppPresence` candidate + `NativeHostClient` | `acquire`, via factories | factories default to the real classes |
+| `:76–86` bootstrap + fail-fast catch | `acquire` | exact logs and error text |
+| `:87–94` local `AppPresence` branch | `acquire` | exact options |
+| `:118–125` `UiLifetime` wiring | stays, reading accessors | `mode: () => ownership.presence.mode`; `canExitToNativeHost: () => ownership.canExitToNativeHost()`; `onFinalWindowGone: () => { ownership.exitToHost(); app.quit() }` |
+| `:126` `UiCommandRouter` | stays | used by `second-instance` argv intents; the module's `toggleShelf` option still routes `{ kind: 'toggle-shelf' }` through it (the launch intent at `:164–170` never uses the router) |
+| `:128` `nativeWillQuit` | private field | |
+| `:130–137` `reconnectNativeHost` | private `#reconnect` | verbatim single-flight |
+| `:138–143` connection subscription | `start()` | callback now `onAvailabilityChanged` |
+| `:144` `host.willQuit` subscription | `start()` | |
+| `:145–151` `stopNativeUi` subscriptions | `start()` | inline shelf check moves verbatim |
+| `:103`, `:122` `preserveNativeMenuHost` flag | `exitToHost()` | declared at `:103`, recorded at `:122` inside `onFinalWindowGone` |
+| `:190–195` native unsubscribes, preserve, `presence.dispose()` | `coordinateQuit` | `stopNavigation()` and `commandRouter.dispose()` stay in `index.ts` |
+| `:196–206` `finish()` + `host.quitSuite` | `coordinateQuit(teardown)` | teardown = `shellWindow.dispose` → `controller.close` → `features.disposeAll` → `host.dispose`; `client.close()` runs inside `coordinateQuit` after teardown, and `app.quit()` runs in the caller's `.then()` continuation |
+| `:216–226` `connectNativeHost` | private helper in `host-ownership.ts` | exact logs |
+| `:39`, `:210–214` `setLoginItemSettings` | stays in `index.ts` | the `ipc.ts` duplicate is the IPC channel-table candidate's scope |
+| `:32–38`, `:228–237` settings/legacy appearance | stays in `index.ts` | composition wiring |
+| `:41` `menuBarIconPath` | computed in `index.ts`, passed to `acquire` | packaging-dependent path; the module feeds it to the presence options and the native host's `iconPath` |
+
+After the extraction `index.ts` contains no `existsSync`, no native client construction, no reconnect logic, no native event subscriptions, and no `host.quitSuite` request (237 → roughly 150 lines).
 
 ## Implementation sequence
 
-### 1. Add focused tests for the shared contract
+### 1. Export the presence options type
 
-Add `native/moirasia-runtime/Tests/MoirasiaProtocolTests/HostUiStateTests.swift`, importing `MoirasiaProtocol`. Keep tests at the public interface, without inspecting storage.
+In `src/main/app-presence.ts`, change `interface NativeMenuBarHostOptions` to `export interface NativeMenuBarHostOptions`. No behavior change.
 
-Cover:
+### 2. Add the module and its tests in one focused change
 
-1. **Defaults and complete params:** a new value exposes all three facts as `false` and serializes exactly those keys, with no extras.
-2. **Partial merge:** apply each field independently and verify omitted fields retain their previous values.
-3. **Unknown and empty patches:** empty and unknown-only patches are valid no-ops, return `false`, and leave the full params unchanged. Use an unknown key with an array or object value, and also verify that an unknown non-boolean value beside a valid recognized field is ignored while the recognized field is applied.
-4. **All-or-nothing validation:** for each recognized field, a non-boolean value throws `HostError(code: "invalid_params", message: "<field> must be a boolean.")`; a mixed valid/invalid patch leaves the entire old state unchanged. When multiple recognized fields are invalid, assert the first error follows the fixed order `mainVisible`, `mainFocused`, `shelfVisible`.
-5. **Change result:** a patch changing any value returns `true`; an explicit patch repeating the stored value returns `false`.
+Create `src/main/host-ownership.ts` with the interface above and the invariants 1–8, reproducing every behavior verbatim from `index.ts:42–58, 66–94, 128–151, 183–207, 216–226`. Internal state: `#options`, `#presence`, `#client`, `#nativeSelected`, `#willQuit`, `#exitRecorded`, `#reconnecting`, `#started`, `#unsubscribers: Array<() => void>`.
 
-Start with the test file and the new type in one focused change; `swift test --package-path native/moirasia-runtime --filter HostUiStateTests` is the first verification. Existing `FeatureRuntimeTests` already test all five non-boolean `JSONValue` cases against each recognized field through the service and assert exact errors, so direct type tests need not repeat that 3-by-5 matrix. The existing FeatureRuntime routing tests remain the contract for consumer selection, payloads, startup behavior, and Amove-before-Bonded order.
+Create `tests/host-ownership.test.ts` (matrix below). Mock `electron` minimally (the `app-presence` import chain requires it, mirroring `tests/app-presence.test.ts`) and mock `node:fs`'s `existsSync` for detection; fake presence/client factories record call order into a shared array and offer programmable `waitForNativeHost`/`restartNativeHost`/`connect`/`getSnapshot`/`request` (with a deferred `host.quitSuite` promise).
 
-### 2. Add the shared HostUiState value module
+Run `pnpm vitest run tests/host-ownership.test.ts`. Then `pnpm typecheck`.
 
-Create `native/moirasia-runtime/Sources/MoirasiaProtocol/HostUiState.swift`.
+### 3. Rewire the composition root
 
-- Implement the public `HostUiState` value with the interface above and read-only public access to its three facts.
-- Keep it `Equatable` and `Sendable`; do not introduce reference semantics, global mutable state, locks, queues, or I/O.
-- Parse recognized fields in fixed order into a local state copy, then assign it to stored state only after every present value validates. A thrown validation error must not partially mutate the value.
-- Return whether the complete value changed; unknown-only, empty, and explicit equal-value patches return `false`.
-- Keep consumer routing, method strings, and request IDs out of `HostUiState`; `FeatureRuntime` continues to select modules and create `HostRequest`s.
-- No `Package.swift` edit: SwiftPM compiles source files under the declared target directory.
+In `src/main/index.ts`:
 
-### 3. Reuse the value in parent recovery
+- Delete the detection/options block (`:42–58`), the `presence`/`nativeClient`/`nativeSelected` lets and the native/local bootstrap branches (`:62–64, 66–94`), the reconnect/subscription closures (`:128–151`), and `connectNativeHost` (`:216–226`).
+- Acquire after settings/appearance wiring, passing closures over the later-assigned `openShell`/`uiLifetime`/`commandRouter` lets (closures are only invoked after `start()`):
 
-Modify `native/moirasia-runtime/Sources/MoirasiaHost/HostUiStateRecovery.swift`:
+  ```ts
+  const ownership = await HostOwnership.acquire({
+    userData: app.getPath('userData'),
+    menuBarIconPath,
+    applicationPath: resolve(process.execPath, '../../..'),
+    resourcesPath: process.resourcesPath,
+    platform: process.platform,
+    initialPresence: settings.get().appPresence,
+    openShell: (page) => openShell(page),
+    toggleShelf: () => commandRouter.route({ kind: 'toggle-shelf' }),
+    shelfVisible: (visible) => uiLifetime.shelfVisible(visible),
+    onAvailabilityChanged: () => uiLifetime.nativeHostAvailabilityChanged()
+  })
+  ```
 
-- Delete the nested private `HostUiState` struct.
-- Change `hostUiState` to the shared `MoirasiaProtocol.HostUiState` value (the existing import already provides it).
-- Replace the hand-maintained recognized-key array, temporary dictionary, and field-by-field assignment in `retain(_:)` with `try hostUiState.apply(params)`.
-- On validation error, return without changing the recovery copy, as today.
-- Use the returned `Bool` for the existing equality/no-op guard; preserve `replayStateChanged` behavior exactly.
-- Keep replay and announcement payloads sourced from the shared complete `params` property.
-- Do not modify generation fencing, full-snapshot validation, replay coalescing, completion handling, or the module's queue contract.
+- `FeatureRuntime` and `ShellWindowLifecycle` receive `nativeClient: ownership.nativeClient` (undefined in local mode, preserving both modules' mode selection).
+- `presenceMode: () => ownership.presence.mode` and `applyAppPresence: (mode) => ownership.presence.apply(mode)` feed the shell window.
+- Call `ownership.start()` where the subscriptions are registered today (after `commandRouter` construction).
+- Replace the native leg of `before-quit` with `void ownership.coordinateQuit(async () => { await shellWindow.dispose(); controller.close(); await features.disposeAll(); host.dispose() }).then(() => app.quit())`, keeping `shuttingDown`, `preventDefault`, the `nativeTheme` listener removal, `disposeMemoryDiagnostics()`, `stopNavigation()`, and `commandRouter.dispose()` in place. (The relative order of `commandRouter.dispose()` and native unsubscription flips; they share no state, and the quit block stays synchronous, so no native event can fire in between.)
 
-Run `swift test --package-path native/moirasia-runtime --filter HostUiStateRecoveryTests` and keep those tests unchanged.
+### 4. Keep the domain docs current
 
-### 4. Reuse patch semantics in FeatureRuntime
+The **Host ownership** term is already applied to `CONTEXT.md` alongside this plan. The entry was checked against this plan's interface: it names the fail-fast bootstrap, the reconnect single-flight, host-initiated-quit and exit-to-host recording, native UI event routing, quit coordination with Electron teardown as the final callback, and the composition root's acquire/start/native-client wiring — all matching `acquire`/`start`/`presence`/`nativeClient`/`coordinateQuit` as specified here. It does not pin the client-close ordering, so the close-before-`app.quit()` sequence requires no entry change. Do not add new terms or an ADR.
 
-Modify `native/moirasia-runtime/Sources/MoirasiaFeatureService/FeatureRuntime.swift`:
+### 5. Coverage hook
 
-- Delete the nested private `HostUiState` struct and use the shared type.
-- In `setHostUiState`, call `hostUiState.apply(request.params)` once. Let its `HostError` propagate through the existing `handleOnStateQueue` path.
-- Derive `updatesAmove` from the presence of `mainFocused` or `shelfVisible`, and `updatesBonded` from the presence of `mainVisible`. Do not use the changed result to select consumers; an equal explicit value must still be reapplied.
-- Preserve state assignment before consumer execution: a valid desired value remains retained even if a module rejects its application.
-- Apply an update only to a selected module that is currently running. Stopped modules keep the desired state and receive it through startup replay.
-- Keep Amove-before-Bonded execution, independent module error capture, error clearing, changed-error snapshot publication, first-error return, and success result unchanged. Still attempt Bonded if Amove fails.
-- In `applyHostUiState(to:requestID:)`, build module-specific payloads from the shared value's read-only fields. Keep the existing method names (`amove.setUiState`, `bonded.setUiState`), IDs, module lookup, exact payload keys, and no-op behavior for Shout/other IDs.
-- Keep startup replay in `startOrThrow` so a newly started module receives the latest full state. If applying it fails, preserve the existing cleanup: stop the module, release its lease, and propagate the original replay error so retry can reacquire the lease.
+Add `'src/main/host-ownership.ts'` to `coverage.include` in `vitest.config.ts`.
 
-Run `swift test --package-path native/moirasia-runtime --filter FeatureRuntimeTests` without weakening or rewriting the existing assertions. Specifically preserve the tests for partial updates, invalid-field atomicity, stopped-module startup replay, Amove-before-Bonded ordering, independent failures, repeated desired values clearing errors, and startup replay failure cleanup.
+### 6. Verify
 
-### 5. Replace the parent reset literal and synchronize the domain docs
+1. `pnpm vitest run tests/host-ownership.test.ts` — the new suite.
+2. `pnpm typecheck`.
+3. `pnpm test` — the full suite, unchanged: `app-presence`, `native-host-client`, `feature-runtime`, `shell-window`, `ui-command-router`, `platform-integration` all pass without edits.
+4. Manual smoke via `pnpm dev` (main-process flows CI cannot reach):
+   - the native path boots, connects, and the shell opens;
+   - killing the `MoirasiaHost` process triggers one reconnect attempt with the existing log line, and the shelf visibility event still routes after reconnect;
+   - menu-bar mode with the native host: closing the last window exits to the host, which keeps running, while the Electron process quits (exit-to-host preserve);
+   - dock mode: quitting stops the native runtime — the host process exits (stop-runtime path);
+   - a host-initiated quit (`host.willQuit`): the app records it, tears down, and quits without issuing `host.quitSuite`;
+   - a machine without staged native binaries launches in local mode, and quitting there runs no native request (local quit path).
 
-Modify `native/moirasia-runtime/Sources/MoirasiaHost/HostApplication.swift`:
+## Test matrix for `tests/host-ownership.test.ts`
 
-- At the desktop-exit reset, replace the hand-built three-key dictionary with `HostUiState().params`. Continue retaining that complete reset before forwarding the same `host.setUiState` request. Preserve the unconditional forward even when the copy is already all false, the ignored response, and the existing request method/ID behavior.
-- Leave the regular `host.setUiState` handler unchanged: it retains a valid patch before forwarding the original request verbatim, does not roll back on child failure, returns the child's response, and broadcasts the original patch params only on success. The recovery module's successful replay announcement continues to use the complete retained state.
+All cases drive `HostOwnership.acquire` and its methods; none inspect internal state. A shared call-order array backs the ordering assertions.
 
-Run `swift test --package-path native/moirasia-runtime --filter HostRecoveryTests`; retain its socket-level reset assertions unchanged.
-
-Update the existing descriptions in `CONTEXT.md` and the relevant paragraph in `docs/architecture/standalone-applications.md`:
-
-- Name `MoirasiaProtocol.HostUiState` as the shared value, patch-validation, and complete-serialization owner.
-- State explicitly that the parent recovery copy and child desired-state copy are separate in-memory values using the same contract.
-- Keep ownership of generation replay in `HostUiStateRecovery`, consumer routing in `FeatureRuntime`, host transport/broadcast in `MoirasiaHost`, and product policy in Amove/Bonded.
-- Do not add a new glossary term or ADR; the existing Host UI-state recovery and Feature host terms already name this concept.
-
-### 6. Verify the full native integration
-
-Run the focused suites first, then the complete native package tests and release build:
-
-1. `swift test --package-path native/moirasia-runtime --filter HostUiStateTests`
-2. `swift test --package-path native/moirasia-runtime --filter HostUiStateRecoveryTests`
-3. `swift test --package-path native/moirasia-runtime --filter FeatureRuntimeTests`
-4. `swift test --package-path native/moirasia-runtime --filter HostRecoveryTests`
-5. `swift test --package-path native/moirasia-runtime`
-6. `swift build --package-path native/moirasia-runtime -c release --arch arm64`
-
-The full package run validates the shared public type across the protocol library, host executable, feature-service executable, product runtimes, and integration tests. The release arm64 package build checks the optimized compilation path without staging app bundles. No TypeScript, renderer, preload, or wire-schema tests need changes because the JSON protocol payload remains identical.
+1. **Native selection:** darwin + binaries present → factory receives the native host options (executable, featureServicePath, userData, `menu-host.pid`, feature paths, applicationPath, iconPath); call order `apply(initialPresence)` → `waitForNativeHost` → `connect` → `getSnapshot`; `isNative` is observable via `nativeClient` defined and `canExitToNativeHost()` true.
+2. **Bootstrap failure:** `waitForNativeHost` false → `acquire` rejects with `'MoirasiaHost.app did not become ready.'`, `abortNativeBootstrap` and `client.close` were called, and the presence factory ran exactly once (no local fallback).
+3. **Connect failure:** `connect` rejects → same fail-fast path.
+4. **Invalid bootstrap snapshot:** `getSnapshot` resolves `undefined` → same rejection and cleanup.
+5. **Local darwin:** binaries absent → factory receives the agent options (`executable: applicationAgentPath(resourcesPath)`, applicationPath, pidPath); `nativeClient` undefined; `canExitToNativeHost()` false.
+6. **Non-darwin:** factory receives no `nativeHost` key.
+7. **Disconnect → reconnect:** after `start()`, a `'disconnected'` connection event calls `onAvailabilityChanged` once and runs `restartNativeHost` then `connect`; two events before the restart resolves coalesce to a single restart (single-flight); a failed restart does not connect.
+8. **Reconnected event:** calls `onAvailabilityChanged`, no restart.
+9. **`host.willQuit`:** after the event, a disconnect does not restart.
+10. **UI events:** `ui.openShell` → `openShell` callback; `ui.toggleShelf` → `toggleShelf` callback; `host.uiStateChanged` with boolean `shelfVisible` → `shelfVisible(visible)`; with a non-boolean value → no call.
+11. **Exit-to-host quit:** `exitToHost()` then `coordinateQuit(teardown)` → order is `preserveNativeHost` → `dispose` → `teardown` → `client.close`, with no `host.quitSuite` request; `exitToHost()` while disconnected records nothing (stop path applies).
+12. **Stop-runtime quit:** connected, no exit recorded → `host.quitSuite` is requested; `teardown` does not run until the request's promise settles (use a deferred), then `teardown` runs, the client closes after it, and the returned `coordinateQuit` promise resolves only after the close (the composition root's `app.quit()` hangs off that resolution); a rejected request still runs teardown.
+13. **Quit after `host.willQuit`:** no `host.quitSuite`; teardown runs; client closes.
+14. **Local quit:** no request, no client to close; `presence.dispose` called; teardown runs.
+15. **`start()` is single-registration:** calling `start()` twice subscribes each listener once.
 
 ## Test ownership and tests that should survive
 
-- **New `HostUiStateTests`:** direct unit tests for default values, patch validation and error order, merge behavior, changed/no-op results, and complete serialization. These cross the shared type's interface only.
-- **Existing `HostUiStateRecoveryTests`:** remain unchanged. They test how the parent recovery module uses the shared type together with generation/replay state.
-- **Existing `FeatureRuntimeTests`:** remain unchanged. They test the child runtime's observable request routing, ordering, startup replay, and error recovery through `FeatureRuntime.handle`.
-- **Existing `HostRecoveryTests`:** remain unchanged. They cross the host's authenticated socket seam and protect the parent forwarding/reset behavior.
-- **Existing `FeatureModules` behavior:** remain unchanged. The modules still validate their own requests and execute product-owned effects; this plan does not redesign their interface.
-
-If an existing integration test fails after the extraction, fix the shared value contract or its call sites. Do not relax the assertion to match a new implementation detail.
+- **New `tests/host-ownership.test.ts`:** the matrix above — the host runtime policy finally has a test surface at its interface.
+- **`tests/app-presence.test.ts`:** unchanged. `AppPresence`'s interface is untouched; the export of `NativeMenuBarHostOptions` is type-only.
+- **`tests/native-host-client.test.ts`:** unchanged. The client's construction options are identical.
+- **`tests/feature-runtime.test.ts`, `tests/shell-window.test.ts`, `tests/platform-integration.test.ts`:** unchanged. The client shape they consume is unchanged, and `app.setName`/dock-icon wiring stays in `index.ts` so the source-text assertions still hold.
+- **Replace, don't layer:** no test covers `index.ts` behavior today, so nothing is deleted; the source-string platform test remains (improving it belongs to the IPC candidate, not this one).
 
 ## Risks and mitigations
 
-- **Conflating change with target selection.** Parent recovery only dirties a replay for changed values, but FeatureRuntime must reapply an unchanged explicit value to clear stored module errors. Use `apply`'s return value only for the parent dirty check; FeatureRuntime selects targets from recognized-key presence. Existing tests cover equal-value error recovery.
-- **Changing operation order.** FeatureRuntime must continue applying Amove before Bonded and attempt both even if Amove fails. Keep the explicit sequential calls; do not derive execution order from dictionary iteration. `testUiStateRoutesOnlyRelevantFieldsAndResetsAllFacts` asserts the order.
-- **Partial mutation on invalid input.** Do not assign values while still validating later fields. Parse all recognized fields into local values first, then apply in one mutation. Test every field's error and a mixed valid/invalid patch.
-- **Changing error messages.** Keep the existing `invalid_params` code and exact `"<field> must be a boolean."` message. Let FeatureRuntime propagate `HostError`; parent recovery intentionally ignores the same failure and forwards the original request.
-- **Changing no-op behavior.** Unknown-only and empty patches remain accepted by FeatureRuntime and do not call modules. A repeated recognized key calls its selected consumer only when that module is running, even if its value is unchanged. A stopped module receives the latest value on startup. If startup replay fails, retain the existing stop-and-release cleanup and original error. Parent replay handling treats the patch as a no-op if the complete value did not change.
-- **Moving product routing into the protocol target.** Keep the shared target's responsibility limited to state fields, patch validation, and complete serialization. FeatureRuntime owns consumer selection and payloads; Amove's hotkey rules, Bonded's monitoring decisions, and product runtime errors remain product-owned.
-- **Accidentally merging process state.** The parent and child copies are intentionally distinct and memory-only. Do not attempt to share mutable state, persist a copy, or alter restart recovery semantics.
-- **Protocol drift.** Keep the full params and per-product projections byte-for-byte equivalent in keys and values. No wire protocol version bump is warranted because the payload is unchanged.
-- **Replacing staged build output.** `node scripts/build-moirasia-runtime.mjs` recursively removes and recreates `native/staged/runtime`, which already exists as ignored output in this worktree. This source-only change does not need a staging test; use the release arm64 `swift build` above and leave the existing staged bundles alone.
-- **Over-expanding the seam.** The module has no external I/O and one implementation, so do not introduce an adapter, protocol, SwiftPM target, or dependency solely for testing.
+- **Quit-sequence regression (highest risk).** Two orderings are load-bearing: the `quitSuite` request settles before teardown starts (the host terminates the desktop app during `quitSuite`, so an early close would abort the request), and the client closes before `app.quit()` is requested (today's `finish()`, `index.ts:196–203`). `coordinateQuit` reproduces both with the same `.catch().finally()` chain and the close-then-resolve tail; cases 11–14 assert exact call order, including teardown-not-until-settle via a deferred. Verify the four manual quit paths in step 6.4.
+- **Callbacks firing before the composition root is ready.** All native subscriptions move behind `start()`, which `index.ts` calls at the exact point the subscriptions are registered today. Closures passed to `acquire` may reference not-yet-assigned lets exactly as today's `open` closure does.
+- **Factory drift.** The production defaults are the real `AppPresence` and `NativeHostClient`; fakes exist only in tests, and both real classes keep their own suites. The module must not grow presence/protocol logic that tests then bypass.
+- **Detection hermeticity.** `resourcesPath` and `platform` are injected; `node:fs`'s `existsSync` is mocked, mirroring the existing `app-presence` test. `moirasiaHostSocketPath(userData)` stays real (pure).
+- **Reconnect races.** The single-flight promise is reproduced verbatim; case 7 pins coalescing.
+- **Behavior drift by accident.** The refactor is behavior-preserving by construction: every moved block is verbatim, and the log lines, error text, and request methods are listed in invariants 2–7. Any observed difference in manual smoke is a bug to fix before landing.
+- **Scope creep.** The typed native event schema (dead `NativeHostUiState`, dropped `{page}` key), the IPC channel table, the login-item duplicate, and the Feature mode seam are explicitly out of scope; the inline `shelfVisible` check moves but is not "fixed."
 
 ## Out of scope
 
-- Reworking the already-deep `HostUiStateRecovery` generation/replay state machine.
-- Combining parent and child mutable copies or persisting either copy.
-- Recovery across a full `MoirasiaHost` restart or Electron reconnect resynchronization.
-- Changing `HostRequest`, method strings, event names, error envelopes, protocol version, or revision behavior.
-- Replacing string-based native method dispatch or redesigning the general `FeatureModule` interface.
-- Changing `FeatureModules` validation or moving Amove/Bonded runtime behavior into `MoirasiaProtocol`.
-- Adding Host UI-state facts, adding a Shout projection, or changing default values.
-- Changes to TypeScript, Electron, renderer behavior, packaging metadata, or the standalone applications.
+- Typing native event payloads or removing the dead `NativeHostUiState` type and the dropped `{page}` key (host UI-state contract candidate).
+- The Controller IPC channel table and the `setLoginItemSettings`/`appSetLoginItem` duplicate (IPC candidate).
+- The Feature mode seam (`FeatureModeLinks`) and any `host-mode.ts`/`runtime.ts` change.
+- Any change to `AppPresence`, `NativeHostClient`, `paths.ts`, `ShellSettingsStore`, the Swift runtime, the wire protocol, packaging, or the standalone applications.
+- Making `UiLifetime`, `UiCommandRouter`, or `EmbeddedFeatureHost` deeper; adding new host features (e.g., local menu-host preservation on exit).
 - Adding an ADR.
 
 ## Completion criteria
 
-- One public `MoirasiaProtocol.HostUiState` type defines the three native Host UI-state facts, all-or-nothing patch validation, and complete params.
-- `HostUiStateRecovery` and `FeatureRuntime` no longer define duplicate `HostUiState` structs or independently implement patch validation and state mutation; `FeatureRuntime` retains its single-owner consumer routing and payload construction.
-- `FeatureRuntime` still selects consumers by key presence, applies equal-value explicit patches to selected running modules, retains state for stopped modules, and preserves Amove-before-Bonded handling.
-- Parent recovery still marks only real state changes dirty, and the desktop-exit reset remains a full all-false request.
-- Existing `HostUiStateRecoveryTests`, `FeatureRuntimeTests`, and `HostRecoveryTests` pass unchanged; new `HostUiStateTests` cover the shared interface.
-- Full native package tests and the release arm64 SwiftPM build pass without replacing `native/staged/runtime`.
-- `CONTEXT.md` and `docs/architecture/standalone-applications.md` accurately describe the shared value and distinct parent/child ownership.
-- No wire-format, persistence, product-policy, or unrelated lifecycle change is introduced.
+- `src/main/index.ts` contains no native-runtime detection, host-option assembly, client construction, reconnect logic, native event subscription, or `host.quitSuite` request, and shrinks by roughly 90 lines with zero behavior change.
+- `HostOwnership` owns all of the above behind `acquire` / `start` / `presence` / `nativeClient` / `canExitToNativeHost` / `exitToHost` / `coordinateQuit`, reproduced verbatim from the old inline code, including every log line and error message and both quit orderings (`quitSuite` settles before teardown; the client closes before `app.quit()`).
+- `tests/host-ownership.test.ts` passes and covers the full matrix; every existing suite passes unchanged; `pnpm typecheck` passes.
+- `vitest.config.ts` coverage includes the new module; `CONTEXT.md`'s **Host ownership** entry matches the shipped interface.
+- The four manual quit paths (exit-to-host preserve, dock stop-runtime, host-initiated quit, local quit) behave exactly as before.

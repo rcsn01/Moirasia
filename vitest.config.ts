@@ -9,7 +9,7 @@ export default defineConfig({
     include: ['tests/**/*.test.{ts,tsx}', 'scripts/**/*.test.mjs'],
     setupFiles: ['tests/setup.ts'],
     coverage: {
-      include: ['src/main/application-controller.ts', 'src/main/settings.ts', 'packages/desktop-shell/src/**/*.ts']
+      include: ['src/main/application-controller.ts', 'src/main/host-ownership.ts', 'src/main/settings.ts', 'packages/desktop-shell/src/**/*.ts']
     }
   }
 })
