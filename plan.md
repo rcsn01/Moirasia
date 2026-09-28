@@ -1,256 +1,152 @@
-# Implementation plan: own host runtime selection in a Host ownership module
+# Implementation plan: native Bonded application identity
 
-## Decision
+**Status:** Implemented. This file is the replacement plan. The identity owner, native callers, tests, and domain notes described below have been updated.
 
-Introduce `src/main/host-ownership.ts`, a `HostOwnership` module that owns which process hosts the suite — the policy layer that today sits inline in the composition root. The module owns:
+## Goal
 
-- native-runtime detection and host-option assembly (native MoirasiaHost vs. local menu-host agent),
-- construction of the `AppPresence` and the authenticated `NativeHostClient`,
-- the fail-fast native bootstrap (abort and rethrow; no local fallback),
-- the reconnect single-flight after disconnections,
-- recording of host-initiated quits (`host.willQuit`) and exit-to-host,
-- routing of native UI events (`ui.openShell`, `ui.toggleShelf`, `host.uiStateChanged`) to shell callbacks,
-- quit coordination: unsubscribe native events, preserve the host for a recorded exit-to-host, request `host.quitSuite` otherwise, and run Electron teardown as the final callback before closing the client; the composition root appends `app.quit()` in the returned promise's continuation.
+Give native Bonded application identity one clear owner inside the existing `BondedRuntime` Swift module. Make its identity key and rule matching agree with the TypeScript `Application identity` implementation, remove the duplicate native matcher, and have process resolution use the canonical key rather than formatting it inline.
 
-`src/main/index.ts` keeps pure composition wiring only: settings load and the legacy-appearance migration, appearance, login-item settings, menu, updater, feature runtime / controller / shell-window construction, `UiLifetime` and `UiCommandRouter` wiring, launch intents, memory diagnostics, and the `before-quit` sequence — which now delegates the native leg to `void ownership.coordinateQuit(teardown).then(() => app.quit())`.
+The change should make the identity logic easier to find without adding a Swift package target, a dependency, a persisted data format, or a second adapter seam.
 
-This is a behavior-preserving refactor. Spawn arguments, request methods, event routing, log lines, and the quit sequence are reproduced verbatim. The module is deep: callers learn ~7 members and get ~130 lines of policy that today cannot be tested at all.
+## Evidence and current friction
 
-The previous `plan.md` (the shared `HostUiState` contract) shipped in `8c3eec9`; this plan replaces it.
+- `CONTEXT.md` defines **Application identity** through `apps/integrated/Bonded/src/main/application-identity.ts`. Its key is `bundle:<id>|path:<path>` when the bundle identifier is non-empty and `path:<path>` otherwise. The TypeScript `matchesRule` compares those keys.
+- `apps/integrated/Bonded/tests/application-identity.test.ts` pins ordinary non-colliding matching cases: both sides without a bundle identifier match by path; if only one side has an identifier, they do not match; different identifiers or paths do not match.
+- Native key construction lives in `native/moirasia-runtime/Sources/BondedRuntime/ObservedIpBlocker.swift` as `bondedApplicationRuleIdentity`. That file also defines the public matcher and a private copy of the matching logic.
+- `native/moirasia-runtime/Sources/BondedRuntime/ProcessResolver.swift` formats the same bundle/path key inline before hashing an observed application's ID. Its `path` is the raw executable path returned by `proc_pidpath`. The TypeScript resolver instead stores the containing `.app` path for application targets. The identity-key format can agree without the two modes producing the same key or observed ID for the same process.
+- Native matching currently differs from the TypeScript rule. `bondedMatchesApplicationRule` falls back to path equality when either side lacks a bundle identifier. The private blocker matcher repeats that behavior. At equal path inputs, a same-path target with a non-empty bundle identifier can therefore match a bundle-less stored rule in native mode even though the canonical TypeScript implementation rejects it.
+- Swift `String ==` treats canonically equivalent Unicode sequences as equal, while TypeScript `===` distinguishes their different code-unit sequences. The current TypeScript identity string is also not injective for arbitrary inputs: `bundleIdentifier: "com.example|path:/Applications/A.app", path: "/Applications/B.app"` and `bundleIdentifier: "com.example", path: "/Applications/A.app|path:/Applications/B.app"` produce the same key. Native settings accept both shapes, and the resolver accepts any non-empty plist identifier.
+- `SettingsStore.parseRules` rejects a stored record if `bundleIdentifier` is present but empty. Its existing `canonicalRuleIdentifier` migration changes valid legacy `app_` rule IDs to `rule_`, and `load()` saves the version-3 settings when that migration runs.
+- `SettingsStore.swift` uses the shared native key when parsing, deduplicating and migrating rule IDs. `BondedRuntime.swift` already calls the public matcher and rule constructor. When its selection flow sees only a same-path bundle-less stored rule for a target with a bundle identifier, corrected matching will treat them as distinct; explicit selection creates a new bundle-qualified rule and leaves the old rule unchanged.
+- The root Swift package has one existing `BondedRuntime` target. The feature executable already depends on it. No `docs/adr/` records were found.
 
-## Design decisions
+## Settled decisions
 
-| Decision | Applied answer | Why |
-|---|---|---|
-| Scope | The module owns runtime selection, bootstrap, reconnect, native event routing, and quit coordination. Settings, appearance, menu, updater, intents, memory diagnostics, and the Electron teardown body stay in `index.ts`. | Every one of these policies is host-runtime ownership; the rest is composition wiring that has no other home. |
-| Type name and location | `HostOwnership` in `src/main/host-ownership.ts`. | Follows house naming (`UiLifetime`, `ShellWindowLifecycle`); the term **Host ownership** is added to `CONTEXT.md` (applied alongside this plan). |
-| Construction shape | Static `acquire(options): Promise<HostOwnership>` for detection + bootstrap, then `start()` for subscriptions. | All-or-nothing bootstrap: the composition root gets a fully selected ownership or an exception, never a half-selected one. `start()` runs after `UiLifetime` exists, so no native callback can fire before the composition root is ready — today's implicit ordering becomes a guarantee. |
-| Local fallback | None. Native bootstrap failure aborts the spawned candidate, closes the client, and rethrows; the app quits (current `index.ts:81–85`). | Verbatim fail-fast. Silent degradation to local ownership would leave persistent state unowned. |
-| Dependency seams | `OwnedPresence` interface (`AppPresence` satisfies it structurally) and the existing `NativeHostClientLike`; both are injected through optional factory options. Production omits the factories; tests provide fakes. | Two real adapters per seam (production + test) justify the seam; matches the house pattern (`FeatureRuntime` takes an injected `nativeClient` in its tests). `AppPresence` and `NativeHostClient` keep their interfaces and their own tests unchanged. |
-| Detection policy | The module owns the `platform === 'darwin' && existsSync(...)` check and calls the `paths.ts` resolvers with an injected `resourcesPath`. `process.resourcesPath` and `process.platform` are read once in `index.ts` and passed in. | Keeps the policy behind the seam; `process.resourcesPath` is `undefined` under vitest, so injection is required for hermetic tests anyway. |
-| Quit shape | `coordinateQuit(teardown: () => Promise<void>): Promise<void>`. The module unsubscribes native events, makes the preserve decision, disposes presence, fires `host.quitSuite` when required, awaits `teardown()` after the request settles, closes the client once teardown resolves, and then resolves; the caller appends `app.quit()` in a `.then()` continuation (`void ownership.coordinateQuit(teardown).then(() => app.quit())`). | Reproduces today's `finish()` sequencing exactly (`index.ts:196–203`): the `quitSuite` request settles before teardown starts, and the client closes before `app.quit()` is requested. Moving `app.quit()` out of the teardown body into the caller's continuation is the one structural change — it lets the module own the close ordering without importing Electron. |
-| Dead `preserveNativeHost` call | Reproduced verbatim inside `coordinateQuit`. | Discovered while finalizing: `AppPresence.preserveNativeHost()` returns early when `usesNativeHost` is true, and its only call site (`index.ts:194`) requires `nativeSelected`, which implies the native candidate — so the call is a no-op in every reachable state. Deleting it is a behavior review question, not part of a behavior-preserving refactor. The method itself stays; it is tested directly for the local-agent case. |
-| Native UI event routing | The module subscribes `ui.openShell`/`ui.toggleShelf`/`host.uiStateChanged` and invokes `options.openShell` / `options.toggleShelf` / `options.shelfVisible` directly. `index.ts` keeps `UiCommandRouter` for `second-instance` argv intents only — the launch intent (`:164–170`) never routes through it, today or after — and the module's `toggleShelf` option still routes `{ kind: 'toggle-shelf' }` through the router via the composition-root closure. | The router's `#disposed` guard never covered native events in a reachable state: today the native subscriptions are removed before `commandRouter.dispose()` runs, inside the same synchronous quit block, so no native event can observe the disposed router. After the extraction `ui.openShell` bypasses the router entirely, `ui.toggleShelf` keeps the guard through the closure, and the quit block stays synchronous. Routing one concept through one module is the point of the extraction. |
-| `host.uiStateChanged` payload check | The inline payload check (`payload && typeof payload === 'object' && typeof payload.shelfVisible === 'boolean'`, `index.ts:149`) moves verbatim. | Typing the native event schemas (dead `NativeHostUiState`, the dropped `{page}` key) is the separate host UI-state contract candidate; do not mix scopes. |
-| Tests | New `tests/host-ownership.test.ts` driving the module through its interface with fake presence/client factories and a mocked `node:fs`. No existing test changes. | The interface is the test surface. Nothing today tests `index.ts` behavior (only source-string matching), so there is nothing to replace. |
-| Coverage | Add `src/main/host-ownership.ts` to `coverage.include` in `vitest.config.ts`. | The house list already names main-process modules with interface tests; `index.ts` was never listable. |
-| ADR | None. | There is no `docs/adr/` directory and this change reverses no recorded decision. |
+1. **Canonical matching rule.** Build `bundle:<id>|path:<path>` only for a non-empty identifier; otherwise build `path:<path>`. Compare the UTF-8 bytes of the encoded keys, not Swift `String ==`, because Swift equates canonically equivalent Unicode sequences while TypeScript `===` does not. Paths and bundle identifiers remain case- and normalization-sensitive, and `targetKind` does not participate. For non-colliding keys, a same-path pair matches only when its non-empty identifiers are equal or both identifiers normalize to absent; an identifier on one side only, unequal identifiers, or unequal paths do not match. Keep the existing unescaped `|path:` key format, including its delimiter-collision behavior: distinct field pairs that encode to identical key bytes match in TypeScript today and remain identical under this plan. Fixing that requires a coordinated TypeScript/key-format change and persisted-ID migration, so it is out of scope.
+2. **Seam location.** Add `ApplicationIdentity.swift` inside the current `BondedRuntime` target. Do not create a new SwiftPM target or product. The existing native callers already use this target in-process, so a new package seam would add indirection without creating a useful adapter choice.
+3. **Interface shape.** Keep every existing public function name, signature, type and access level unchanged. Move the implementations of `bondedApplicationRuleIdentity`, `bondedApplicationRuleForTarget`, `bondedMatchesApplicationRule`, and `bondedContainingApplication` to the identity source file. Add internal `bondedApplicationRuleIdentityData(path:bundleIdentifier:)` for byte-exact key comparison/deduplication, and `bondedObservedApplicationId(path:bundleIdentifier:)` to hash the canonical identity with the native `app_` prefix. This keeps key equality and observed-application ID policy with identity instead of duplicating them across callers. Do not introduce a new public type or redesign unrelated callers.
+4. **Opaque ID hashing.** Keep `bondedOpaqueId` generic because `FlowHistory` uses it for flow IDs as well as application and rule IDs. Move its unchanged implementation from `ProcessResolver.swift` to a small `OpaqueIds.swift` source file so the resolver no longer appears to own general ID hashing. Preserve the hash algorithm, prefix handling and 16-character digest.
+5. **Persisted data.** Preserve native `app_` and `rule_` prefixes, the current SHA-256-derived values for valid inputs, selected timestamps, and the version-3 JSON settings shape. Native rule construction must omit `bundleIdentifier` when its input is empty, as the TypeScript constructor does. Keep `SettingsStore.parseRules` rejecting a present-but-empty stored identifier. Do not add a migration or rewrite settings solely because matching changes. Preserve the existing load-time `app_`-to-`rule_` migration, which saves the normalized version-3 settings, and do not infer a missing bundle identifier from a path. A path-only reference and a bundle-qualified reference remain different identities.
+6. **Cross-language scope.** Do not change the TypeScript implementation. Use its implementation and existing tests as the reference for equal path inputs; the native tests below pin additional Unicode and delimiter boundary behavior. The TypeScript local resolver supplies an application bundle path; the Swift native resolver continues to supply the raw `proc_pidpath` executable path. Do not normalize native paths or promise cross-mode key, observed-ID, or stored-rule-ID equality. TypeScript rule IDs use `app_`; native stored rule IDs use `rule_`. Update the domain and architecture notes to describe these as separate local- and native-mode implementations under the same Application identity term, with no shared runtime state or cross-language module.
 
-## Current evidence and friction
+## Intended ownership after the change
 
-- `src/main/index.ts` is among the most-changed files under `src/` in the last 30 days of history (11 commits; only `features/runtime.ts` changed more often, at 12), and the only test that touches it asserts on its source text (`tests/platform-integration.test.ts:62, 67–68`).
-- `index.ts:42–58` detects the native runtime and assembles native and local host options inline.
-- `index.ts:60–64, 66–94` holds five mutable lets (`shellWindow`, `openShell`, `presence`, `nativeClient`, `nativeSelected`) and the bootstrap: native candidate + client construction, `waitForNativeHost`, `connectNativeHost`, fail-fast catch with `abortNativeBootstrap` + `close`. The local branch constructs presence with the agent options.
-- `index.ts:103` `preserveNativeMenuHost`, `:128` `nativeWillQuit`, `:129–137` the reconnect single-flight, `:138–151` the connection watcher, `host.willQuit` recording, and the three native UI subscriptions with inline payload validation — all as loose closures over the lets.
-- `index.ts:183–207` the `before-quit` handler interleaves native unsubscription, the preserve decision, `presence.preserveNativeHost()`/`dispose()`, the `host.quitSuite` request, and a `finish()` chain that disposes Electron, closes the client, and only then calls `app.quit()`.
-- `index.ts:216–226` `connectNativeHost` performs connect + bootstrap-snapshot validation with its own error logs.
-- `AppPresence` (`src/main/app-presence.ts`) and `NativeHostClient` (`src/main/native-host/client.ts`) are already deep modules with interface tests (`tests/app-presence.test.ts`, `tests/native-host-client.test.ts`). The missing module is the policy layer above them — selection, lifetime, and quit — which is exactly what cannot be tested through `index.ts`.
-- Deletion test: deleting `host-ownership.ts` would scatter all of the above back into the composition root, untestable. The complexity concentrates; the module earns its keep.
+`BondedRuntime` remains the Swift module and the seam its current callers already use. Its Application identity implementation owns:
 
-## Proposed module interface
+- the canonical bundle/path identity key and its UTF-8 `Data` form for byte-exact comparison;
+- matching a target to a stored rule by comparing canonical key bytes;
+- construction of a stored rule from an observed target;
+- resolution of the containing `.app` path;
+- observed application ID construction through the internal `bondedObservedApplicationId(path:bundleIdentifier:)` helper.
 
-```ts
-// src/main/host-ownership.ts
-import { existsSync } from 'node:fs'
-import { join } from 'node:path'
-import { AppPresence, type NativeMenuBarHostOptions } from './app-presence'
-import { applicationAgentPath, moirasiaFeatureServicePath, moirasiaHostPath, moirasiaHostSocketPath, moirasiaNativeFeaturePaths } from './paths'
-import { NativeHostClient } from './native-host/client'
-import type { NativeHostClientLike } from '../shared/native-host-contracts'
-import type { AppPresenceMode, ControllerPage } from '../shared/contracts'
+`OpaqueIds.swift` owns only the shared opaque-ID hash operation. It does not own application identity or flow history policy.
 
-/** The presence operations ownership relies on; `AppPresence` satisfies this structurally. */
-export interface OwnedPresence {
-  readonly mode: AppPresenceMode
-  apply(mode: AppPresenceMode): void
-  waitForNativeHost(timeoutMs?: number): Promise<boolean>
-  restartNativeHost(timeoutMs?: number): Promise<boolean>
-  preserveNativeHost(): void
-  abortNativeBootstrap(): void
-  dispose(): void
-}
+`ProcessResolver` continues to own PID lookup, caching, bundle metadata reads, display-name resolution and classification. It passes the raw executable path returned by `proc_pidpath` and the bundle identifier to the Application identity implementation; it does not substitute the containing `.app` path. `ObservedIpBlocker` continues to own learned-address state, limits and reference counts. It calls the shared key and matcher rather than carrying a second matching implementation. `SettingsStore` continues to own parsing, validation and migration; it uses the shared key to identify duplicate records. `BondedRuntime` keeps its current transition and firewall policy.
 
-export type PresenceFactory = (options: { menuBarIconPath: string; open(): void; nativeHost?: NativeMenuBarHostOptions }) => OwnedPresence
-export type NativeClientFactory = (options: { socketPath: string; tokenPath: string }) => NativeHostClientLike
+## Implementation steps
 
-export interface HostOwnershipOptions {
-  readonly userData: string
-  readonly menuBarIconPath: string
-  readonly applicationPath: string
-  readonly resourcesPath: string
-  readonly platform: string
-  readonly initialPresence: AppPresenceMode
-  readonly openShell(page?: ControllerPage): void | Promise<void>
-  readonly toggleShelf(): void | Promise<void>
-  readonly shelfVisible(visible: boolean): void
-  readonly onAvailabilityChanged(): void
-  readonly createPresence?: PresenceFactory
-  readonly createClient?: NativeClientFactory
-}
+### 1. Add focused tests before changing behavior
 
-export class HostOwnership {
-  static async acquire(options: HostOwnershipOptions): Promise<HostOwnership>
-  start(): void
-  get presence(): OwnedPresence
-  get nativeClient(): NativeHostClientLike | undefined
-  canExitToNativeHost(): boolean
-  exitToHost(): void
-  coordinateQuit(teardown: () => Promise<void>): Promise<void>
-}
-```
+Create `native/moirasia-runtime/Tests/MoirasiaProtocolTests/BondedApplicationIdentityTests.swift` with `Foundation`, `XCTest` and `@testable import BondedRuntime`. Keep the tests out of the unrelated `NativeRuntimeTests.swift`; the existing `MoirasiaProtocolTests` target already depends on `BondedRuntime`, and SwiftPM discovers source files in its default test directory without a manifest edit.
 
-The module owns only host runtime policy. It does **not** own: presence and menu-host spawning (AppPresence), the socket protocol (`NativeHostClient`), settings storage (`ShellSettingsStore`), shell-window or IPC wiring, the feature runtime, or the Electron teardown body — which arrives as the `coordinateQuit` callback. `NativeMenuBarHostOptions` must be exported from `app-presence.ts` (it is currently module-private and the factory signature needs it).
+Pin the identity-key cases:
 
-## Required behavior and invariants
+- a non-empty bundle identifier produces `bundle:<id>|path:<path>`;
+- a missing or empty bundle identifier produces `path:<path>`;
+- path and non-empty bundle identifier both participate in the key;
+- paths and bundle identifiers are compared by exact UTF-8 representation, without case folding or Unicode normalization;
+- `targetKind` does not participate in matching.
 
-1. **Detection:** native runtime is available iff `platform === 'darwin' && existsSync(moirasiaHostPath(resourcesPath)) && existsSync(moirasiaFeatureServicePath(resourcesPath))`. Native options are `{ executable: moirasiaHostPath(...), featureServicePath, applicationPath, userData, iconPath: menuBarIconPath, pidPath: join(userData, 'menu-host.pid'), bondedHelperPath, shoutDriverPath }` with feature paths from `moirasiaNativeFeaturePaths(resourcesPath)`. Local options on darwin are `{ executable: applicationAgentPath(resourcesPath), applicationPath, pidPath: join(userData, 'menu-host.pid') }`; non-darwin passes no `nativeHost` at all.
-2. **Fail-fast bootstrap, no fallback:** the native candidate is constructed with `open: () => { void Promise.resolve(options.openShell()).catch(console.error) }` and the client with `{ socketPath: moirasiaHostSocketPath(userData), tokenPath: join(userData, 'runtime', 'client.token') }`. Bootstrap order is `presence.apply(initialPresence)` → `waitForNativeHost()` → `client.connect()` → `client.getSnapshot()`; a missing snapshot logs `'MoirasiaHost returned an invalid snapshot.'`; connect errors log `'Could not connect to MoirasiaHost'`. Any failure runs `presence.abortNativeBootstrap()` + `client.close()`, logs `'Native Moirasia bootstrap failed; local ownership was not selected.'`, and rethrows. No second (local) presence is ever constructed.
-3. **Local branch:** presence is constructed with the local options (or none off-darwin), `apply(initialPresence)` runs, and `nativeClient` stays `undefined`. There is no catch on this branch — a local `apply` failure propagates out of `acquire` and quits the app through the composition root's `whenReady` catch, exactly as today's unguarded `index.ts:93`.
-4. **Accessors:** `presence` exposes the constructed presence; `nativeClient` is defined only in native mode; `canExitToNativeHost()` is `nativeSelected && client?.isConnected() === true`; `exitToHost()` records the preservation intent with that same condition evaluated at call time.
-5. **Subscriptions start only at `start()`**, registered exactly once, only in native mode: the connection watcher calls `onAvailabilityChanged()` on every event and triggers `#reconnect()` on `'disconnected'`; `host.willQuit` sets the internal flag; `ui.openShell` calls `options.openShell()`; `ui.toggleShelf` calls `options.toggleShelf()`; `host.uiStateChanged` calls `options.shelfVisible(visible)` only when the payload passes today's inline check verbatim — `payload && typeof payload === 'object' && typeof payload.shelfVisible === 'boolean'` (`index.ts:149`) — so a null or non-object payload is ignored and a non-boolean `shelfVisible` never reaches the callback.
-6. **Reconnect single-flight (verbatim):** no-op when not native, when no client, when the host initiated quit, or when a reconnect is already in flight; otherwise `await presence.restartNativeHost()` then `await client.connect()`. A thrown error at either step logs `'Could not reconnect to MoirasiaHost'`; a `false` restart returns silently and does not connect.
-7. **Quit coordination sequence (verbatim):** unsubscribe all native subscriptions → if the exit-to-host intent is recorded and the client is connected, `presence.preserveNativeHost()` (a documented no-op in native mode, see the design table) → `presence.dispose()` → if `nativeSelected && client?.isConnected() && !exitRecorded && !willQuit`, fire `client.request('host.quitSuite')` and run `teardown()` in its `.finally()` (errors log `'Could not coordinate native suite quit'`); otherwise run `teardown()` immediately. `teardown()` is awaited, then `client?.close()` runs, then the returned promise resolves and the caller's `app.quit()` continuation fires — the exact order of today's `finish()` (`index.ts:196–203`), where the close precedes `app.quit()`. A rejected `teardown` skips the close and the quit, exactly as a throw inside today's `finish()` does. The client is never closed before teardown completes, and `app.quit()` never runs before the client is closed.
-8. **No new policy:** no settings reads, no appearance, no menu, no intents inside the module; no protocol, `AppPresence`, `NativeHostClient`, or `paths.ts` behavior changes.
+Pin matcher behavior as a matrix:
 
-## Migration map (`index.ts` → `HostOwnership`)
+| Target identity | Stored rule identity | Expected |
+| --- | --- | --- |
+| same path and same non-empty bundle identifier | same path and identifier | match |
+| same path, different non-empty bundle identifiers, including case-only differences | different identifier bytes | no match |
+| same path, bundle identifiers use composed versus decomposed Unicode | different identifier bytes | no match |
+| same path and identifier, different `targetKind` | same path and identifier | match |
+| same path with neither identifier, different `targetKind` | same path-only key | match |
+| different paths, same bundle identifier | different path | no match |
+| paths differing only by case, same bundle identifier | different path | no match |
+| same bundle identifier, paths use composed versus decomposed Unicode | different path bytes | no match |
+| path-only references use composed versus decomposed Unicode | different path-only key bytes | no match |
+| same path, target has non-empty identifier and rule does not | different key | no match |
+| same path, rule has non-empty identifier and target does not | different key | no match |
+| same path, neither has an identifier | same path-only key | match |
+| different paths, neither has an identifier | different path-only key | no match |
+| same path, empty target identifier and missing rule identifier | same path-only key | match |
+| same path, missing target identifier and empty rule identifier | same path-only key | match |
+| same path, both identifiers empty | same path-only key | match |
+| same path, empty identifier on either side and non-empty identifier on the other | different key | no match |
+| distinct bundle/path fields that encode to the same key because a value contains `|path:` | same encoded key bytes | match, preserving the existing TypeScript behavior |
 
-| Today in `index.ts` | Moves to | Notes |
-|---|---|---|
-| `:42` `nativeRuntimeAvailable` | `acquire` (private) | verbatim, with injected `platform`/`resourcesPath` |
-| `:43–58` `nativeFeaturePaths`, `nativeHostOptions`, `localHostOptions` | `acquire` (private) | derived from injected options |
-| `:67–75` native `AppPresence` candidate + `NativeHostClient` | `acquire`, via factories | factories default to the real classes |
-| `:76–86` bootstrap + fail-fast catch | `acquire` | exact logs and error text |
-| `:87–94` local `AppPresence` branch | `acquire` | exact options |
-| `:118–125` `UiLifetime` wiring | stays, reading accessors | `mode: () => ownership.presence.mode`; `canExitToNativeHost: () => ownership.canExitToNativeHost()`; `onFinalWindowGone: () => { ownership.exitToHost(); app.quit() }` |
-| `:126` `UiCommandRouter` | stays | used by `second-instance` argv intents; the module's `toggleShelf` option still routes `{ kind: 'toggle-shelf' }` through it (the launch intent at `:164–170` never uses the router) |
-| `:128` `nativeWillQuit` | private field | |
-| `:130–137` `reconnectNativeHost` | private `#reconnect` | verbatim single-flight |
-| `:138–143` connection subscription | `start()` | callback now `onAvailabilityChanged` |
-| `:144` `host.willQuit` subscription | `start()` | |
-| `:145–151` `stopNativeUi` subscriptions | `start()` | inline shelf check moves verbatim |
-| `:103`, `:122` `preserveNativeMenuHost` flag | `exitToHost()` | declared at `:103`, recorded at `:122` inside `onFinalWindowGone` |
-| `:190–195` native unsubscribes, preserve, `presence.dispose()` | `coordinateQuit` | `stopNavigation()` and `commandRouter.dispose()` stay in `index.ts` |
-| `:196–206` `finish()` + `host.quitSuite` | `coordinateQuit(teardown)` | teardown = `shellWindow.dispose` → `controller.close` → `features.disposeAll` → `host.dispose`; `client.close()` runs inside `coordinateQuit` after teardown, and `app.quit()` runs in the caller's `.then()` continuation |
-| `:216–226` `connectNativeHost` | private helper in `host-ownership.ts` | exact logs |
-| `:39`, `:210–214` `setLoginItemSettings` | stays in `index.ts` | the `ipc.ts` duplicate is the IPC channel-table candidate's scope |
-| `:32–38`, `:228–237` settings/legacy appearance | stays in `index.ts` | composition wiring |
-| `:41` `menuBarIconPath` | computed in `index.ts`, passed to `acquire` | packaging-dependent path; the module feeds it to the presence options and the native host's `iconPath` |
+Use helper-level tests for empty identifiers; `SettingsStore.parseRules` still rejects a stored rule that explicitly contains an empty `bundleIdentifier`. Use composed/decomposed Unicode cases in matching, blocker deduplication and settings deduplication: those distinct UTF-8 keys must remain distinct. Exercise `findRule` by loading the first Unicode identity and calling `addRule` with the second under a different rule ID; it must add and return the second rule. For the delimiter-collision row, use target `(bundleIdentifier: "com.example|path:/Applications/A.app", path: "/Applications/B.app")` and rule `(bundleIdentifier: "com.example", path: "/Applications/A.app|path:/Applications/B.app")`. Assert their encoded keys are identical and they match, preserving current TypeScript behavior. This is a known key-format limitation, not intended identity semantics.
 
-After the extraction `index.ts` contains no `existsSync`, no native client construction, no reconnect logic, no native event subscriptions, and no `host.quitSuite` request (237 → roughly 150 lines).
+Add rule-construction checks for the `rule_` prefix, stable output for the same identity, different output for bundle-qualified versus path-only references, omission of an empty `bundleIdentifier`, and preservation of an explicitly supplied `selectedAt` value. Test `bondedObservedApplicationId(path:bundleIdentifier:)` for the `app_` prefix and distinct bundle-qualified versus path-only seeds. Pass an executable path to the helper and verify that the path is used unchanged.
 
-## Implementation sequence
+Preserve the existing containment behavior with tests for the outermost `.app` when a nested helper bundle exists, a plain executable path, a bare `Foo.app`, a trailing slash after `.app`, case-insensitive `.app` matching, and a lookalike such as `Foo.appish/Contents/MacOS/Tool` that must not match.
 
-### 1. Export the presence options type
+Add blocker-level tests that load a bundle-less rule, then observe a same-path target with a non-empty bundle identifier. Assert `observe(...).selected == false`; also cover the inverse one-sided case, exact identity, neither identifier, and empty-versus-missing identifiers. Add composed/decomposed path and identifier cases to verify `load`, `findRule` and target matching use byte-exact identity data rather than Swift `String` equality. These pin `ObservedIpBlocker.observe` behavior after its local matcher is removed. Add a settings fixture containing composed/decomposed but byte-distinct identities and assert `parseRules` retains both. In `NativeRuntimeTests.swift`, retain the existing legacy rule-ID migration test and assert that loading semantically changes only the legacy `app_` ID to `rule_`: the persisted top-level fields remain `version`, `monitoringEnabled`, `monitorWhenHidden`, `blockingEnabled` and `applicationRules`, and the rule keeps its path, display name, target kind, bundle identifier and `selectedAt`.
 
-In `src/main/app-presence.ts`, change `interface NativeMenuBarHostOptions` to `export interface NativeMenuBarHostOptions`. No behavior change.
+Pin `bondedOpaqueId(prefix: "flow", value: "abc")` to `flow_ba7816bf8f01cfea`. This reuses the existing SHA-256 fixture and protects the generic hash used by `FlowHistory`; the rule-construction and observed-application ID tests pin `rule_` and `app_` separately.
 
-### 2. Add the module and its tests in one focused change
+First run `swift test --package-path native/moirasia-runtime --filter BondedApplicationIdentityTests`. The one-sided non-empty bundle-identifier cases must fail against the current native matcher; then implement the fix and require the focused tests to pass. Keep the pre-existing TypeScript application-identity tests unchanged.
 
-Create `src/main/host-ownership.ts` with the interface above and the invariants 1–8, reproducing every behavior verbatim from `index.ts:42–58, 66–94, 128–151, 183–207, 216–226`. Internal state: `#options`, `#presence`, `#client`, `#nativeSelected`, `#willQuit`, `#exitRecorded`, `#reconnecting`, `#started`, `#unsubscribers: Array<() => void>`.
+### 2. Establish the native identity implementation
 
-Create `tests/host-ownership.test.ts` (matrix below). Mock `electron` minimally (the `app-presence` import chain requires it, mirroring `tests/app-presence.test.ts`) and mock `node:fs`'s `existsSync` for detection; fake presence/client factories record call order into a shared array and offer programmable `waitForNativeHost`/`restartNativeHost`/`connect`/`getSnapshot`/`request` (with a deferred `host.quitSuite` promise).
+Add `native/moirasia-runtime/Sources/BondedRuntime/ApplicationIdentity.swift`.
 
-Run `pnpm vitest run tests/host-ownership.test.ts`. Then `pnpm typecheck`.
+Move the existing public identity-key, rule-construction, rule-matching and containing-application functions out of `ObservedIpBlocker.swift` and `ProcessResolver.swift`. Preserve every existing public name, signature, type and access level. Implement `bondedMatchesApplicationRule` as equality between the target and rule identity-key `Data` values from `bondedApplicationRuleIdentityData`. Treat an empty bundle identifier as absent in the identity key and in the constructed rule, matching the TypeScript truthy check. Keep `SettingsStore.parseRules` rejecting a persisted record whose `bundleIdentifier` field is present but empty.
 
-### 3. Rewire the composition root
+Add the internal `bondedApplicationRuleIdentityData(path:bundleIdentifier:)` helper, returning `Data(bondedApplicationRuleIdentity(path: path, bundleIdentifier: bundleIdentifier).utf8)`. Use this data value everywhere keys are compared or deduplicated: `bondedMatchesApplicationRule`, `ObservedIpBlocker.load`, `ObservedIpBlocker.findRule`, and `SettingsStore.parseRules` (store dedupe values in `Set<Data>`, not `Set<String>`). This matches JavaScript string equality for canonically distinct Unicode sequences while preserving the public string key and its hash seed. Keep the existing unescaped delimiter format and its documented collision behavior.
 
-In `src/main/index.ts`:
+Add the internal `bondedObservedApplicationId(path:bundleIdentifier:)` helper. It must return `bondedOpaqueId(prefix: "app", value: bondedApplicationRuleIdentity(path: path, bundleIdentifier: bundleIdentifier))`. `ProcessResolver` passes its existing executable path unchanged. Keep rule construction on the native `rule_` prefix. Do not make the generic opaque-ID helper part of the Application identity interface.
 
-- Delete the detection/options block (`:42–58`), the `presence`/`nativeClient`/`nativeSelected` lets and the native/local bootstrap branches (`:62–64, 66–94`), the reconnect/subscription closures (`:128–151`), and `connectNativeHost` (`:216–226`).
-- Acquire after settings/appearance wiring, passing closures over the later-assigned `openShell`/`uiLifetime`/`commandRouter` lets (closures are only invoked after `start()`):
+Add `native/moirasia-runtime/Sources/BondedRuntime/OpaqueIds.swift` and move `bondedOpaqueId` there without changing its implementation or output. This is a source-placement change only. Do not modify `Package.swift`: both files belong to the existing target.
 
-  ```ts
-  const ownership = await HostOwnership.acquire({
-    userData: app.getPath('userData'),
-    menuBarIconPath,
-    applicationPath: resolve(process.execPath, '../../..'),
-    resourcesPath: process.resourcesPath,
-    platform: process.platform,
-    initialPresence: settings.get().appPresence,
-    openShell: (page) => openShell(page),
-    toggleShelf: () => commandRouter.route({ kind: 'toggle-shelf' }),
-    shelfVisible: (visible) => uiLifetime.shelfVisible(visible),
-    onAvailabilityChanged: () => uiLifetime.nativeHostAvailabilityChanged()
-  })
-  ```
+### 3. Route callers through the owner and delete duplicate logic
 
-- `FeatureRuntime` and `ShellWindowLifecycle` receive `nativeClient: ownership.nativeClient` (undefined in local mode, preserving both modules' mode selection).
-- `presenceMode: () => ownership.presence.mode` and `applyAppPresence: (mode) => ownership.presence.apply(mode)` feed the shell window.
-- Call `ownership.start()` where the subscriptions are registered today (after `commandRouter` construction).
-- Replace the native leg of `before-quit` with `void ownership.coordinateQuit(async () => { await shellWindow.dispose(); controller.close(); await features.disposeAll(); host.dispose() }).then(() => app.quit())`, keeping `shuttingDown`, `preventDefault`, the `nativeTheme` listener removal, `disposeMemoryDiagnostics()`, `stopNavigation()`, and `commandRouter.dispose()` in place. (The relative order of `commandRouter.dispose()` and native unsubscription flips; they share no state, and the quit block stays synchronous, so no native event can fire in between.)
+In `ProcessResolver.swift`, replace the inline identity expression and `app_` hashing with `bondedObservedApplicationId(path:bundleIdentifier:)`. Pass the raw executable path returned by `proc_pidpath`; do not substitute the containing `.app` path. This preserves native target paths and observed IDs for existing valid inputs. Keep PID lookup, cache behavior and metadata extraction unchanged. Remove the old definition of `bondedContainingApplication` from this file while preserving its call sites.
 
-### 4. Keep the domain docs current
+In `ObservedIpBlocker.swift`, remove the moved free-function definitions and delete the private `bondedMatches` implementation. Have `ruleForTarget` call `bondedMatchesApplicationRule`. Use `bondedApplicationRuleIdentityData` in `load` and `findRule` so deduplication and fallback lookup use the same byte-exact comparison. Leave learned-address state and limit handling untouched.
 
-The **Host ownership** term is already applied to `CONTEXT.md` alongside this plan. The entry was checked against this plan's interface: it names the fail-fast bootstrap, the reconnect single-flight, host-initiated-quit and exit-to-host recording, native UI event routing, quit coordination with Electron teardown as the final callback, and the composition root's acquire/start/native-client wiring — all matching `acquire`/`start`/`presence`/`nativeClient`/`coordinateQuit` as specified here. It does not pin the client-close ordering, so the close-before-`app.quit()` sequence requires no entry change. Do not add new terms or an ADR.
+In `SettingsStore.swift`, keep validation and migration behavior unchanged. `parseRules` continues to reject a present-but-empty `bundleIdentifier`, but changes its identity deduplication set from `Set<String>` to `Set<Data>` using `bondedApplicationRuleIdentityData`. `canonicalRuleIdentifier` continues to preserve existing `rule_` IDs and convert legacy `app_` IDs to identity-derived `rule_` IDs.
 
-### 5. Coverage hook
+`BondedRuntime.swift` already uses `bondedMatchesApplicationRule` and `bondedApplicationRuleForTarget`; do not change those call sites or firewall/application-selection sequencing. With the corrected matcher, explicitly selecting an observed target whose path matches only a bundle-less stored rule creates a separate bundle-qualified rule and saves both records. Do not silently upgrade the old path-only rule.
 
-Add `'src/main/host-ownership.ts'` to `coverage.include` in `vitest.config.ts`.
+### 4. Keep the domain notes accurate
 
-### 6. Verify
+Update the **Application identity** entry in `CONTEXT.md` to state that the TypeScript module is the local-mode implementation and the Swift `BondedRuntime` module is its native-mode peer. Record byte-exact key comparison, empty identifiers treated as absent, one-sided identifiers not matching, and `targetKind` being ignored. Also record the resolver path difference (TypeScript application bundle path versus Swift raw executable path) and that IDs/state are mode-local. Keep the existing product responsibilities and avoid introducing a new domain term.
 
-1. `pnpm vitest run tests/host-ownership.test.ts` — the new suite.
-2. `pnpm typecheck`.
-3. `pnpm test` — the full suite, unchanged: `app-presence`, `native-host-client`, `feature-runtime`, `shell-window`, `ui-command-router`, `platform-integration` all pass without edits.
-4. Manual smoke via `pnpm dev` (main-process flows CI cannot reach):
-   - the native path boots, connects, and the shell opens;
-   - killing the `MoirasiaHost` process triggers one reconnect attempt with the existing log line, and the shelf visibility event still routes after reconnect;
-   - menu-bar mode with the native host: closing the last window exits to the host, which keeps running, while the Electron process quits (exit-to-host preserve);
-   - dock mode: quitting stops the native runtime — the host process exits (stop-runtime path);
-   - a host-initiated quit (`host.willQuit`): the app records it, tears down, and quits without issuing `host.quitSuite`;
-   - a machine without staged native binaries launches in local mode, and quitting there runs no native request (local quit path).
+Add a short matching ownership note to `docs/architecture/standalone-applications.md` in the native feature section. Distinguish the Swift implementation from the TypeScript implementation, including their different resolver path inputs and native `rule_` versus TypeScript `app_` stored-rule prefixes. Do not claim that the two language implementations share runtime state, persisted IDs or a cross-language module.
 
-## Test matrix for `tests/host-ownership.test.ts`
+## Validation
 
-All cases drive `HostOwnership.acquire` and its methods; none inspect internal state. A shared call-order array backs the ordering assertions.
+Run checks from the repository root:
 
-1. **Native selection:** darwin + binaries present → factory receives the native host options (executable, featureServicePath, userData, `menu-host.pid`, feature paths, applicationPath, iconPath); call order `apply(initialPresence)` → `waitForNativeHost` → `connect` → `getSnapshot`; `isNative` is observable via `nativeClient` defined and `canExitToNativeHost()` true.
-2. **Bootstrap failure:** `waitForNativeHost` false → `acquire` rejects with `'MoirasiaHost.app did not become ready.'`, `abortNativeBootstrap` and `client.close` were called, and the presence factory ran exactly once (no local fallback).
-3. **Connect failure:** `connect` rejects → same fail-fast path.
-4. **Invalid bootstrap snapshot:** `getSnapshot` resolves `undefined` → same rejection and cleanup.
-5. **Local darwin:** binaries absent → factory receives the agent options (`executable: applicationAgentPath(resourcesPath)`, applicationPath, pidPath); `nativeClient` undefined; `canExitToNativeHost()` false.
-6. **Non-darwin:** factory receives no `nativeHost` key.
-7. **Disconnect → reconnect:** after `start()`, a `'disconnected'` connection event calls `onAvailabilityChanged` once and runs `restartNativeHost` then `connect`; two events before the restart resolves coalesce to a single restart (single-flight); a failed restart does not connect.
-8. **Reconnected event:** calls `onAvailabilityChanged`, no restart.
-9. **`host.willQuit`:** after the event, a disconnect does not restart.
-10. **UI events:** `ui.openShell` → `openShell` callback; `ui.toggleShelf` → `toggleShelf` callback; `host.uiStateChanged` with boolean `shelfVisible` → `shelfVisible(visible)`; with a non-boolean value → no call.
-11. **Exit-to-host quit:** `exitToHost()` then `coordinateQuit(teardown)` → order is `preserveNativeHost` → `dispose` → `teardown` → `client.close`, with no `host.quitSuite` request; `exitToHost()` while disconnected records nothing (stop path applies).
-12. **Stop-runtime quit:** connected, no exit recorded → `host.quitSuite` is requested; `teardown` does not run until the request's promise settles (use a deferred), then `teardown` runs, the client closes after it, and the returned `coordinateQuit` promise resolves only after the close (the composition root's `app.quit()` hangs off that resolution); a rejected request still runs teardown.
-13. **Quit after `host.willQuit`:** no `host.quitSuite`; teardown runs; client closes.
-14. **Local quit:** no request, no client to close; `presence.dispose` called; teardown runs.
-15. **`start()` is single-registration:** calling `start()` twice subscribes each listener once.
+1. `swift test --package-path native/moirasia-runtime`. The test target depends on `BondedRuntime`, both executables and every other package target, so this also compiles the complete debug target graph.
+2. `swift build --package-path native/moirasia-runtime -c release --arch arm64` on macOS, matching the runtime packaging architecture without running the staging script.
+3. `pnpm --dir apps/integrated/Bonded exec vitest run tests/application-identity.test.ts` to verify the unchanged TypeScript reference contract.
+4. `git diff --check` and inspect `git diff -- CONTEXT.md docs/architecture/standalone-applications.md native/moirasia-runtime` for accidental changes to protocol, settings format, ID prefixes or unrelated Bonded behavior.
 
-## Test ownership and tests that should survive
+Do not run `pnpm runtime:build` solely for this refactor. Its script removes and recreates `native/staged/runtime`; compiling the Swift package directly gives the relevant build check without that staging side effect.
 
-- **New `tests/host-ownership.test.ts`:** the matrix above — the host runtime policy finally has a test surface at its interface.
-- **`tests/app-presence.test.ts`:** unchanged. `AppPresence`'s interface is untouched; the export of `NativeMenuBarHostOptions` is type-only.
-- **`tests/native-host-client.test.ts`:** unchanged. The client's construction options are identical.
-- **`tests/feature-runtime.test.ts`, `tests/shell-window.test.ts`, `tests/platform-integration.test.ts`:** unchanged. The client shape they consume is unchanged, and `app.setName`/dock-icon wiring stays in `index.ts` so the source-text assertions still hold.
-- **Replace, don't layer:** no test covers `index.ts` behavior today, so nothing is deleted; the source-string platform test remains (improving it belongs to the IPC candidate, not this one).
+## Acceptance criteria
+
+- Native identity key generation has one implementation, and `ProcessResolver` no longer formats the key inline.
+- Native target-to-rule matching has one implementation. The private `ObservedIpBlocker` matcher is gone.
+- Native matching agrees with TypeScript string-comparison semantics for equal input paths, including one-sided, empty, case-only, Unicode-normalization and target-kind cases. Canonically distinct UTF-8 key bytes remain distinct; the existing unescaped delimiter collision remains unchanged. The matcher does not normalize the native executable path to a bundle path.
+- Bundle containment keeps its current path behavior after moving to the identity implementation.
+- Native `app_`, `rule_` and `flow_` prefixes, hash output, settings JSON shape and existing migration behavior remain unchanged. Empty bundle identifiers normalize to absent in keys and new rules, while persisted records that explicitly contain an empty identifier remain rejected. Identity matching and deduplication intentionally become UTF-8-byte-exact for canonically equivalent but byte-distinct strings, matching TypeScript.
+- Blocker tests pin `ObservedIpBlocker.observe` selection status against the shared matcher; `BondedRuntime` continues to use that public matcher for rule selection.
+- No new SwiftPM target, product, dependency, settings migration or TypeScript behavior is introduced.
+- Swift tests and builds pass, and the domain notes describe both mode-specific implementations accurately.
 
 ## Risks and mitigations
 
-- **Quit-sequence regression (highest risk).** Two orderings are load-bearing: the `quitSuite` request settles before teardown starts (the host terminates the desktop app during `quitSuite`, so an early close would abort the request), and the client closes before `app.quit()` is requested (today's `finish()`, `index.ts:196–203`). `coordinateQuit` reproduces both with the same `.catch().finally()` chain and the close-then-resolve tail; cases 11–14 assert exact call order, including teardown-not-until-settle via a deferred. Verify the four manual quit paths in step 6.4.
-- **Callbacks firing before the composition root is ready.** All native subscriptions move behind `start()`, which `index.ts` calls at the exact point the subscriptions are registered today. Closures passed to `acquire` may reference not-yet-assigned lets exactly as today's `open` closure does.
-- **Factory drift.** The production defaults are the real `AppPresence` and `NativeHostClient`; fakes exist only in tests, and both real classes keep their own suites. The module must not grow presence/protocol logic that tests then bypass.
-- **Detection hermeticity.** `resourcesPath` and `platform` are injected; `node:fs`'s `existsSync` is mocked, mirroring the existing `app-presence` test. `moirasiaHostSocketPath(userData)` stays real (pure).
-- **Reconnect races.** The single-flight promise is reproduced verbatim; case 7 pins coalescing.
-- **Behavior drift by accident.** The refactor is behavior-preserving by construction: every moved block is verbatim, and the log lines, error text, and request methods are listed in invariants 2–7. Any observed difference in manual smoke is a bug to fix before landing.
-- **Scope creep.** The typed native event schema (dead `NativeHostUiState`, dropped `{page}` key), the IPC channel table, the login-item duplicate, and the Feature mode seam are explicitly out of scope; the inline `shelfVisible` check moves but is not "fixed."
-
-## Out of scope
-
-- Typing native event payloads or removing the dead `NativeHostUiState` type and the dropped `{page}` key (host UI-state contract candidate).
-- The Controller IPC channel table and the `setLoginItemSettings`/`appSetLoginItem` duplicate (IPC candidate).
-- The Feature mode seam (`FeatureModeLinks`) and any `host-mode.ts`/`runtime.ts` change.
-- Any change to `AppPresence`, `NativeHostClient`, `paths.ts`, `ShellSettingsStore`, the Swift runtime, the wire protocol, packaging, or the standalone applications.
-- Making `UiLifetime`, `UiCommandRouter`, or `EmbeddedFeatureHost` deeper; adding new host features (e.g., local menu-host preservation on exit).
-- Adding an ADR.
-
-## Completion criteria
-
-- `src/main/index.ts` contains no native-runtime detection, host-option assembly, client construction, reconnect logic, native event subscription, or `host.quitSuite` request, and shrinks by roughly 90 lines with zero behavior change.
-- `HostOwnership` owns all of the above behind `acquire` / `start` / `presence` / `nativeClient` / `canExitToNativeHost` / `exitToHost` / `coordinateQuit`, reproduced verbatim from the old inline code, including every log line and error message and both quit orderings (`quitSuite` settles before teardown; the client closes before `app.quit()`).
-- `tests/host-ownership.test.ts` passes and covers the full matrix; every existing suite passes unchanged; `pnpm typecheck` passes.
-- `vitest.config.ts` coverage includes the new module; `CONTEXT.md`'s **Host ownership** entry matches the shipped interface.
-- The four manual quit paths (exit-to-host preserve, dock stop-runtime, host-initiated quit, local quit) behave exactly as before.
+- **Existing native fallback behavior changes.** A path-only stored rule will no longer match a same-path observed target with a non-empty bundle identifier. This is intentional parity with the TypeScript matcher for equal path inputs. Loading does not upgrade the old rule or guess an identifier. If the user explicitly selects that observed target, `BondedRuntime` treats it as a distinct identity, appends and saves a bundle-qualified rule, and leaves the path-only rule in place. The TypeScript resolver supplies a different path for application targets, so this refactor does not promise cross-mode key or ID equality.
+- **Identifier prefixes are easy to conflate.** Native observed application IDs use `app_`; native stored rule IDs use `rule_`; flow IDs use `flow_`. Pin all three in tests and keep generic hashing separate from application identity. TypeScript local stored-rule IDs remain `app_`.
+- **Swift Unicode equality currently collapses distinct TypeScript identities.** Swift considers canonically equivalent strings equal, so current matcher and `Set<String>` deduplication can collapse composed/decomposed paths or identifiers that TypeScript keeps distinct. The byte-data helper fixes this deliberately; existing valid rules that were previously merged may now remain separate.
+- **The key format has an existing delimiter collision.** Unescaped `|path:` inside a bundle identifier or path can make distinct field pairs encode to the same key and therefore the same observed/rule ID. The TypeScript implementation already treats these as equal, and this refactor preserves that behavior. Fixing it requires coordinated TypeScript changes and an identity/hash migration; do not claim that distinct field values always imply distinct keys.
+- **Moving functions can expose access-control assumptions.** Preserve every existing public function's access level and signature; only `bondedApplicationRuleIdentityData(path:bundleIdentifier:)` and `bondedObservedApplicationId(path:bundleIdentifier:)` are new and internal. Compile the whole Swift package, including the feature executable, before considering the refactor complete.
+- **A broad cleanup could dilute the seam.** Do not refactor display names, classification, enforcement, network monitoring, the TypeScript implementation, or unrelated identifier consumers. Keep change review focused on identity ownership and exact key semantics.

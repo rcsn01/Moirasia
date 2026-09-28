@@ -120,7 +120,7 @@ public final class BondedSettingsStore {
         guard case .array(let values) = value else { return nil }
         var result: [BondedStoredRule] = []
         var ids = Set<String>()
-        var identities = Set<String>()
+        var identities = Set<Data>()
         let formatter = ISO8601DateFormatter()
         for item in values {
             guard result.count < 256, case .object(let object) = item,
@@ -132,10 +132,11 @@ public final class BondedSettingsStore {
             let bundle = object["bundleIdentifier"]?.stringValue
             if object["bundleIdentifier"] != nil && (bundle == nil || bundle!.isEmpty || bundle!.count > 512) { continue }
             let identity = bondedApplicationRuleIdentity(path: path, bundleIdentifier: bundle)
+            let identityData = bondedApplicationRuleIdentityData(path: path, bundleIdentifier: bundle)
             let id = canonicalRuleIdentifier(rawId, identity: identity)
-            guard !ids.contains(id), !identities.contains(identity) else { continue }
+            guard !ids.contains(id), !identities.contains(identityData) else { continue }
             result.append(BondedStoredRule(id: id, path: path, displayName: displayName, targetKind: targetKind, bundleIdentifier: bundle, selectedAt: selectedAt))
-            ids.insert(id); identities.insert(identity)
+            ids.insert(id); identities.insert(identityData)
         }
         return result
     }

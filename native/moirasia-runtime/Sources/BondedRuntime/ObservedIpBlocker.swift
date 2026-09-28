@@ -35,20 +35,6 @@ public enum BondedBlockerLimits {
     public static let destinationRules = 4_096
 }
 
-public func bondedApplicationRuleIdentity(path: String, bundleIdentifier: String?) -> String {
-    bundleIdentifier.map { "bundle:\($0)|path:\(path)" } ?? "path:\(path)"
-}
-
-public func bondedApplicationRuleForTarget(_ target: BondedApplicationRuleTarget, selectedAt: String = ISO8601DateFormatter().string(from: Date())) -> BondedStoredRule {
-    let identity = bondedApplicationRuleIdentity(path: target.path, bundleIdentifier: target.bundleIdentifier)
-    return BondedStoredRule(id: bondedOpaqueId(prefix: "rule", value: identity), path: target.path, displayName: target.displayName, targetKind: target.targetKind, bundleIdentifier: target.bundleIdentifier, selectedAt: selectedAt)
-}
-
-public func bondedMatchesApplicationRule(target: BondedApplicationRuleTarget, rule: BondedStoredRule) -> Bool {
-    if let bundleIdentifier = target.bundleIdentifier, let ruleBundle = rule.bundleIdentifier { return bundleIdentifier == ruleBundle && target.path == rule.path }
-    return target.path == rule.path
-}
-
 func bondedIsLoopbackOrUnspecified(family: Int, bytes: [UInt8]) -> Bool {
     if bytes.allSatisfy({ $0 == 0 }) { return true }
     if family == 4 { return bytes[0] == 127 }
@@ -66,9 +52,11 @@ public final class ObservedIpBlocker {
 
     public func load(_ rules: [BondedStoredRule]) {
         self.rules.removeAll(); addressReferences.removeAll(); limitReached = false
+        var identities = Set<Data>()
         for rule in rules {
             if self.rules.count >= BondedBlockerLimits.applicationRules { break }
-            if self.rules.values.contains(where: { bondedApplicationRuleIdentity(path: $0.rule.path, bundleIdentifier: $0.rule.bundleIdentifier) == bondedApplicationRuleIdentity(path: rule.path, bundleIdentifier: rule.bundleIdentifier) }) { continue }
+            let identity = bondedApplicationRuleIdentityData(path: rule.path, bundleIdentifier: rule.bundleIdentifier)
+            guard identities.insert(identity).inserted else { continue }
             self.rules[rule.id] = RuntimeRule(rule: rule, addresses: [])
         }
     }
@@ -135,16 +123,12 @@ public final class ObservedIpBlocker {
     }
 
     private func findRule(_ rule: BondedStoredRule) -> RuntimeRule? {
-        rules[rule.id] ?? rules.values.first { bondedApplicationRuleIdentity(path: $0.rule.path, bundleIdentifier: $0.rule.bundleIdentifier) == bondedApplicationRuleIdentity(path: rule.path, bundleIdentifier: rule.bundleIdentifier) }
+        let identity = bondedApplicationRuleIdentityData(path: rule.path, bundleIdentifier: rule.bundleIdentifier)
+        return rules[rule.id] ?? rules.values.first { bondedApplicationRuleIdentityData(path: $0.rule.path, bundleIdentifier: $0.rule.bundleIdentifier) == identity }
     }
 
     private func ruleForTarget(_ target: BondedApplicationRuleTarget) -> RuntimeRule? {
-        rules.values.first { bondedMatches(target, $0.rule) }
-    }
-
-    private func bondedMatches(_ target: BondedApplicationRuleTarget, _ rule: BondedStoredRule) -> Bool {
-        if let bundleIdentifier = target.bundleIdentifier, let ruleBundle = rule.bundleIdentifier { return bundleIdentifier == ruleBundle && target.path == rule.path }
-        return target.path == rule.path
+        rules.values.first { bondedMatchesApplicationRule(target: target, rule: $0.rule) }
     }
 
     private func addAddress(_ runtime: RuntimeRule, _ rawAddress: String) -> Bool {

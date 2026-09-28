@@ -1,4 +1,3 @@
-import CryptoKit
 import Darwin
 import Foundation
 
@@ -22,17 +21,6 @@ public struct BondedProcessTarget {
         self.bundleIdentifier = bundleIdentifier
         self.classification = classification
     }
-}
-
-public func bondedContainingApplication(_ executablePath: String) -> String? {
-    guard let match = executablePath.range(of: "^(.+?\\.app)(?:/|$)", options: [.regularExpression, .caseInsensitive]) else { return nil }
-    let value = String(executablePath[match.lowerBound ..< match.upperBound])
-    return value.hasSuffix("/") ? String(value.dropLast()) : value
-}
-
-public func bondedOpaqueId(prefix: String, value: String) -> String {
-    let digest = SHA256.hash(data: Data(value.utf8)).map { String(format: "%02x", $0) }.joined()
-    return "\(prefix)_\(digest.prefix(16))"
 }
 
 public final class BondedProcessResolver: @unchecked Sendable {
@@ -72,8 +60,7 @@ public final class BondedProcessResolver: @unchecked Sendable {
         let displayName = Self.displayName(path: path, application: application)
         let targetKind = application == nil ? "executable" : "application"
         let classification = classifier.classify(pid: pid, executablePath: path, applicationPath: application, bundleIdentifier: bundleIdentifier)
-        let identity = bundleIdentifier.map { "bundle:\($0)|path:\(path)" } ?? "path:\(path)"
-        return BondedProcessTarget(id: bondedOpaqueId(prefix: "app", value: identity), path: path, displayName: displayName, targetKind: targetKind, bundleIdentifier: bundleIdentifier, classification: classification)
+        return BondedProcessTarget(id: bondedObservedApplicationId(path: path, bundleIdentifier: bundleIdentifier), path: path, displayName: displayName, targetKind: targetKind, bundleIdentifier: bundleIdentifier, classification: classification)
     }
 
     static func readBundleIdentifier(_ applicationPath: String) -> String? {
