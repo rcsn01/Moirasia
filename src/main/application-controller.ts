@@ -36,7 +36,7 @@ export class ApplicationController {
   async open(id: ApplicationId): Promise<ControllerSnapshot> { return this.#action(id, async (record) => { await this.agent.open(record) }) }
   async installFeature(id: ApplicationId): Promise<ControllerSnapshot> { await this.features.setInstalled(id, true); this.#emit(); return this.snapshot() }
   async uninstallFeature(id: ApplicationId): Promise<ControllerSnapshot> { await this.features.setInstalled(id, false); this.#emit(); return this.snapshot() }
-  openFeature(id: ApplicationId): void { this.features.activate(id) }
+  async openFeature(id: ApplicationId): Promise<void> { await this.features.activate(id) }
   rememberPage(page: ControllerPage): void { this.#page = page }
   reportPage(page: ControllerPage): void { this.rememberPage(page); this.features.setActive(isFeatureId(page) ? page : undefined) }
   setShellVisible(visible: boolean): void { this.features.setShellVisible(visible) }

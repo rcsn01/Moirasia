@@ -141,12 +141,15 @@ export class NativeFeatureMode implements FeatureMode {
     if (id && !this.#links.instance(id)) void this.#links.enqueue(id, async () => { await this.#links.acquire(id) })
   }
 
-  async activate(id: FeatureId): Promise<void> {
-    if (!this.installed(id)) throw new Error(`Feature '${id}' is not installed.`)
-    const loaded = await this.#links.acquire(id)
-    if (!loaded) throw new Error(this.#links.loadError(id) ?? `Feature '${id}' could not be loaded.`)
-    this.#links.setActive(id)
-    this.#links.instance(id)?.activate?.()
+  activate(id: FeatureId): Promise<void> {
+    // Share acquisition with snapshot recovery so Open waits for registration to commit.
+    return this.#links.enqueue(id, async () => {
+      if (!this.installed(id)) throw new Error(`Feature '${id}' is not installed.`)
+      const loaded = await this.#links.acquire(id)
+      if (!loaded) throw new Error(this.#links.loadError(id) ?? `Feature '${id}' could not be loaded.`)
+      this.#links.setActive(id)
+      this.#links.instance(id)?.activate?.()
+    })
   }
 
   async shelf(action: 'open' | 'toggle'): Promise<void> {

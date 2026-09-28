@@ -1,7 +1,7 @@
 import { mkdtemp, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { afterEach, describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import { AppearanceRegistry } from '../packages/desktop-shell/src/main'
 import { ApplicationController, type ApplicationAgent } from '../src/main/application-controller'
 import type { FeatureRuntime } from '../src/main/features/runtime'
@@ -102,7 +102,7 @@ function makeFeatures(statuses: FeatureStatus[] = []) {
     subscribe(listener: () => void): () => void { listeners.add(listener); return () => { listeners.delete(listener) } },
     statuses(): readonly FeatureStatus[] { return current },
     setActive(id: ApplicationId | undefined) { calls.push(`setActive:${String(id)}`) },
-    activate(id: ApplicationId) { calls.push(`activate:${String(id)}`) },
+    activate(id: ApplicationId): void | Promise<void> { calls.push(`activate:${String(id)}`) },
     async setInstalled(id: ApplicationId, installed: boolean) { calls.push(`setInstalled:${String(id)}:${String(installed)}`) },
     relaunch() { calls.push('relaunch') },
     set(next: FeatureStatus[]) { current = next },
@@ -181,6 +181,36 @@ describe('ApplicationController', () => {
     await expect(controller.open('amove')).rejects.toThrow('Amove is not installed.')
     expect(agent.calls).toEqual([])
     expect(controller.snapshot().applications.find(({ id }) => id === 'amove')?.error).toBeUndefined()
+  })
+
+  it('returns a rejected feature activation promise', async () => {
+    const { controller, features } = await makeController()
+    const failure = new Error('native activation failed')
+    const activation = Promise.reject(failure)
+    void activation.catch(() => undefined)
+    features.raw.activate = vi.fn(() => activation)
+
+    const result: unknown = controller.openFeature('amove')
+
+    expect(result).toBeInstanceOf(Promise)
+    if (!(result instanceof Promise)) return
+    await expect(result).rejects.toBe(failure)
+  })
+
+  it('converts a synchronous feature activation throw into a rejected promise', async () => {
+    const { controller, features } = await makeController()
+    const failure = new Error('local activation failed')
+    features.raw.activate = vi.fn(() => { throw failure })
+    let result: unknown
+    let thrown: unknown
+
+    try { result = controller.openFeature('amove') }
+    catch (error) { thrown = error }
+
+    expect(thrown).toBeUndefined()
+    expect(result).toBeInstanceOf(Promise)
+    if (!(result instanceof Promise)) return
+    await expect(result).rejects.toBe(failure)
   })
 
   it('serializes commands on the same application in call order', async () => {

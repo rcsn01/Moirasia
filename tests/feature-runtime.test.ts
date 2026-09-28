@@ -454,6 +454,107 @@ describe('FeatureRuntime', () => {
       expect(runtime.statuses()[0]).not.toHaveProperty('loadError')
     })
 
+    it('serializes native activation behind a running-adapter recovery', async () => {
+      let releaseRegistration!: () => void
+      let signalRegistrationStarted!: () => void
+      const registrationGate = new Promise<void>((resolve) => { releaseRegistration = resolve })
+      const registrationStarted = new Promise<void>((resolve) => { signalRegistrationStarted = resolve })
+      const recoveryFeature = fakeFeature()
+      recoveryFeature.register.mockImplementation(async () => {
+        signalRegistrationStarted()
+        await registrationGate
+      })
+      const activationFeature = fakeFeature()
+      let loaderCalls = 0
+      const nativeLoader = vi.fn(async () => {
+        loaderCalls += 1
+        if (loaderCalls === 1) throw new Error('feature service is starting')
+        return { feature: loaderCalls === 2 ? recoveryFeature.feature : activationFeature.feature }
+      })
+      const { client, emitSnapshot } = fakeNativeClient({ features: [{ id: 'amove', installed: true, state: 'starting' }] })
+      const runtime = new FeatureRuntime(await settingsWith(undefined), {
+        loaders: { amove: vi.fn(async () => ({ feature: fakeFeature().feature })) },
+        nativeLoaders: { amove: nativeLoader },
+        context: () => CONTEXT,
+        nativeClient: client
+      })
+      let activation: Promise<void> | undefined
+
+      try {
+        await runtime.syncAtLaunch()
+        emitSnapshot({ features: [{ id: 'amove', installed: true, state: 'running' }] })
+        await registrationStarted
+        expect(runtime.statuses()[0]).toMatchObject({ installed: true, loaded: true })
+
+        activation = Promise.resolve(runtime.activate('amove'))
+        expect(nativeLoader).toHaveBeenCalledTimes(2)
+
+        releaseRegistration()
+        await activation
+        expect(nativeLoader).toHaveBeenCalledTimes(2)
+        expect(recoveryFeature.register).toHaveBeenCalledTimes(1)
+        expect(recoveryFeature.activate).toHaveBeenCalledTimes(1)
+        expect(activationFeature.register).not.toHaveBeenCalled()
+      } finally {
+        releaseRegistration()
+        if (activation) await activation.catch(() => undefined)
+        await runtime.disposeAll()
+      }
+    })
+
+    it('retries native activation after recovery registration fails and clears the later load error', async () => {
+      let rejectRegistration!: (error: Error) => void
+      let signalRegistrationStarted!: () => void
+      const registrationGate = new Promise<void>((_resolve, reject) => { rejectRegistration = reject })
+      const registrationStarted = new Promise<void>((resolve) => { signalRegistrationStarted = resolve })
+      const recoveryFeature = fakeFeature()
+      recoveryFeature.register.mockImplementation(async () => {
+        signalRegistrationStarted()
+        await registrationGate
+      })
+      const retryFeature = fakeFeature()
+      let loaderCalls = 0
+      const nativeLoader = vi.fn(async () => {
+        loaderCalls += 1
+        if (loaderCalls === 1) throw new Error('feature service is starting')
+        if (loaderCalls === 2) return { feature: recoveryFeature.feature }
+        if (loaderCalls === 3) throw new Error('activation retry failed')
+        return { feature: retryFeature.feature }
+      })
+      const { client, emitSnapshot } = fakeNativeClient({ features: [{ id: 'amove', installed: true, state: 'starting' }] })
+      const runtime = new FeatureRuntime(await settingsWith(undefined), {
+        loaders: { amove: vi.fn(async () => ({ feature: fakeFeature().feature })) },
+        nativeLoaders: { amove: nativeLoader },
+        context: () => CONTEXT,
+        nativeClient: client
+      })
+      let activation: Promise<void> | undefined
+
+      try {
+        await runtime.syncAtLaunch()
+        emitSnapshot({ features: [{ id: 'amove', installed: true, state: 'running' }] })
+        await registrationStarted
+
+        activation = Promise.resolve(runtime.activate('amove'))
+        expect(nativeLoader).toHaveBeenCalledTimes(2)
+        rejectRegistration(new Error('recovery registration failed'))
+        await expect(activation).rejects.toThrow('activation retry failed')
+        expect(nativeLoader).toHaveBeenCalledTimes(3)
+        expect(runtime.statuses()[0]).toMatchObject({ loadError: 'activation retry failed' })
+
+        await runtime.activate('amove')
+        expect(nativeLoader).toHaveBeenCalledTimes(4)
+        expect(retryFeature.register).toHaveBeenCalledTimes(1)
+        expect(retryFeature.activate).toHaveBeenCalledTimes(1)
+        expect(runtime.statuses()[0]).toMatchObject({ loaded: true })
+        expect(runtime.statuses()[0]).not.toHaveProperty('loadError')
+      } finally {
+        rejectRegistration(new Error('test cleanup'))
+        if (activation) await activation.catch(() => undefined)
+        await runtime.disposeAll()
+      }
+    })
+
     it('overlays service health without losing installation and replaces it on full recovery', async () => {
       const fake = fakeFeature()
       const { client, emitSnapshot } = fakeNativeClient({ features: [{ id: 'amove', installed: true, state: 'running' }] })

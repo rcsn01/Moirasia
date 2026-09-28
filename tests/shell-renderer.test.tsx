@@ -89,6 +89,21 @@ describe('Moirasia renderer', () => {
 
   })
 
+  it('shows an activation failure from the Open action', async () => {
+    const bridge = api(); window.moirasia = bridge
+    bridge.openFeature = vi.fn(async () => { throw new Error('Amove activation failed.') })
+    const user = userEvent.setup(); render(<App />)
+    await screen.findByRole('heading', { name: 'General' })
+    await user.click(screen.getByRole('button', { name: 'Features' }))
+    const amove = screen.getByRole('heading', { name: 'Amove', level: 3 }).closest('[data-slot="card"]')!
+
+    await user.click(within(amove).getByRole('button', { name: 'Open' }))
+
+    const alert = await screen.findByRole('alert')
+    expect(alert).toHaveTextContent('Action failed')
+    expect(alert).toHaveTextContent('Amove activation failed.')
+  })
+
   it('opens loaded Bonded and unmounts its panel after leaving the tab', async () => {
     const bondedSnapshot: ControllerSnapshot = { ...snapshot, features: snapshot.features.map((feature) => feature.id === 'bonded' ? { ...feature, installed: true, loaded: true } : feature) }
     const bridge = api(bondedSnapshot); window.moirasia = bridge; const user = userEvent.setup(); render(<App />)

@@ -1,152 +1,135 @@
-# Implementation plan: native Bonded application identity
+# Implementation plan: serialize native feature activation with adapter loading
 
-**Status:** Implemented. This file is the replacement plan. The identity owner, native callers, tests, and domain notes described below have been updated.
+**Status:** Implemented. Focused tests and the full root suite pass.
 
 ## Goal
 
-Give native Bonded application identity one clear owner inside the existing `BondedRuntime` Swift module. Make its identity key and rule matching agree with the TypeScript `Application identity` implementation, remove the duplicate native matcher, and have process resolution use the canonical key rather than formatting it inline.
+Make every native feature acquisition and activation use the existing per-feature queue owned by `FeatureRuntime`. When native state reports a feature as running while its renderer adapter is still loading, an Open action must wait for that load rather than start a second adapter registration. Return activation failures through the existing IPC and renderer promise so the shell can show its current error alert.
 
-The change should make the identity logic easier to find without adding a Swift package target, a dependency, a persisted data format, or a second adapter seam.
+Keep Amove's native registration sequence and its custom shelf behavior intact. Do not force the native Amove adapter through the shared Embedded feature lifecycle.
+
+## Decision reached while exploring the candidate
+
+The first suggestion was to move Amove's outer registration and cleanup into `createFeatureLifecycle`. The code does repeat some responsibilities, but the shared module calls `mount` before `surface.ready()`. Amove's native test pins the opposite order for its custom IPC: it waits for the surface, then registers IPC. Supporting that sequence with the shared module would add a new post-readiness variation point for one adapter. The shared module's users, Bonded and Shout, currently use its existing mount-before-ready flow. A one-user variation point is not justified yet.
+
+The deeper issue is in the `Feature runtime`, not in Amove's custom lifecycle. Native snapshot recovery queues an adapter load, but native activation calls the same acquisition kernel directly. `FeatureRuntime` already owns the per-feature queue, so activation should join that queue. An in-flight guard inside `NativeAmoveFeature` would not solve the race: each native loader call constructs a fresh feature adapter with its own fields.
 
 ## Evidence and current friction
 
-- `CONTEXT.md` defines **Application identity** through `apps/integrated/Bonded/src/main/application-identity.ts`. Its key is `bundle:<id>|path:<path>` when the bundle identifier is non-empty and `path:<path>` otherwise. The TypeScript `matchesRule` compares those keys.
-- `apps/integrated/Bonded/tests/application-identity.test.ts` pins ordinary non-colliding matching cases: both sides without a bundle identifier match by path; if only one side has an identifier, they do not match; different identifiers or paths do not match.
-- Native key construction lives in `native/moirasia-runtime/Sources/BondedRuntime/ObservedIpBlocker.swift` as `bondedApplicationRuleIdentity`. That file also defines the public matcher and a private copy of the matching logic.
-- `native/moirasia-runtime/Sources/BondedRuntime/ProcessResolver.swift` formats the same bundle/path key inline before hashing an observed application's ID. Its `path` is the raw executable path returned by `proc_pidpath`. The TypeScript resolver instead stores the containing `.app` path for application targets. The identity-key format can agree without the two modes producing the same key or observed ID for the same process.
-- Native matching currently differs from the TypeScript rule. `bondedMatchesApplicationRule` falls back to path equality when either side lacks a bundle identifier. The private blocker matcher repeats that behavior. At equal path inputs, a same-path target with a non-empty bundle identifier can therefore match a bundle-less stored rule in native mode even though the canonical TypeScript implementation rejects it.
-- Swift `String ==` treats canonically equivalent Unicode sequences as equal, while TypeScript `===` distinguishes their different code-unit sequences. The current TypeScript identity string is also not injective for arbitrary inputs: `bundleIdentifier: "com.example|path:/Applications/A.app", path: "/Applications/B.app"` and `bundleIdentifier: "com.example", path: "/Applications/A.app|path:/Applications/B.app"` produce the same key. Native settings accept both shapes, and the resolver accepts any non-empty plist identifier.
-- `SettingsStore.parseRules` rejects a stored record if `bundleIdentifier` is present but empty. Its existing `canonicalRuleIdentifier` migration changes valid legacy `app_` rule IDs to `rule_`, and `load()` saves the version-3 settings when that migration runs.
-- `SettingsStore.swift` uses the shared native key when parsing, deduplicating and migrating rule IDs. `BondedRuntime.swift` already calls the public matcher and rule constructor. When its selection flow sees only a same-path bundle-less stored rule for a target with a bundle identifier, corrected matching will treat them as distinct; explicit selection creates a new bundle-qualified rule and leaves the old rule unchanged.
-- The root Swift package has one existing `BondedRuntime` target. The feature executable already depends on it. No `docs/adr/` records were found.
+- `CONTEXT.md` defines the `Feature runtime` as owner of loaded instances and the per-feature serialization queue. `FeatureModeLinks.enqueue` in `src/main/features/host-mode.ts` exposes that queue to mode adapters.
+- `FeatureRuntime.#acquire` in `src/main/features/runtime.ts` returns early only when `#instances` already contains the feature. It records an instance after loading and registering it. It does not join an acquisition that has started but has not committed.
+- Native startup queues installed-feature acquisition in `NativeFeatureMode.start`. Snapshot recovery queues running adapters in `#loadRunningNativeAdapters`, and `applyActive` queues a missing adapter. Native shelf operations run inside the queue because `FeatureRuntime.#shelf` enqueues them.
+- `NativeFeatureMode.activate` is the exception. It calls `#links.acquire(id)` directly, then selects and activates the feature. A concurrent snapshot-recovery load can pass the same empty-instance check.
+- `NativeFeatureMode.isLoaded` returns true from native `running` status even before the Electron adapter commits to `FeatureRuntime.#instances`. The Features screen uses `describeFeature`, whose `loaded` value is also gated on the host having no service error and not being `starting`. A valid full snapshot sets the host to `running`; with the feature also `running`, `describeFeature` can report loaded while its adapter is still registering, so Open is enabled. During reconnect or service error, `describeFeature.loaded` is false even if the feature status remains `running`, so that state does not expose the same Open path.
+- `createNativeFeature` in `apps/integrated/Amove/src/main/native-feature.ts` creates a new `NativeAmoveFeature` for each loader call. Its `#controller` check only protects repeat calls on that one object, not concurrent loads that create separate objects.
+- `NativeAmoveFeature.register` has product-specific ordering. `SuiteAmoveController.start` fetches the native snapshot, subscribes to native and shelf state, then waits for `surface.ready()`. Only after that does `NativeAmoveFeature.register` register the custom Amove IPC. `apps/integrated/Amove/tests/native-feature.test.ts` asserts readiness precedes IPC registration.
+- The shared `createFeatureLifecycle` module owns single-flight registration, surface readiness, rollback, and disposal for Bonded and Shout. Its tests cover those responsibilities, but its current `mount` phase runs before readiness. Amove's shelf is a separate window and its custom two-renderer IPC and host UI-state reporting remain Amove-owned.
+- `ApplicationController.openFeature` in `src/main/application-controller.ts` discards the `void | Promise<void>` result from `FeatureRuntime.activate`. The IPC handler returns `openFeature`, `ControllerApi.openFeature` is typed as `Promise<void>`, and the renderer already catches its rejection. Returning the result will let asynchronous native activation failures reach that existing alert path.
+- No ADRs were found in `docs/adr/`. The existing domain glossary already places queue ownership in the `Feature runtime` term; no new domain term is needed.
 
 ## Settled decisions
 
-1. **Canonical matching rule.** Build `bundle:<id>|path:<path>` only for a non-empty identifier; otherwise build `path:<path>`. Compare the UTF-8 bytes of the encoded keys, not Swift `String ==`, because Swift equates canonically equivalent Unicode sequences while TypeScript `===` does not. Paths and bundle identifiers remain case- and normalization-sensitive, and `targetKind` does not participate. For non-colliding keys, a same-path pair matches only when its non-empty identifiers are equal or both identifiers normalize to absent; an identifier on one side only, unequal identifiers, or unequal paths do not match. Keep the existing unescaped `|path:` key format, including its delimiter-collision behavior: distinct field pairs that encode to identical key bytes match in TypeScript today and remain identical under this plan. Fixing that requires a coordinated TypeScript/key-format change and persisted-ID migration, so it is out of scope.
-2. **Seam location.** Add `ApplicationIdentity.swift` inside the current `BondedRuntime` target. Do not create a new SwiftPM target or product. The existing native callers already use this target in-process, so a new package seam would add indirection without creating a useful adapter choice.
-3. **Interface shape.** Keep every existing public function name, signature, type and access level unchanged. Move the implementations of `bondedApplicationRuleIdentity`, `bondedApplicationRuleForTarget`, `bondedMatchesApplicationRule`, and `bondedContainingApplication` to the identity source file. Add internal `bondedApplicationRuleIdentityData(path:bundleIdentifier:)` for byte-exact key comparison/deduplication, and `bondedObservedApplicationId(path:bundleIdentifier:)` to hash the canonical identity with the native `app_` prefix. This keeps key equality and observed-application ID policy with identity instead of duplicating them across callers. Do not introduce a new public type or redesign unrelated callers.
-4. **Opaque ID hashing.** Keep `bondedOpaqueId` generic because `FlowHistory` uses it for flow IDs as well as application and rule IDs. Move its unchanged implementation from `ProcessResolver.swift` to a small `OpaqueIds.swift` source file so the resolver no longer appears to own general ID hashing. Preserve the hash algorithm, prefix handling and 16-character digest.
-5. **Persisted data.** Preserve native `app_` and `rule_` prefixes, the current SHA-256-derived values for valid inputs, selected timestamps, and the version-3 JSON settings shape. Native rule construction must omit `bundleIdentifier` when its input is empty, as the TypeScript constructor does. Keep `SettingsStore.parseRules` rejecting a present-but-empty stored identifier. Do not add a migration or rewrite settings solely because matching changes. Preserve the existing load-time `app_`-to-`rule_` migration, which saves the normalized version-3 settings, and do not infer a missing bundle identifier from a path. A path-only reference and a bundle-qualified reference remain different identities.
-6. **Cross-language scope.** Do not change the TypeScript implementation. Use its implementation and existing tests as the reference for equal path inputs; the native tests below pin additional Unicode and delimiter boundary behavior. The TypeScript local resolver supplies an application bundle path; the Swift native resolver continues to supply the raw `proc_pidpath` executable path. Do not normalize native paths or promise cross-mode key, observed-ID, or stored-rule-ID equality. TypeScript rule IDs use `app_`; native stored rule IDs use `rule_`. Update the domain and architecture notes to describe these as separate local- and native-mode implementations under the same Application identity term, with no shared runtime state or cross-language module.
+1. **Queue owner.** Use the existing per-feature queue through `FeatureModeLinks.enqueue`. Do not add another lock, cache, queue, or registration promise to `NativeAmoveFeature` or `FeatureRuntime.#acquire`.
+2. **Operation scope.** Keep the installed check, acquisition, active-feature selection, and feature activation in one queued turn. This prevents a second acquisition from starting between registration and activation. Re-check installation inside the queued turn.
+3. **Local mode.** Leave `LocalFeatureMode.activate` synchronous and unchanged. Do not serialize unrelated features globally. The queue remains per feature.
+4. **Amove lifecycle.** Keep Amove's custom native startup and cleanup sequence. Preserve snapshot/subscription setup, then surface readiness, then custom IPC registration. Do not change the shared `FeatureLifecycle` module or move Amove shelf, native decoding, commands, or UI-state reporting into it.
+5. **Error flow.** Make `ApplicationController.openFeature` return a `Promise<void>` that settles with `FeatureRuntime.activate`. Keep the current `ControllerApi` and renderer interface; the renderer already displays rejected Open actions.
+6. **Test surface.** Test the acquisition race through `FeatureRuntime`, the promise propagation through `ApplicationController`, and the visible failure through the shell renderer. Do not test the private queue map directly.
+7. **Domain notes.** Keep `CONTEXT.md` vocabulary unchanged. It already names the `Feature runtime` and its queue. No ADR is needed for this bounded implementation.
 
-## Intended ownership after the change
+## Ownership after the change
 
-`BondedRuntime` remains the Swift module and the seam its current callers already use. Its Application identity implementation owns:
+`FeatureRuntime` continues to own feature instances, load errors, active selection, and the per-feature queue. Native mode must route each operation that can acquire an adapter through that queue:
 
-- the canonical bundle/path identity key and its UTF-8 `Data` form for byte-exact comparison;
-- matching a target to a stored rule by comparing canonical key bytes;
-- construction of a stored rule from an observed target;
-- resolution of the containing `.app` path;
-- observed application ID construction through the internal `bondedObservedApplicationId(path:bundleIdentifier:)` helper.
+| Native acquisition path | Current route | Planned route |
+| --- | --- | --- |
+| Installed adapters at launch | `enqueue` | unchanged |
+| Adapter becomes running after recovery | `enqueue` | unchanged |
+| Active-page selection finds no instance | `enqueue` | unchanged |
+| Reinstall after native state is running | `enqueue` | unchanged |
+| Shelf open or toggle | `FeatureRuntime.#shelf` enqueues | unchanged |
+| Open / activation | direct `acquire` | enqueue acquisition and activation together |
 
-`OpaqueIds.swift` owns only the shared opaque-ID hash operation. It does not own application identity or flow history policy.
+`NativeFeatureMode` still owns native status and mode policy. `FeatureRuntime.#acquire` remains the only loader/registration implementation. The existing `MoirasiaFeature` interface stays the test surface for product adapters. Amove's `NativeAmoveFeature` remains the adapter for custom shelf, two-renderer IPC, native snapshots, and host UI-state reporting.
 
-`ProcessResolver` continues to own PID lookup, caching, bundle metadata reads, display-name resolution and classification. It passes the raw executable path returned by `proc_pidpath` and the bundle identifier to the Application identity implementation; it does not substitute the containing `.app` path. `ObservedIpBlocker` continues to own learned-address state, limits and reference counts. It calls the shared key and matcher rather than carrying a second matching implementation. `SettingsStore` continues to own parsing, validation and migration; it uses the shared key to identify duplicate records. `BondedRuntime` keeps its current transition and firewall policy.
+`ApplicationController` will pass the activation promise through its existing IPC handler. The main process will not catch and discard an error that the renderer already knows how to display.
 
 ## Implementation steps
 
-### 1. Add focused tests before changing behavior
+### 1. Add native acquisition regression tests
 
-Create `native/moirasia-runtime/Tests/MoirasiaProtocolTests/BondedApplicationIdentityTests.swift` with `Foundation`, `XCTest` and `@testable import BondedRuntime`. Keep the tests out of the unrelated `NativeRuntimeTests.swift`; the existing `MoirasiaProtocolTests` target already depends on `BondedRuntime`, and SwiftPM discovers source files in its default test directory without a manifest edit.
+Add native-mode regression tests to `tests/feature-runtime.test.ts`, using its existing `fakeNativeClient` helper and the public `FeatureRuntime` interface. Construct the runtime with `await settingsWith(undefined)`, `loaders: { amove: legacyLoader }`, `nativeLoaders: { amove: nativeLoader }`, `context: () => CONTEXT`, and the fake client's `client` as `nativeClient`. `FeatureRuntime` derives its feature IDs from the `loaders` keys, so this keeps the test to Amove alone; the context callback is required because no `EmbeddedFeatureHost` is supplied. Do not use `fakeNativeClient`'s default empty snapshot: its initial `host.getSnapshot` response must contain `features: [{ id: 'amove', installed: true, state: 'starting' }]`.
 
-Pin the identity-key cases:
+For the overlap regression:
 
-- a non-empty bundle identifier produces `bundle:<id>|path:<path>`;
-- a missing or empty bundle identifier produces `path:<path>`;
-- path and non-empty bundle identifier both participate in the key;
-- paths and bundle identifiers are compared by exact UTF-8 representation, without case folding or Unicode normalization;
-- `targetKind` does not participate in matching.
+1. Make the first native loader call reject, so `syncAtLaunch` finishes with Amove installed but without an instance.
+2. Emit the valid one-feature snapshot `features: [{ id: 'amove', installed: true, state: 'running' }]`. Snapshot handling queues `#loadRunningNativeAdapters`.
+3. Have the second loader call return a recovery feature whose `register` waits on a deferred promise. Signal the test when registration starts. Make each loader call return a distinct feature object so the test models `createNativeFeature` constructing a fresh adapter on every call; later calls should return immediately-registerable features so the pre-fix activation can settle after the expected failure assertion.
+4. While registration is pending, assert `runtime.statuses()` reports Amove as `loaded: true`. The full running snapshot sets host service state to running, which allows `describeFeature` to expose the Open action in this case.
+5. Call `runtime.activate('amove')` before releasing the registration gate.
+6. While the gate remains closed, assert the native loader has been called exactly twice and only the recovery adapter has begun registration. Release the gate, await activation, and assert the loader count remains two, that same adapter committed, and it received one activation. In `finally`, release the gate and observe activation if an earlier assertion exits before the normal await, so the intentionally failing pre-fix assertion leaves no blocked work or unhandled rejection.
 
-Pin matcher behavior as a matrix:
+The loader count is exactly two: the failed initial attempt and the queued recovery attempt. With the current direct activation path, Open starts a third loader while recovery is pending, so the overlap assertion fails before the implementation change. Use promise gates, not time-based sleeps.
 
-| Target identity | Stored rule identity | Expected |
-| --- | --- | --- |
-| same path and same non-empty bundle identifier | same path and identifier | match |
-| same path, different non-empty bundle identifiers, including case-only differences | different identifier bytes | no match |
-| same path, bundle identifiers use composed versus decomposed Unicode | different identifier bytes | no match |
-| same path and identifier, different `targetKind` | same path and identifier | match |
-| same path with neither identifier, different `targetKind` | same path-only key | match |
-| different paths, same bundle identifier | different path | no match |
-| paths differing only by case, same bundle identifier | different path | no match |
-| same bundle identifier, paths use composed versus decomposed Unicode | different path bytes | no match |
-| path-only references use composed versus decomposed Unicode | different path-only key bytes | no match |
-| same path, target has non-empty identifier and rule does not | different key | no match |
-| same path, rule has non-empty identifier and target does not | different key | no match |
-| same path, neither has an identifier | same path-only key | match |
-| different paths, neither has an identifier | different path-only key | no match |
-| same path, empty target identifier and missing rule identifier | same path-only key | match |
-| same path, missing target identifier and empty rule identifier | same path-only key | match |
-| same path, both identifiers empty | same path-only key | match |
-| same path, empty identifier on either side and non-empty identifier on the other | different key | no match |
-| distinct bundle/path fields that encode to the same key because a value contains `|path:` | same encoded key bytes | match, preserving the existing TypeScript behavior |
+Also add a separate native activation failure test with the same Amove-only runtime and initial `starting` snapshot. Let the startup loader call reject with `new Error('feature service is starting')`, then await `runtime.syncAtLaunch()`. Emit the `running` snapshot and have the second loader return a feature whose deferred `register` rejects with `new Error('recovery registration failed')`. After registration starts, call `runtime.activate('amove')` and confirm the loader count remains two while recovery is pending. Reject the registration gate with the recovery error. The activation turn must make exactly one serialized retry; have the third loader call reject with `new Error('activation retry failed')` and assert activation rejects with an `Error` carrying that third call's message, not the earlier recovery error. Then have the fourth loader call return a valid feature, activate again, and assert success, one activation of that feature, and a cleared load error. In `finally`, reject the gate if it is still pending and observe the activation promise so a failed assertion cannot leave queued work unresolved or produce an unhandled rejection. The four calls are the failed startup attempt, failed recovery registration, failed activation retry, and successful later turn. This covers registration failure, error selection, and recovery of the existing per-feature queue without inspecting its private map.
 
-Use helper-level tests for empty identifiers; `SettingsStore.parseRules` still rejects a stored rule that explicitly contains an empty `bundleIdentifier`. Use composed/decomposed Unicode cases in matching, blocker deduplication and settings deduplication: those distinct UTF-8 keys must remain distinct. Exercise `findRule` by loading the first Unicode identity and calling `addRule` with the second under a different rule ID; it must add and return the second rule. For the delimiter-collision row, use target `(bundleIdentifier: "com.example|path:/Applications/A.app", path: "/Applications/B.app")` and rule `(bundleIdentifier: "com.example", path: "/Applications/A.app|path:/Applications/B.app")`. Assert their encoded keys are identical and they match, preserving current TypeScript behavior. This is a known key-format limitation, not intended identity semantics.
+### 2. Route native activation through the queue
 
-Add rule-construction checks for the `rule_` prefix, stable output for the same identity, different output for bundle-qualified versus path-only references, omission of an empty `bundleIdentifier`, and preservation of an explicitly supplied `selectedAt` value. Test `bondedObservedApplicationId(path:bundleIdentifier:)` for the `app_` prefix and distinct bundle-qualified versus path-only seeds. Pass an executable path to the helper and verify that the path is used unchanged.
+Update `NativeFeatureMode.activate` in `src/main/features/host-mode.ts` so it returns the promise from `#links.enqueue(id, operation)`. Inside that operation:
 
-Preserve the existing containment behavior with tests for the outermost `.app` when a nested helper bundle exists, a plain executable path, a bare `Foo.app`, a trailing slash after `.app`, case-insensitive `.app` matching, and a lookalike such as `Foo.appish/Contents/MacOS/Tool` that must not match.
+1. Re-check `installed(id)` inside the queued operation. If false, throw an `Error` with message `Feature '${id}' is not installed.`.
+2. Call `const loaded = await #links.acquire(id)` once.
+3. If `loaded` is false, throw an `Error` using `#links.loadError(id)`, or the fallback message `Feature '${id}' could not be loaded.`.
+4. Call `#links.setActive(id)` only after acquisition succeeds.
+5. Preserve the existing optional activation call: `#links.instance(id)?.activate?.()`.
 
-Add blocker-level tests that load a bundle-less rule, then observe a same-path target with a non-empty bundle identifier. Assert `observe(...).selected == false`; also cover the inverse one-sided case, exact identity, neither identifier, and empty-versus-missing identifiers. Add composed/decomposed path and identifier cases to verify `load`, `findRule` and target matching use byte-exact identity data rather than Swift `String` equality. These pin `ObservedIpBlocker.observe` behavior after its local matcher is removed. Add a settings fixture containing composed/decomposed but byte-distinct identities and assert `parseRules` retains both. In `NativeRuntimeTests.swift`, retain the existing legacy rule-ID migration test and assert that loading semantically changes only the legacy `app_` ID to `rule_`: the persisted top-level fields remain `version`, `monitoringEnabled`, `monitorWhenHidden`, `blockingEnabled` and `applicationRules`, and the rule keeps its path, display name, target kind, bundle identifier and `selectedAt`.
+Keep these steps in the same queued operation. `setActive` calls `applyActive`, but the instance has already committed by then, so that path must observe the instance and must not enqueue a second load. Do not call `enqueue` from inside an operation already queued by `FeatureRuntime.#shelf`; shelf ownership stays as it is.
 
-Pin `bondedOpaqueId(prefix: "flow", value: "abc")` to `flow_ba7816bf8f01cfea`. This reuses the existing SHA-256 fixture and protects the generic hash used by `FlowHistory`; the rule-construction and observed-application ID tests pin `rule_` and `app_` separately.
+Add a concise source comment beside native activation explaining that acquisition shares the per-feature queue with snapshot recovery. Do not add a new method to `FeatureModeLinks` or a new feature lifecycle module.
 
-First run `swift test --package-path native/moirasia-runtime --filter BondedApplicationIdentityTests`. The one-sided non-empty bundle-identifier cases must fail against the current native matcher; then implement the fix and require the focused tests to pass. Keep the pre-existing TypeScript application-identity tests unchanged.
+### 3. Preserve and return activation completion
 
-### 2. Establish the native identity implementation
+Change `ApplicationController.openFeature` in `src/main/application-controller.ts` to `async openFeature(id: ApplicationId): Promise<void> { await this.features.activate(id) }`. `FeatureRuntime.activate` returns `void | Promise<void>`, so directly returning its result does not satisfy the `Promise<void>` return type. The async wrapper also converts a synchronous Local mode activation throw into a rejected promise. The method currently discards the result. `src/main/ipc.ts` already returns the method result from its `IPC.openFeature` handler, `src/preload/shell.ts` already returns `ipcRenderer.invoke`, `ControllerApi.openFeature` already promises `void`, and `src/renderer/shell/controller.ts` already catches failures. Do not change those interfaces or add a second error channel.
 
-Add `native/moirasia-runtime/Sources/BondedRuntime/ApplicationIdentity.swift`.
+Add `ApplicationController` tests for both a rejected activation promise and a synchronous activation throw. In each case assert that `openFeature` returns a promise rejecting with the original error; it must not throw synchronously for the Local mode case.
 
-Move the existing public identity-key, rule-construction, rule-matching and containing-application functions out of `ObservedIpBlocker.swift` and `ProcessResolver.swift`. Preserve every existing public name, signature, type and access level. Implement `bondedMatchesApplicationRule` as equality between the target and rule identity-key `Data` values from `bondedApplicationRuleIdentityData`. Treat an empty bundle identifier as absent in the identity key and in the constructed rule, matching the TypeScript truthy check. Keep `SettingsStore.parseRules` rejecting a persisted record whose `bundleIdentifier` field is present but empty.
+### 4. Test the user-visible failure path
 
-Add the internal `bondedApplicationRuleIdentityData(path:bundleIdentifier:)` helper, returning `Data(bondedApplicationRuleIdentity(path: path, bundleIdentifier: bundleIdentifier).utf8)`. Use this data value everywhere keys are compared or deduplicated: `bondedMatchesApplicationRule`, `ObservedIpBlocker.load`, `ObservedIpBlocker.findRule`, and `SettingsStore.parseRules` (store dedupe values in `Set<Data>`, not `Set<String>`). This matches JavaScript string equality for canonically distinct Unicode sequences while preserving the public string key and its hash seed. Keep the existing unescaped delimiter format and its documented collision behavior.
+Add a shell renderer test in `tests/shell-renderer.test.tsx` where the loaded Amove Open action rejects with `new Error('Amove activation failed.')`. Click Open and assert the existing "Action failed" alert displays `Amove activation failed.`. This jsdom test verifies renderer behavior when `ControllerApi.openFeature` rejects; it does not exercise Electron IPC. The `ApplicationController` test covers the main-process method, and source inspection confirms the handler in `src/main/ipc.ts` and the bridge in `src/preload/shell.ts` forward the promise. No layout or controls change.
 
-Add the internal `bondedObservedApplicationId(path:bundleIdentifier:)` helper. It must return `bondedOpaqueId(prefix: "app", value: bondedApplicationRuleIdentity(path: path, bundleIdentifier: bundleIdentifier))`. `ProcessResolver` passes its existing executable path unchanged. Keep rule construction on the native `rule_` prefix. Do not make the generic opaque-ID helper part of the Application identity interface.
-
-Add `native/moirasia-runtime/Sources/BondedRuntime/OpaqueIds.swift` and move `bondedOpaqueId` there without changing its implementation or output. This is a source-placement change only. Do not modify `Package.swift`: both files belong to the existing target.
-
-### 3. Route callers through the owner and delete duplicate logic
-
-In `ProcessResolver.swift`, replace the inline identity expression and `app_` hashing with `bondedObservedApplicationId(path:bundleIdentifier:)`. Pass the raw executable path returned by `proc_pidpath`; do not substitute the containing `.app` path. This preserves native target paths and observed IDs for existing valid inputs. Keep PID lookup, cache behavior and metadata extraction unchanged. Remove the old definition of `bondedContainingApplication` from this file while preserving its call sites.
-
-In `ObservedIpBlocker.swift`, remove the moved free-function definitions and delete the private `bondedMatches` implementation. Have `ruleForTarget` call `bondedMatchesApplicationRule`. Use `bondedApplicationRuleIdentityData` in `load` and `findRule` so deduplication and fallback lookup use the same byte-exact comparison. Leave learned-address state and limit handling untouched.
-
-In `SettingsStore.swift`, keep validation and migration behavior unchanged. `parseRules` continues to reject a present-but-empty `bundleIdentifier`, but changes its identity deduplication set from `Set<String>` to `Set<Data>` using `bondedApplicationRuleIdentityData`. `canonicalRuleIdentifier` continues to preserve existing `rule_` IDs and convert legacy `app_` IDs to identity-derived `rule_` IDs.
-
-`BondedRuntime.swift` already uses `bondedMatchesApplicationRule` and `bondedApplicationRuleForTarget`; do not change those call sites or firewall/application-selection sequencing. With the corrected matcher, explicitly selecting an observed target whose path matches only a bundle-less stored rule creates a separate bundle-qualified rule and saves both records. Do not silently upgrade the old path-only rule.
-
-### 4. Keep the domain notes accurate
-
-Update the **Application identity** entry in `CONTEXT.md` to state that the TypeScript module is the local-mode implementation and the Swift `BondedRuntime` module is its native-mode peer. Record byte-exact key comparison, empty identifiers treated as absent, one-sided identifiers not matching, and `targetKind` being ignored. Also record the resolver path difference (TypeScript application bundle path versus Swift raw executable path) and that IDs/state are mode-local. Keep the existing product responsibilities and avoid introducing a new domain term.
-
-Add a short matching ownership note to `docs/architecture/standalone-applications.md` in the native feature section. Distinguish the Swift implementation from the TypeScript implementation, including their different resolver path inputs and native `rule_` versus TypeScript `app_` stored-rule prefixes. Do not claim that the two language implementations share runtime state, persisted IDs or a cross-language module.
+Keep `apps/integrated/Amove/tests/native-feature.test.ts` unchanged and require it to pass. Its existing readiness-before-IPC assertion is a guardrail for the product-specific lifecycle that this plan deliberately retains. If it fails, fix the implementation to preserve the tested order; do not weaken the assertion.
 
 ## Validation
 
-Run checks from the repository root:
+Run from the repository root:
 
-1. `swift test --package-path native/moirasia-runtime`. The test target depends on `BondedRuntime`, both executables and every other package target, so this also compiles the complete debug target graph.
-2. `swift build --package-path native/moirasia-runtime -c release --arch arm64` on macOS, matching the runtime packaging architecture without running the staging script.
-3. `pnpm --dir apps/integrated/Bonded exec vitest run tests/application-identity.test.ts` to verify the unchanged TypeScript reference contract.
-4. `git diff --check` and inspect `git diff -- CONTEXT.md docs/architecture/standalone-applications.md native/moirasia-runtime` for accidental changes to protocol, settings format, ID prefixes or unrelated Bonded behavior.
+1. **Red/green regression:** `pnpm exec vitest run tests/feature-runtime.test.ts`. The new overlap test must fail before queueing native activation and pass afterward.
+2. **Focused regression tests:** `pnpm exec vitest run tests/feature-runtime.test.ts tests/application-controller.test.ts tests/shell-renderer.test.tsx`.
+3. **Amove lifecycle guard:** `pnpm --dir apps/integrated/Amove exec vitest run tests/native-feature.test.ts` to confirm its startup order and cleanup remain intact.
+4. **Typecheck:** `pnpm typecheck`.
+5. **Full root suite:** `pnpm test`.
+6. **Diff hygiene:** `git diff --check`, then inspect the changes to `src/main/features/host-mode.ts`, `src/main/application-controller.ts`, and the three test files. Source-check that `src/main/ipc.ts` and `src/preload/shell.ts` still return the activation promise. Confirm there is no change to local activation, Amove's shelf behavior, or shared lifecycle sequencing.
 
-Do not run `pnpm runtime:build` solely for this refactor. Its script removes and recreates `native/staged/runtime`; compiling the Swift package directly gives the relevant build check without that staging side effect.
+No native build, staging command, packaging, or migration is needed. The root Playwright configuration points at `tests/e2e`, which currently has no shell end-to-end suite. The renderer interaction is covered by the existing jsdom test harness; this work does not change the layout or controls.
 
 ## Acceptance criteria
 
-- Native identity key generation has one implementation, and `ProcessResolver` no longer formats the key inline.
-- Native target-to-rule matching has one implementation. The private `ObservedIpBlocker` matcher is gone.
-- Native matching agrees with TypeScript string-comparison semantics for equal input paths, including one-sided, empty, case-only, Unicode-normalization and target-kind cases. Canonically distinct UTF-8 key bytes remain distinct; the existing unescaped delimiter collision remains unchanged. The matcher does not normalize the native executable path to a bundle path.
-- Bundle containment keeps its current path behavior after moving to the identity implementation.
-- Native `app_`, `rule_` and `flow_` prefixes, hash output, settings JSON shape and existing migration behavior remain unchanged. Empty bundle identifiers normalize to absent in keys and new rules, while persisted records that explicitly contain an empty identifier remain rejected. Identity matching and deduplication intentionally become UTF-8-byte-exact for canonically equivalent but byte-distinct strings, matching TypeScript.
-- Blocker tests pin `ObservedIpBlocker.observe` selection status against the shared matcher; `BondedRuntime` continues to use that public matcher for rule selection.
-- No new SwiftPM target, product, dependency, settings migration or TypeScript behavior is introduced.
-- Swift tests and builds pass, and the domain notes describe both mode-specific implementations accurately.
+- Every native path that can load an adapter uses the existing per-feature queue; native activation no longer calls `acquire` outside it.
+- If snapshot recovery is registering an adapter, Open waits behind that registration instead of starting another loader or `MoirasiaFeature.register` call.
+- After registration commits, queued activation selects and activates that same instance once.
+- Failed loading still rejects with the existing load error and does not poison later queue turns.
+- The installed-state check, activation semantics, active-page update, and feature activation remain unchanged when there is no load in progress.
+- `ApplicationController.openFeature` returns activation completion. Native activation failures reach the renderer's existing error alert.
+- `LocalFeatureMode.activate`, Amove's custom registration order, native snapshot and shelf subscriptions, custom IPC, and two-renderer behavior remain unchanged.
+- No new adapter seam, public interface, dependency, state persistence, or domain term is added.
+- Focused tests, Amove lifecycle tests, typecheck, the full root test suite, and `git diff --check` pass.
 
-## Risks and mitigations
+## Risks and scope limits
 
-- **Existing native fallback behavior changes.** A path-only stored rule will no longer match a same-path observed target with a non-empty bundle identifier. This is intentional parity with the TypeScript matcher for equal path inputs. Loading does not upgrade the old rule or guess an identifier. If the user explicitly selects that observed target, `BondedRuntime` treats it as a distinct identity, appends and saves a bundle-qualified rule, and leaves the path-only rule in place. The TypeScript resolver supplies a different path for application targets, so this refactor does not promise cross-mode key or ID equality.
-- **Identifier prefixes are easy to conflate.** Native observed application IDs use `app_`; native stored rule IDs use `rule_`; flow IDs use `flow_`. Pin all three in tests and keep generic hashing separate from application identity. TypeScript local stored-rule IDs remain `app_`.
-- **Swift Unicode equality currently collapses distinct TypeScript identities.** Swift considers canonically equivalent strings equal, so current matcher and `Set<String>` deduplication can collapse composed/decomposed paths or identifiers that TypeScript keeps distinct. The byte-data helper fixes this deliberately; existing valid rules that were previously merged may now remain separate.
-- **The key format has an existing delimiter collision.** Unescaped `|path:` inside a bundle identifier or path can make distinct field pairs encode to the same key and therefore the same observed/rule ID. The TypeScript implementation already treats these as equal, and this refactor preserves that behavior. Fixing it requires coordinated TypeScript changes and an identity/hash migration; do not claim that distinct field values always imply distinct keys.
-- **Moving functions can expose access-control assumptions.** Preserve every existing public function's access level and signature; only `bondedApplicationRuleIdentityData(path:bundleIdentifier:)` and `bondedObservedApplicationId(path:bundleIdentifier:)` are new and internal. Compile the whole Swift package, including the feature executable, before considering the refactor complete.
-- **A broad cleanup could dilute the seam.** Do not refactor display names, classification, enforcement, network monitoring, the TypeScript implementation, or unrelated identifier consumers. Keep change review focused on identity ownership and exact key semantics.
+- **Queued activation waits for recovery.** This is intentional. Loading and activation must not run concurrently for the same feature. Other feature IDs keep independent queue turns.
+- **The adapter is not committed while registering.** `FeatureStatus.loaded` may still be true from native state during recovery. This plan does not change that status definition; it makes an Open action safe while registration is in progress.
+- **Registration failure during recovery.** The queued recovery operation may finish without an instance. The following activation turn then makes one serialized retry and surfaces its existing error if it also fails. Later queue turns remain usable because `FeatureRuntime.#enqueue` recovers from a rejected predecessor.
+- **Native uninstall can still overlap activation.** `NativeFeatureMode.setInstalled` performs the uninstall request, snapshot refresh, and adapter disposal outside the per-feature queue. Activation re-checks installation when its queued turn begins, but an uninstall started after that check can still race with acquisition or activation. This plan leaves that existing transaction ordering unchanged; the queue does not serialize the whole install/uninstall operation.
+- **Do not add an instance-local guard as the fix.** The feature loader constructs a fresh adapter for each acquisition attempt, so fields on one `NativeAmoveFeature` cannot serialize distinct objects.
+- **Do not force Amove into `createFeatureLifecycle`.** Its post-readiness IPC order is a concrete constraint. Reopen that choice only if another feature needs the same post-ready sequence and a second adapter makes the seam real.
+- **Do not broaden into uninstall transaction ordering, native UI-state recovery, product controller cleanup, or changes to other Feature mode responsibilities.** Those are separate decisions.
