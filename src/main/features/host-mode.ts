@@ -14,6 +14,13 @@ type NativeInstallationTransition = {
   settling: boolean
 }
 
+type NativeFeatureStatus = { installed: boolean; state: 'stopped' | 'starting' | 'running' | 'error'; error?: string }
+
+type AcceptedNativeSnapshot = {
+  revision: number
+  statuses: ReadonlyMap<FeatureId, NativeFeatureStatus>
+}
+
 // Keep these imports as string literals. Electron-vite turns each feature into
 // a separate chunk, and an uninstalled feature is never evaluated.
 export const LOADERS: Record<FeatureId, FeatureLoader> = {
@@ -77,10 +84,9 @@ export class NativeFeatureMode implements FeatureMode {
   readonly #nativeLoaders: Partial<Record<FeatureId, NativeFeatureLoader>>
   readonly #featureIds: readonly FeatureId[]
   readonly #links: FeatureModeLinks
-  readonly #statuses = new Map<FeatureId, { installed: boolean; state: 'stopped' | 'starting' | 'running' | 'error'; error?: string }>()
-  readonly #fullStatuses = new Map<FeatureId, { installed: boolean; state: 'stopped' | 'starting' | 'running' | 'error'; error?: string }>()
+  readonly #statuses = new Map<FeatureId, NativeFeatureStatus>()
   readonly #transitions = new Map<FeatureId, NativeInstallationTransition>()
-  #snapshotRevision: number | undefined
+  #acceptedSnapshot: AcceptedNativeSnapshot | undefined
   #serviceState: 'starting' | 'running' | 'error' | 'stopped' | undefined
   #serviceError: string | undefined
   #unsubscribeSnapshot: (() => void) | undefined
@@ -135,7 +141,7 @@ export class NativeFeatureMode implements FeatureMode {
       const retry = installed && current?.installed === true && (current.state === 'error' || this.#serviceError !== undefined)
       if (!installed && this.#links.activeId() === id) this.#links.setActive(undefined)
 
-      const transition: NativeInstallationTransition = { installed, revision: this.#snapshotRevision, outcome: 'pending', settling: false }
+      const transition: NativeInstallationTransition = { installed, revision: this.#acceptedSnapshot?.revision, outcome: 'pending', settling: false }
       this.#transitions.set(id, transition)
       this.#onStatusesChanged()
 
@@ -176,20 +182,21 @@ export class NativeFeatureMode implements FeatureMode {
   }
 
   #transitionMatchesLatest(id: FeatureId, transition: NativeInstallationTransition): boolean {
-    const revision = this.#snapshotRevision
-    if (revision === undefined || (transition.revision !== undefined && revision <= transition.revision)) return false
-    return this.#fullStatuses.get(id)?.installed === transition.installed
+    const accepted = this.#acceptedSnapshot
+    if (!accepted || (transition.revision !== undefined && accepted.revision <= transition.revision)) return false
+    return accepted.statuses.get(id)?.installed === transition.installed
   }
 
   #readConfirmsLatestState(id: FeatureId, transition: NativeInstallationTransition, snapshot: NativeHostSnapshot): boolean {
     const snapshotStatus = snapshot.features.find((feature) => feature.id === id)
     if (!snapshotStatus || (transition.revision !== undefined && snapshot.revision < transition.revision)) return false
-    return this.#snapshotRevision === snapshot.revision && this.#fullStatuses.get(id)?.installed === snapshotStatus.installed
+    const accepted = this.#acceptedSnapshot
+    return accepted?.revision === snapshot.revision && accepted.statuses.get(id)?.installed === snapshotStatus.installed
   }
 
   #clearTransition(id: FeatureId, transition: NativeInstallationTransition): void {
     if (this.#transitions.get(id) !== transition) return
-    const fullStatus = this.#fullStatuses.get(id)
+    const fullStatus = this.#acceptedSnapshot?.statuses.get(id)
     if (fullStatus) this.#statuses.set(id, fullStatus)
     this.#transitions.delete(id)
     this.#onStatusesChanged()
@@ -335,30 +342,31 @@ export class NativeFeatureMode implements FeatureMode {
 
   #applySnapshot(value: unknown, source: 'event' | 'read'): boolean {
     const full = isNativeHostSnapshot(value)
-    if (full && this.#snapshotRevision !== undefined && value.revision < this.#snapshotRevision) return false
+    const accepted = this.#acceptedSnapshot
+    if (full && accepted && value.revision < accepted.revision) return false
     const features = full ? value.features : value && typeof value === 'object' ? (value as { features?: unknown }).features : undefined
     if (!Array.isArray(features)) return false
     const expected = new Set(this.#featureIds)
     const known = new Set<FeatureId>(['amove', 'bonded', 'shout'])
-    const next = new Map<FeatureId, { installed: boolean; state: 'stopped' | 'starting' | 'running' | 'error'; error?: string }>()
+    const next = new Map<FeatureId, NativeFeatureStatus>()
     for (const entry of features) {
       if (!entry || typeof entry !== 'object') return false
       const item = entry as { id?: unknown; installed?: unknown; state?: unknown; error?: unknown }
       if (!isFeatureId(item.id) || !known.has(item.id) || next.has(item.id) || typeof item.installed !== 'boolean' || !['stopped', 'starting', 'running', 'error'].includes(String(item.state))) return false
-      if (expected.has(item.id)) next.set(item.id, { installed: item.installed, state: item.state as 'stopped' | 'starting' | 'running' | 'error', ...(typeof item.error === 'string' ? { error: item.error } : {}) })
+      if (expected.has(item.id)) next.set(item.id, { installed: item.installed, state: item.state as NativeFeatureStatus['state'], ...(typeof item.error === 'string' ? { error: item.error } : {}) })
     }
     if (next.size !== expected.size || [...expected].some((id) => !next.has(id))) return false
+    const acceptedSnapshot: AcceptedNativeSnapshot | undefined = full ? { revision: value.revision, statuses: next } : undefined
+    if (acceptedSnapshot) this.#acceptedSnapshot = acceptedSnapshot
     this.#statuses.clear()
     for (const [id, status] of next) this.#statuses.set(id, status)
-    if (full) {
-      this.#snapshotRevision = value.revision
-      for (const [id, status] of next) this.#fullStatuses.set(id, status)
+    if (acceptedSnapshot) {
       for (const [id, transition] of this.#transitions) {
         if (transition.settling || transition.outcome === 'pending') continue
         const revisionValid = transition.outcome === 'rejected' && source === 'read'
-          ? transition.revision === undefined || value.revision >= transition.revision
-          : transition.revision === undefined || value.revision > transition.revision
-        const status = this.#fullStatuses.get(id)
+          ? transition.revision === undefined || acceptedSnapshot.revision >= transition.revision
+          : transition.revision === undefined || acceptedSnapshot.revision > transition.revision
+        const status = acceptedSnapshot.statuses.get(id)
         const confirmsRequestedState = status?.installed === transition.installed
         if (revisionValid && (confirmsRequestedState || (transition.outcome === 'rejected' && source === 'read'))) {
           this.#transitions.delete(id)

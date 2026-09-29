@@ -533,6 +533,163 @@ describe('FeatureRuntime', () => {
       }
     })
 
+    it('confirms a pending install from a full event when the follow-up read fails', async () => {
+      const fake = fakeFeature()
+      const native = fakeNativeClient(nativeSnapshot(1, { installed: false, state: 'stopped' }))
+      const snapshotError = new Error('snapshot unavailable')
+      let releaseMutation!: () => void
+      let signalMutationStarted!: () => void
+      const mutationGate = new Promise<void>((resolve) => { releaseMutation = resolve })
+      const mutationStarted = new Promise<void>((resolve) => { signalMutationStarted = resolve })
+      native.setMutationBehavior(async () => {
+        signalMutationStarted()
+        await mutationGate
+        native.failNextSnapshotRead(snapshotError)
+      })
+      const nativeLoader = vi.fn(async () => ({ feature: fake.feature }))
+      const runtime = new FeatureRuntime(await settingsWith(undefined), {
+        loaders: { amove: vi.fn(async () => ({ feature: fakeFeature().feature })) }, nativeLoaders: { amove: nativeLoader }, context: () => CONTEXT, nativeClient: native.client
+      })
+      let installing: Promise<void> | undefined
+
+      try {
+        await runtime.syncAtLaunch()
+        installing = runtime.setInstalled('amove', true)
+        await mutationStarted
+        native.emitSnapshot(nativeSnapshot(2, { installed: true, state: 'running' }))
+        releaseMutation()
+        await installing
+
+        expect(native.requestCalls.filter(({ method }) => method === 'host.getSnapshot')).toHaveLength(2)
+        expect(nativeLoader).toHaveBeenCalledTimes(1)
+        expect(fake.register).toHaveBeenCalledTimes(1)
+        expect(runtime.statuses()[0]).toMatchObject({ installed: true, loaded: true })
+      } finally {
+        releaseMutation()
+        await installing?.catch(() => undefined)
+        await runtime.disposeAll()
+      }
+    })
+
+    it('uses a confirming uninstall event after mutation rejection without a follow-up read', async () => {
+      const fake = fakeFeature()
+      const native = fakeNativeClient(nativeSnapshot(1))
+      const mutationError = new Error('native host rejected uninstall')
+      let releaseMutation!: () => void
+      let signalMutationStarted!: () => void
+      const mutationGate = new Promise<void>((resolve) => { releaseMutation = resolve })
+      const mutationStarted = new Promise<void>((resolve) => { signalMutationStarted = resolve })
+      native.setMutationBehavior(async () => {
+        signalMutationStarted()
+        await mutationGate
+        throw mutationError
+      })
+      const runtime = new FeatureRuntime(await settingsWith(undefined), {
+        loaders: { amove: vi.fn(async () => ({ feature: fakeFeature().feature })) }, nativeLoaders: { amove: async () => ({ feature: fake.feature }) }, context: () => CONTEXT, nativeClient: native.client
+      })
+      let uninstalling: Promise<void> | undefined
+
+      try {
+        await runtime.syncAtLaunch()
+        uninstalling = runtime.setInstalled('amove', false)
+        await mutationStarted
+        native.emitSnapshot(nativeSnapshot(2, { installed: false, state: 'stopped' }))
+        releaseMutation()
+        await expect(uninstalling).rejects.toBe(mutationError)
+
+        expect(native.requestCalls.filter(({ method }) => method === 'host.getSnapshot')).toHaveLength(1)
+        expect(fake.dispose).toHaveBeenCalledTimes(1)
+        expect(runtime.statuses()[0]).toMatchObject({ installed: false, loaded: false })
+      } finally {
+        releaseMutation()
+        await uninstalling?.catch(() => undefined)
+        await runtime.disposeAll()
+      }
+    })
+
+    it('accepts an equal-revision full snapshot with conflicting installed status', async () => {
+      const native = fakeNativeClient(nativeSnapshot(1, { installed: false, state: 'stopped' }))
+      const nativeLoader = vi.fn(async () => ({ feature: fakeFeature().feature }))
+      const runtime = new FeatureRuntime(await settingsWith(undefined), {
+        loaders: { amove: vi.fn(async () => ({ feature: fakeFeature().feature })) }, nativeLoaders: { amove: nativeLoader }, context: () => CONTEXT, nativeClient: native.client
+      })
+      await runtime.syncAtLaunch()
+
+      native.emitSnapshot(nativeSnapshot(1, { installed: true, state: 'stopped' }))
+
+      expect(runtime.statuses()[0]).toMatchObject({ installed: true, state: 'stopped', loaded: false })
+      expect(nativeLoader).not.toHaveBeenCalled()
+      await runtime.disposeAll()
+    })
+
+    it('keeps a successful install fenced by equal and conflicting full snapshots', async () => {
+      const fake = fakeFeature()
+      const native = fakeNativeClient(nativeSnapshot(1, { installed: false, state: 'stopped' }))
+      let releaseMutation!: () => void
+      let signalMutationStarted!: () => void
+      const mutationGate = new Promise<void>((resolve) => { releaseMutation = resolve })
+      const mutationStarted = new Promise<void>((resolve) => { signalMutationStarted = resolve })
+      native.setMutationBehavior(async () => {
+        signalMutationStarted()
+        await mutationGate
+      })
+      const nativeLoader = vi.fn(async () => ({ feature: fake.feature }))
+      const runtime = new FeatureRuntime(await settingsWith(undefined), {
+        loaders: { amove: vi.fn(async () => ({ feature: fakeFeature().feature })) }, nativeLoaders: { amove: nativeLoader }, context: () => CONTEXT, nativeClient: native.client
+      })
+      let installing: Promise<void> | undefined
+
+      try {
+        await runtime.syncAtLaunch()
+        installing = runtime.setInstalled('amove', true)
+        await mutationStarted
+        native.emitSnapshot(nativeSnapshot(1, { installed: true, state: 'running' }))
+        releaseMutation()
+        await expect(installing).rejects.toThrow('Waiting for the native host to confirm Amove installation state.')
+        expect(native.requestCalls.filter(({ method }) => method === 'host.getSnapshot')).toHaveLength(2)
+        expect(nativeLoader).not.toHaveBeenCalled()
+
+        native.emitSnapshot(nativeSnapshot(2, { installed: false, state: 'stopped' }))
+        expect(nativeLoader).not.toHaveBeenCalled()
+        expect(runtime.statuses()[0]).toMatchObject({ installed: true, loaded: false, loadError: expect.stringContaining('confirm') })
+
+        native.emitSnapshot(nativeSnapshot(3, { installed: true, state: 'running' }))
+        await vi.waitFor(() => expect(fake.register).toHaveBeenCalledTimes(1))
+        expect(nativeLoader).toHaveBeenCalledTimes(1)
+      } finally {
+        releaseMutation()
+        await installing?.catch(() => undefined)
+        await runtime.disposeAll()
+      }
+    })
+
+    it('resolves a retained rejected transition from a full read after reconnect', async () => {
+      const fake = fakeFeature()
+      const native = fakeNativeClient(nativeSnapshot(1))
+      const mutationError = new Error('native host rejected uninstall')
+      const snapshotError = new Error('snapshot unavailable')
+      native.setMutationBehavior(async () => {
+        native.failNextSnapshotRead(snapshotError)
+        throw mutationError
+      })
+      const runtime = new FeatureRuntime(await settingsWith(undefined), {
+        loaders: { amove: vi.fn(async () => ({ feature: fakeFeature().feature })) }, nativeLoaders: { amove: async () => ({ feature: fake.feature }) }, context: () => CONTEXT, nativeClient: native.client
+      })
+      await runtime.syncAtLaunch()
+
+      await expect(runtime.setInstalled('amove', false)).rejects.toBe(mutationError)
+      expect(runtime.statuses()[0]).toMatchObject({ installed: false, loaded: false, loadError: expect.stringContaining('confirm') })
+
+      native.emitConnection({ state: 'disconnected', generation: 1, error: new Error('socket closed') })
+      native.emitConnection({ state: 'reconnected', generation: 2 })
+      await vi.waitFor(() => expect(runtime.statuses()[0]).toMatchObject({ installed: true, state: 'running', loaded: true }))
+
+      expect(runtime.statuses()[0]).not.toHaveProperty('loadError')
+      expect(fake.dispose).not.toHaveBeenCalled()
+      expect(native.requestCalls.filter(({ method }) => method === 'host.getSnapshot')).toHaveLength(3)
+      await runtime.disposeAll()
+    })
+
     it('keeps the adapter fenced when mutation and snapshot reads both fail', async () => {
       const fake = fakeFeature()
       const native = fakeNativeClient(nativeSnapshot(1))
