@@ -1,135 +1,158 @@
-# Implementation plan: serialize native feature activation with adapter loading
+# Implementation plan: serialize native install changes with feature activation
 
-**Status:** Implemented. Focused tests and the full root suite pass.
+**Status:** Implemented. The focused suites, typecheck, and full root suite pass.
 
 ## Goal
 
-Make every native feature acquisition and activation use the existing per-feature queue owned by `FeatureRuntime`. When native state reports a feature as running while its renderer adapter is still loading, an Open action must wait for that load rather than start a second adapter registration. Return activation failures through the existing IPC and renderer promise so the shell can show its current error alert.
+Make a native feature's install, uninstall, retry, adapter acquisition, and activation run in order on the existing per-feature queue owned by `FeatureRuntime`. In particular, a successful uninstall must not race with an Open action or leave a queued recovery turn to register the adapter again afterward.
 
-Keep Amove's native registration sequence and its custom shelf behavior intact. Do not force the native Amove adapter through the shared Embedded feature lifecycle.
+Reuse `FeatureRuntime.#enqueue` through `FeatureModeLinks.enqueue`. Do not add another queue, lock, public interface, or feature lifecycle abstraction. Keep Local mode unchanged.
 
-## Decision reached while exploring the candidate
+## Current behavior
 
-The first suggestion was to move Amove's outer registration and cleanup into `createFeatureLifecycle`. The code does repeat some responsibilities, but the shared module calls `mount` before `surface.ready()`. Amove's native test pins the opposite order for its custom IPC: it waits for the surface, then registers IPC. Supporting that sequence with the shared module would add a new post-readiness variation point for one adapter. The shared module's users, Bonded and Shout, currently use its existing mount-before-ready flow. A one-user variation point is not justified yet.
+`FeatureRuntime` owns loaded instances, active selection, load errors, and one promise queue per feature ID. `NativeFeatureMode.activate` already uses that queue and checks installed state when its turn starts. Native mode's other paths that acquire adapters also use the queue, but `NativeFeatureMode.setInstalled` does not.
 
-The deeper issue is in the `Feature runtime`, not in Amove's custom lifecycle. Native snapshot recovery queues an adapter load, but native activation calls the same acquisition kernel directly. `FeatureRuntime` already owns the per-feature queue, so activation should join that queue. An in-flight guard inside `NativeAmoveFeature` would not solve the race: each native loader call constructs a fresh feature adapter with its own fields.
+The current native `setInstalled` method clears active selection before the host request, chooses `host.retryFeature` or `host.setFeatureInstalled`, waits for a snapshot, removes and disposes an adapter on uninstall, and queues acquisition after a running install. Those steps can overlap an activation turn. An activation can pass its installed check before the uninstall snapshot arrives, then acquire or activate while uninstall disposes the same adapter.
 
-## Evidence and current friction
+There are two less obvious queue hazards:
 
-- `CONTEXT.md` defines the `Feature runtime` as owner of loaded instances and the per-feature serialization queue. `FeatureModeLinks.enqueue` in `src/main/features/host-mode.ts` exposes that queue to mode adapters.
-- `FeatureRuntime.#acquire` in `src/main/features/runtime.ts` returns early only when `#instances` already contains the feature. It records an instance after loading and registering it. It does not join an acquisition that has started but has not committed.
-- Native startup queues installed-feature acquisition in `NativeFeatureMode.start`. Snapshot recovery queues running adapters in `#loadRunningNativeAdapters`, and `applyActive` queues a missing adapter. Native shelf operations run inside the queue because `FeatureRuntime.#shelf` enqueues them.
-- `NativeFeatureMode.activate` is the exception. It calls `#links.acquire(id)` directly, then selects and activates the feature. A concurrent snapshot-recovery load can pass the same empty-instance check.
-- `NativeFeatureMode.isLoaded` returns true from native `running` status even before the Electron adapter commits to `FeatureRuntime.#instances`. The Features screen uses `describeFeature`, not `isLoaded`: `loaded` is true when there is no effective service error and either an adapter is committed or native feature state is `running` while the service is not `starting`. `describeFeature` ignores service errors for uninstalled features, whose row shows Install rather than Open. For an installed feature, a valid full snapshot clears service error and sets the host to `running`; with the feature also `running`, `describeFeature` can report loaded while its adapter is still registering, so Open is enabled. During reconnect or service error, an installed feature still reported as `running` has `loaded: false`, so Open is disabled.
-- `createNativeFeature` in `apps/integrated/Amove/src/main/native-feature.ts` creates a new `NativeAmoveFeature` for each loader call. Its `#controller` check only protects repeat calls on that one object, not concurrent loads that create separate objects.
-- `NativeAmoveFeature.register` has product-specific ordering. `SuiteAmoveController.start` fetches the native snapshot, subscribes to native and shelf state, then waits for `surface.ready()`. Only after that does `NativeAmoveFeature.register` register the custom Amove IPC. `apps/integrated/Amove/tests/native-feature.test.ts` asserts readiness precedes IPC registration.
-- The shared `createFeatureLifecycle` module owns single-flight registration, surface readiness, rollback, and disposal for Bonded and Shout. Its tests cover those responsibilities, but its current `mount` phase runs before readiness. Amove's shelf is a separate window and its custom two-renderer IPC and host UI-state reporting remain Amove-owned.
-- `ApplicationController.openFeature` in `src/main/application-controller.ts` discards the `void | Promise<void>` result from `FeatureRuntime.activate`. The IPC handler returns `openFeature`, `ControllerApi.openFeature` is typed as `Promise<void>`, and the renderer already catches its rejection. Returning the result will let asynchronous native activation failures reach that existing alert path.
-- No ADRs were found in `docs/adr/`. The existing domain glossary already places queue ownership in the `Feature runtime` term; no new domain term is needed.
+- `#refreshSnapshot` calls `#loadRunningNativeAdapters`, which can enqueue an acquisition for the same feature. Once `setInstalled` itself runs inside that feature's queue, awaiting another enqueue for that ID from inside the current turn would wait on the current turn and deadlock.
+- `#loadRunningNativeAdapters` and `applyActive` enqueue lazy loads whose closures do not re-check state. A snapshot or page-selection event can queue a load behind uninstall. The closure could then run after uninstall and register an adapter based on stale state.
 
-## Settled decisions
+The native host has its own serial state queue, but it does not protect the Electron-side adapter instance. On successful `feature.setInstalled(false)`, `native/moirasia-runtime/Sources/MoirasiaFeatureService/FeatureRuntime.swift` stops the module, releases its lease, marks it uninstalled, and publishes a snapshot. `native/moirasia-runtime/Sources/MoirasiaHost/HostApplication.swift` then persists the Shell settings. The JavaScript transaction must preserve that order while owning adapter cleanup.
 
-1. **Queue owner.** Use the existing per-feature queue through `FeatureModeLinks.enqueue`. Do not add another lock, cache, queue, or registration promise to `NativeAmoveFeature` or `FeatureRuntime.#acquire`.
-2. **Operation scope.** Keep the installed check, acquisition, active-feature selection, and feature activation in one queued turn. This prevents a second acquisition from starting between registration and activation. Re-check installation inside the queued turn.
-3. **Local mode.** Leave `LocalFeatureMode.activate` synchronous and unchanged. Do not serialize unrelated features globally. The queue remains per feature.
-4. **Amove lifecycle.** Keep Amove's custom native startup and cleanup sequence. Preserve snapshot/subscription setup, then surface readiness, then custom IPC registration. Do not change the shared `FeatureLifecycle` module or move Amove shelf, native decoding, commands, or UI-state reporting into it.
-5. **Error flow.** Make `ApplicationController.openFeature` return a `Promise<void>` that settles with `FeatureRuntime.activate`. Keep the current `ControllerApi` and renderer interface; the renderer already displays rejected Open actions.
-6. **Test surface.** Test the acquisition race through `FeatureRuntime`, the promise propagation through `ApplicationController`, and the visible failure through the shell renderer. Do not test the private queue map directly.
-7. **Domain notes.** Keep `CONTEXT.md` vocabulary unchanged. It already names the `Feature runtime` and its queue. No ADR is needed for this bounded implementation.
+## Decisions
 
-## Ownership after the change
+1. **Queue the whole native state transaction.** Put every `NativeFeatureMode.setInstalled` call, both `installed: true` and `installed: false`, on the existing per-feature queue. This also serializes retries and repeated install/uninstall requests in call order. Do not queue only the final adapter disposal.
+2. **Keep activation on the same queue.** Retain the existing `NativeFeatureMode.activate` turn. Its installed and transition-state checks must run when that turn begins, not before it is queued.
+3. **Keep the queue owner unchanged.** Use the existing `FeatureModeLinks.enqueue` callback. Do not edit `FeatureRuntime.#enqueue`, add another queue, or add methods to `FeatureModeLinks`.
+4. **Keep Local mode unchanged.** Its install, uninstall, and activation behavior is outside this change.
+5. **Keep active-page clearing inside uninstall.** Clear the active feature at the start of the queued uninstall turn, before requesting the host change. Clear it again after the host reports the feature uninstalled if a renderer page report selected that feature while the request was in flight. `setActive` remains synchronous and is not moved onto the queue.
+6. **Preserve host request choice.** Compute `retry` inside the queued turn from the latest accepted state. Use `host.retryFeature` for an install request when the feature is already installed and either its native state is `error` or the host has a service error. Otherwise use `host.setFeatureInstalled` with the requested flag.
+7. **Keep snapshot, cleanup, and any install acquisition in the same turn.** The queue turn owns the host request, snapshot adoption, active-state reconciliation, adapter removal/disposal, and any acquisition needed after a successful install.
+8. **Fence unconfirmed native state.** Keep one private per-feature transition record in `NativeFeatureMode`. It records the requested installed state, the last accepted full native snapshot revision before the request, and the host request outcome: pending, succeeded, or rejected. This is internal state, not a new interface. It prevents a stale cached `installed: true` value from allowing Open or a lazy load after a successful uninstall whose follow-up snapshot failed.
+9. **Preserve native disposal behavior.** Remove the instance before awaiting `dispose`. Log and swallow disposal errors, as native mode does today. A disposal failure does not undo a confirmed host uninstall.
+10. **Keep the scope in the main-process mode adapter and focused tests.** Expected changes are in `src/main/features/host-mode.ts`, `tests/feature-runtime.test.ts`, and one status-rendering test in `tests/shell-renderer.test.tsx`. Do not change Swift code, renderer controls, controller IPC, the shared feature lifecycle, or `CONTEXT.md`.
 
-`FeatureRuntime` continues to own feature instances, load errors, active selection, and the per-feature queue. Native mode must route each operation that can acquire an adapter through that queue:
+## Required ordering
 
-| Native acquisition path | Current route | Planned route |
-| --- | --- | --- |
-| Installed adapters at launch | `enqueue` | unchanged |
-| Adapter becomes running after recovery | `enqueue` | unchanged |
-| Active-page selection finds no instance | `enqueue` | unchanged |
-| Reinstall after native state is running | `enqueue` | unchanged |
-| Shelf open or toggle | `FeatureRuntime.#shelf` enqueues | unchanged |
-| Open / activation | direct `acquire` | enqueue acquisition and activation together |
+For one feature ID, queue insertion order determines the result.
 
-`NativeFeatureMode` still owns native status and mode policy. `FeatureRuntime.#acquire` remains the only loader/registration implementation. The existing `MoirasiaFeature` interface stays the test surface for product adapters. Amove's `NativeAmoveFeature` remains the adapter for custom shelf, two-renderer IPC, native snapshots, and host UI-state reporting.
+| Calls arrive in this order | Required result |
+| --- | --- |
+| Open, then Uninstall | Open checks installed state, acquires if needed, selects and activates the feature. Uninstall then clears selection, requests native uninstall, adopts state, removes the instance, and disposes it before releasing its turn. |
+| Uninstall, then Open | Uninstall completes its host/snapshot/cleanup turn first. Open then checks the latest state and rejects as not installed. It does not call the loader or activate the removed instance. |
+| Install, then Open | Install requests native state and adopts a fresh snapshot. If the feature is running, it acquires the adapter in the current turn. Open then uses that instance. |
+| Open, then Install/Retry | Open completes first. The install or retry request runs afterward and uses the current snapshot to choose the host method. |
+| Running-state recovery queued before Uninstall | Recovery finishes first. Uninstall then removes and disposes the registered instance. |
+| Recovery or active-page load queued during Uninstall | Its closure re-checks current installed, transition, host-health, and instance state. It returns without loading if uninstall won. |
 
-`ApplicationController` will pass the activation promise through its existing IPC handler. The main process will not catch and discard an error that the renderer already knows how to display.
+Different feature IDs remain independent. Shelf operations keep their existing Amove queue turn through `FeatureRuntime.#shelf`.
 
 ## Implementation steps
 
-### 1. Add native acquisition regression tests
+### 1. Strengthen the native test fake and add failing regressions
 
-Add native-mode regression tests to `tests/feature-runtime.test.ts`, using its existing `fakeNativeClient` helper and the public `FeatureRuntime` interface. Construct the runtime with `await settingsWith(undefined)`, `loaders: { amove: legacyLoader }`, `nativeLoaders: { amove: nativeLoader }`, `context: () => CONTEXT`, and the fake client's `client` as `nativeClient`. `FeatureRuntime` derives its feature IDs from the `loaders` keys, so this keeps the test to Amove alone; the context callback is required because no `EmbeddedFeatureHost` is supplied. Do not use `fakeNativeClient`'s default empty snapshot: its initial `host.getSnapshot` response must contain `features: [{ id: 'amove', installed: true, state: 'starting' }]`. These reduced one-feature fixtures are accepted by `NativeFeatureMode.#applySnapshot` for this mode-level test because its expected feature IDs contain only Amove. They are not valid native wire snapshots: `NativeHostClient` requires a full `NativeHostSnapshot` with all three feature statuses. This test covers the mode's queue behavior, not wire-schema validation.
+Extend the `fakeNativeClient` helper in `tests/feature-runtime.test.ts` only as far as these cases need. It should support a mutable full snapshot with an incrementing native-service `revision`, a deferred host mutation response, and a failing `host.getSnapshot` request. Continue to test through `FeatureRuntime`; do not inspect its private queue or the mode's private transition record.
 
-For the overlap regression:
+Use valid `NativeHostSnapshot` fixtures for every test that exercises `setInstalled`, snapshot revisions, or the transition fence. A runtime configured with only Amove as its loader still expects only Amove in `NativeFeatureMode`, but the actual host wire snapshot must include all three known feature statuses and valid settings. Update the fake host to advance the feature-service revision and mutate Amove's installed/state fields on successful `host.setFeatureInstalled` and `host.retryFeature` calls. Existing projection-only tests may keep reduced one-feature snapshots. Revise the retry test to start from `installed: true, state: 'error'` and call `setInstalled('amove', true)` directly; a successful uninstall clears the native error and should not be used to manufacture a retry case.
 
-1. Make the first native loader call reject, so `syncAtLaunch` finishes with Amove installed but without an instance.
-2. Emit the one-feature `running` fixture `features: [{ id: 'amove', installed: true, state: 'running' }]`. `fakeNativeClient` passes it directly to the mode, bypassing `NativeHostClient`'s full-snapshot wire validation. Snapshot handling accepts the Amove projection and queues `#loadRunningNativeAdapters`.
-3. Have the second loader call return a recovery feature whose `register` waits on a deferred promise. Signal the test when registration starts. Make each loader call return a distinct feature object so the test models `createNativeFeature` constructing a fresh adapter on every call; later calls should return immediately-registerable features so the pre-fix activation can settle after the expected failure assertion.
-4. While registration is pending, assert `runtime.statuses()` reports Amove as `loaded: true`. The accepted fixture sets host service state to running; `FeaturesScreen` uses that `loaded` status to enable Open for an installed feature. This mode-level test asserts the status, not the DOM. In production, the full validated snapshot has the same running service and feature states.
-5. Call `runtime.activate('amove')` before releasing the registration gate.
-6. While the gate remains closed, assert the native loader has been called exactly twice and only the recovery adapter has begun registration. Release the gate, await activation, and assert the loader count remains two, that same adapter committed, and it received one activation. In `finally`, release the gate and observe activation if an earlier assertion exits before the normal await, so the intentionally failing pre-fix assertion leaves no blocked work or unhandled rejection.
+Add these regression cases before changing production code:
 
-The loader count is exactly two: the failed initial attempt and the queued recovery attempt. With the current direct activation path, Open starts a third loader while recovery is pending, so the overlap assertion fails before the implementation change. Use promise gates, not time-based sleeps.
+1. **Open then uninstall.** Start from a loaded native Amove adapter. Call `runtime.activate('amove')`, then `runtime.setInstalled('amove', false)` without awaiting between calls. Record activation, host mutation, and disposal. Assert activation completes before the uninstall request and disposal follows the request and snapshot. Assert activation and disposal never overlap.
+2. **Uninstall then Open.** Gate the host uninstall response. Enqueue uninstall first and Open second. Before releasing the host gate, assert Open has not loaded or activated an adapter. Return a full snapshot with Amove uninstalled and stopped. Assert the adapter is disposed once and Open rejects with the not-installed error without another loader call.
+3. **Stale recovery and active-page loads.** Start with Amove installed but without an adapter after a failed initial load. Emit a full `running` snapshot and gate the recovery adapter's registration. While that recovery turn is active, enqueue uninstall, call `runtime.setActive('amove')` while the cached state still permits the selection, then emit another full running snapshot. The active-page load and second recovery are now queued behind uninstall. Release the first registration, gate the host uninstall response, then return a newer full snapshot showing Amove uninstalled and stopped. Add a later queued activation as a barrier. Assert the stale callbacks run without loading another adapter, active selection is clear, and the barrier activation rejects as not installed.
+4. **Successful mid-session install does not deadlock.** Start with a full snapshot showing Amove uninstalled and stopped. Make the host mutation update the snapshot to installed/running. Await `runtime.setInstalled('amove', true)` and assert registration completes once. Then activate Amove and assert it uses that same instance. This proves the install turn calls `#links.acquire` directly instead of awaiting a nested enqueue for the same ID. The recovery turn scheduled by snapshot adoption must become a no-op when it finds the committed instance.
+5. **Request rejection still releases the queue.** Make the host mutation reject before changing native state. Assert `setInstalled` rejects and does not remove or dispose the existing adapter. Then queue an activation and assert it runs, proving a rejected transition does not poison the next queue turn. Also cover a request whose native state change is visible in a fresh snapshot even though the outer host request rejects during settings persistence; in that case reconcile from the fresh snapshot, clean up if it confirms uninstalled, and still return the original host error.
+6. **Snapshot failure after successful uninstall is fail-closed.** Let the host confirm the uninstall, then make `host.getSnapshot` fail. Assert the operation rejects with that snapshot error, the instance is still removed and disposed once, and the unresolved transition record prevents Open, shelf, recovery, and active-page lazy loading from acquiring against the old cached installed state. Emit a later full snapshot with a newer revision and Amove uninstalled; assert the fence clears and Open still rejects as not installed.
+7. **Snapshot failure after successful install is fail-closed.** Let the host confirm an install or retry, then make the snapshot request fail. Assert no adapter acquisition occurs while state is unconfirmed. Emit a later full snapshot confirming installed/running, then assert recovery registers one adapter and a queued activation uses it.
+8. **Native disposal failure remains swallowed.** Make the native adapter's `dispose` reject during a confirmed uninstall. Assert the instance is removed, the error is logged, and the transition result is governed by host/snapshot confirmation rather than the disposal rejection.
 
-Also add a separate native activation failure test with the same Amove-only runtime and initial `starting` fixture. Let the startup loader call reject with `new Error('feature service is starting')`, then await `runtime.syncAtLaunch()`. Emit the same one-feature `running` fixture and have the second loader return a feature whose deferred `register` rejects with `new Error('recovery registration failed')`. After registration starts, call `runtime.activate('amove')` and confirm the loader count remains two while recovery is pending. Reject the registration gate with the recovery error. The activation turn must make exactly one serialized retry; have the third loader call reject with `new Error('activation retry failed')` and assert activation rejects with an `Error` carrying that third call's message, not the earlier recovery error. Then have the fourth loader call return a valid feature, activate again, and assert success, one activation of that feature, and a cleared load error. In `finally`, reject the gate if it is still pending and observe the activation promise so a failed assertion cannot leave queued work unresolved or produce an unhandled rejection. The four calls are the failed startup attempt, failed recovery registration, failed activation retry, and successful later turn. This covers registration failure, error selection, and recovery of the existing per-feature queue without inspecting its private map.
+9. **Pending state stays visible and safe.** In `tests/shell-renderer.test.tsx`, render a snapshot with an installed feature, `loaded: false`, and the transition-confirmation `loadError`. Assert Open is disabled, the confirmation message is visible, and Retry remains available. This exercises the existing Features screen without changing its controls.
 
-### 2. Route native activation through the queue
+Use deferred promises and event logs, not sleeps. Release all gates and observe all queued promises in `finally` blocks so a failing assertion cannot strand work or create an unhandled rejection.
 
-Update `NativeFeatureMode.activate` in `src/main/features/host-mode.ts` so it returns the promise from `#links.enqueue(id, operation)`. Inside that operation:
+### 2. Queue the complete native installed-state operation
 
-1. Re-check `installed(id)` inside the queued operation. If false, throw an `Error` with message `Feature '${id}' is not installed.`.
-2. Call `const loaded = await #links.acquire(id)` once.
-3. If `loaded` is false, throw an `Error` using `#links.loadError(id)`, or the fallback message `Feature '${id}' could not be loaded.`.
-4. Call `#links.setActive(id)` only after acquisition succeeds.
-5. Preserve the existing optional activation call: `#links.instance(id)?.activate?.()`.
+In `NativeFeatureMode.setInstalled` in `src/main/features/host-mode.ts`, return the result of `#links.enqueue(id, async () => { ... })`. Move every existing step into that closure:
 
-Keep these steps in the same queued operation. `setActive` calls `applyActive`, but the instance has already committed by then, so that path must observe the instance and must not enqueue a second load. Do not call `enqueue` from inside an operation already queued by `FeatureRuntime.#shelf`; shelf ownership stays as it is.
+1. Read the current status and calculate the retry choice only after the turn begins.
+2. Clear active selection if this is an uninstall of the active feature.
+3. Establish the private transition record and capture the last accepted full snapshot revision.
+4. Send the existing `host.retryFeature` or `host.setFeatureInstalled` request with the existing arguments.
+5. Refresh and adopt host state while retaining the queue turn.
+6. For a confirmed uninstall, clear active selection again if it was selected during the request, remove the instance, and dispose it with the existing logged-and-swallowed error behavior.
+7. For a confirmed install/retry whose native state is `running`, acquire in this turn with `await #links.acquire(id)`. Preserve today's behavior of not turning an adapter load failure into a host install failure; `#acquire` records its load error and running-state recovery remains responsible for a later attempt.
 
-Add a concise source comment beside native activation explaining that acquisition shares the per-feature queue with snapshot recovery. Do not add a new method to `FeatureModeLinks` or a new feature lifecycle module.
+Do not call `#links.enqueue(id, ...)` from this closure. `#refreshSnapshot` can enqueue a recovery turn for the same ID. Awaiting that turn from inside the current turn would deadlock. Direct acquisition is safe because the current turn already owns the ID. Any recovery turn appended during the snapshot refresh runs afterward and sees the instance or the latest native state.
 
-### 3. Preserve and return activation completion
+### 3. Add a private transition fence and reconcile stale work
 
-Change `ApplicationController.openFeature` in `src/main/application-controller.ts` to `async openFeature(id: ApplicationId): Promise<void> { await this.features.activate(id) }`. `FeatureRuntime.activate` returns `void | Promise<void>`, so directly returning its result does not satisfy the `Promise<void>` return type. The async wrapper also converts a synchronous Local mode activation throw into a rejected promise. The method currently discards the result. `src/main/ipc.ts` already returns the method result from its `IPC.openFeature` handler, `src/preload/shell.ts` already returns `ipcRenderer.invoke`, `ControllerApi.openFeature` already promises `void`, and `src/renderer/shell/controller.ts` already catches failures. Do not change those interfaces or add a second error channel.
+Keep a private `Map<FeatureId, ...>` in `NativeFeatureMode`. It must distinguish a request still in progress from a request the host accepted. Use the existing `NativeHostSnapshot.revision`; do not add a protocol field or change `NativeHostClientLike`.
 
-Add `ApplicationController` tests for both a rejected activation promise and a synchronous activation throw. In each case assert that `openFeature` returns a promise rejecting with the original error; it must not throw synchronously for the Local mode case.
+- Capture the last accepted full snapshot revision when the queued state transition begins.
+- Set the pending target before sending the request so any work queued behind this turn cannot trust stale cached installation state.
+- A full snapshot event received while the mutation request is pending cannot clear the record yet. When the request settles, reconcile the latest accepted full snapshot. If the request succeeded, clear the record only when a full snapshot newer than the captured revision confirms the requested installed flag. A matching event can provide that confirmation even if the following `host.getSnapshot` read fails. A partial projection, malformed snapshot, older snapshot, or newer snapshot with a conflicting installed flag does not clear the fence.
+- If the host request rejects, first reconcile any newer full event that arrived while it was pending. If that event confirms the requested state, clear the fence and dispose if it confirms the feature is uninstalled. Otherwise make one best-effort full snapshot request while the turn still owns the feature. A valid post-request full read is authoritative even if the host's nested feature change committed before the outer Shell settings write failed; clear the fence and dispose if the actual state is uninstalled. Preserve and rethrow the original mutation error. If neither event nor read yields a valid post-request full snapshot, retain the fence and adapter; do not allow acquisition while the native state is uncertain. A later reconnect/full snapshot or a new explicit state operation resolves it.
+- If the host request succeeds and neither a matching full event nor the follow-up full snapshot confirms the target, keep the fence. A successful uninstall request confirms that the native module stopped, so still clear active selection and remove/dispose its adapter before rejecting with the snapshot or confirmation error. A successful install/retry without confirmed status must not acquire an adapter. If a full event already confirms the target, the operation may proceed on that evidence even when the follow-up read fails.
+- On an accepted full snapshot, update the latest full snapshot revision monotonically. Do not let an older full snapshot overwrite newer status or release a fence. Reconcile events received during the request only after its outcome is known: a successful request requires the requested installed value; a rejected request may use a matching newer event or a fresh post-error full `host.getSnapshot` as the authority for the actual state.
 
-### 4. Test the user-visible failure path
+While a transition record remains, `installed`, `isLoaded`, and `describeFeature` must not advertise an actionable loaded feature from stale cache. Report the requested installed value, report `loaded: false`, and expose a clear confirmation error through the existing `loadError` field. This keeps the current Features screen behavior: Open stays disabled while loading is unconfirmed, and the existing error/Retry or Install control remains available. No renderer change is needed.
 
-Add a shell renderer test in `tests/shell-renderer.test.tsx` where the loaded Amove Open action rejects with `new Error('Amove activation failed.')`. Click Open and assert the existing "Action failed" alert displays `Amove activation failed.`. This jsdom test verifies renderer behavior when `ControllerApi.openFeature` rejects; it does not exercise Electron IPC. The `ApplicationController` test covers the main-process method, and source inspection confirms the handler in `src/main/ipc.ts` and the bridge in `src/preload/shell.ts` forward the promise. No layout or controls change.
+Update all queued native acquisition closures to re-check at execution time:
 
-Keep `apps/integrated/Amove/tests/native-feature.test.ts` unchanged and require it to pass. Its existing readiness-before-IPC assertion is a guardrail for the product-specific lifecycle that this plan deliberately retains. If it fails, fix the implementation to preserve the tested order; do not weaken the assertion.
+- `#loadRunningNativeAdapters` checks that no transition is pending, no service error is active, the feature is still installed and `running`, and no instance already exists.
+- `applyActive` checks that no transition is pending, the feature is still installed, it is still the active feature, and no instance already exists.
+- `activate` checks for an unresolved transition before checking installed state or calling `acquire`.
+- The native Amove shelf path checks for an unresolved transition before calling `acquire`. Its outer per-feature queue stays unchanged.
+
+These checks make queued work harmless if a snapshot or renderer event scheduled it before uninstall but it runs afterward. Keep `#refreshSnapshot`'s existing status publication and recovery responsibilities.
+
+### 4. Preserve current behavior outside this transaction
+
+Do not change:
+
+- `FeatureRuntime.#enqueue` recovery behavior or its per-feature keying.
+- Native launch loading, service subscriptions, snapshot validation, shell visibility, or native UI-state request formats.
+- `NativeFeatureMode.activate`'s activation order: acquire, set active, then call the optional feature `activate` method.
+- The retry selection between `host.retryFeature` and `host.setFeatureInstalled`.
+- Native disposal order: remove the instance before awaiting its disposer; log and swallow disposer failures.
+- `LocalFeatureMode`, the application controller, preload, IPC handlers, renderer controls, native Swift implementation, Amove's custom adapter lifecycle, shelf behavior, or the shared `FeatureLifecycle` module.
+
+## Failure behavior
+
+| Failure point | Required behavior |
+| --- | --- |
+| Host mutation rejects and a fresh full snapshot reports the feature installed | Clear the transition fence, keep the adapter, reject with the original host error, and allow the next queue turn to proceed. |
+| Host mutation rejects but the fresh full snapshot confirms the feature is uninstalled | Clear active selection, remove and dispose the adapter, then reject with the original host error. Disposal errors are logged and swallowed. |
+| Host mutation rejects and neither a newer matching event nor a fresh full snapshot establishes state | Keep the transition fence and adapter. Reject with the original host error. No later activation or lazy load may use the stale cache until a full snapshot or a new explicit state operation resolves the fence. |
+| Host mutation succeeds; uninstall snapshot confirms `installed: false` | Clear active selection, remove the adapter, dispose it, and resolve. Disposal errors remain logged and swallowed. |
+| Host mutation succeeds; install/retry snapshot confirms `installed: true` | Clear the fence. If native state is `running`, acquire directly in the current turn. Adapter registration failure remains a load error, not a host mutation error. |
+| Host mutation succeeds; neither the latest full event nor the follow-up full snapshot confirms the requested state | Keep the fence. For uninstall, remove/dispose because the host confirmed the native stop. For install/retry, do not acquire. Reject with the snapshot error or a specific state-confirmation error. A later matching full snapshot or explicit state request is required before acquisition resumes. |
+| Native adapter disposal rejects | Remove the instance first, log the rejection, and swallow it. If snapshot confirmation also failed, propagate the snapshot/confirmation error, not the disposer error. |
+| A queued operation rejects | Preserve `FeatureRuntime.#enqueue` behavior: later turns recover from a rejected predecessor and still run in FIFO order. |
 
 ## Validation
 
-Run from the repository root:
+Validation run from the repository root:
 
-1. **Red/green regression:** `pnpm exec vitest run tests/feature-runtime.test.ts`. The new overlap test must fail before queueing native activation and pass afterward.
-2. **Focused regression tests:** `pnpm exec vitest run tests/feature-runtime.test.ts tests/application-controller.test.ts tests/shell-renderer.test.tsx`.
-3. **Amove lifecycle guard:** `pnpm --dir apps/integrated/Amove exec vitest run tests/native-feature.test.ts` to confirm its startup order and cleanup remain intact.
-4. **Typecheck:** `pnpm typecheck`.
-5. **Full root suite:** `pnpm test`.
-6. **Diff hygiene:** `git diff --check`, then inspect the changes to `src/main/features/host-mode.ts`, `src/main/application-controller.ts`, and the three test files. Source-check that `src/main/ipc.ts` and `src/preload/shell.ts` still return the activation promise. Confirm there is no change to local activation, Amove's shelf behavior, or shared lifecycle sequencing.
+1. **Red/green queue regressions:** `pnpm exec vitest run tests/feature-runtime.test.ts`. The Open/uninstall ordering regression failed before queueing and passed afterward.
+2. **Focused suites:** `pnpm exec vitest run tests/feature-runtime.test.ts tests/shell-renderer.test.tsx` — passed, 54 tests.
+3. **Typecheck:** `pnpm typecheck` — passed.
+4. **Full root suite:** `pnpm test` — passed, 351 tests.
+5. **Diff hygiene:** `git diff --check`. Inspect the diff and confirm only `src/main/features/host-mode.ts`, `tests/feature-runtime.test.ts`, `tests/shell-renderer.test.tsx`, and this plan changed.
 
-No native build, staging command, packaging, or migration is needed. The root Playwright configuration points at `tests/e2e`, which currently has no shell end-to-end suite. The renderer interaction is covered by the existing jsdom test harness; this work does not change the layout or controls.
+No Swift build is needed because this plan leaves native sources unchanged. There is no shell browser suite under `tests/e2e`; the focused jsdom renderer test covers the changed `FeatureStatus` state. No renderer controls or layout change.
 
 ## Acceptance criteria
 
-- Every native path that can load an adapter uses the existing per-feature queue; native activation no longer calls `acquire` outside it.
-- If snapshot recovery is registering an adapter, Open waits behind that registration instead of starting another loader or `MoirasiaFeature.register` call.
-- After registration commits, queued activation selects and activates that same instance once.
-- Failed loading still rejects with the existing load error and does not poison later queue turns.
-- The installed-state check, activation semantics, active-page update, and feature activation remain unchanged when there is no load in progress.
-- `ApplicationController.openFeature` returns activation completion. Native activation failures reach the renderer's existing error alert.
-- `LocalFeatureMode.activate`, Amove's custom registration order, native snapshot and shelf subscriptions, custom IPC, and two-renderer behavior remain unchanged.
-- No new adapter seam, public interface, dependency, state persistence, or domain term is added.
-- Focused tests, Amove lifecycle tests, typecheck, the full root test suite, and `git diff --check` pass.
-
-## Risks and scope limits
-
-- **Queued activation waits for recovery.** This is intentional. Loading and activation must not run concurrently for the same feature. Other feature IDs keep independent queue turns.
-- **The adapter is not committed while registering.** `FeatureStatus.loaded` may still be true from native state during recovery. This plan does not change that status definition; it makes an Open action safe while registration is in progress.
-- **Registration failure during recovery.** The queued recovery operation may finish without an instance. The following activation turn then makes one serialized retry and surfaces its existing error if it also fails. Later queue turns remain usable because `FeatureRuntime.#enqueue` recovers from a rejected predecessor.
-- **Native uninstall can still overlap activation.** `NativeFeatureMode.setInstalled` performs the uninstall request, snapshot refresh, and adapter disposal outside the per-feature queue. Activation re-checks installation when its queued turn begins, but an uninstall started after that check can still race with acquisition or activation. This plan leaves that existing transaction ordering unchanged; the queue does not serialize the whole install/uninstall operation.
-- **Do not add an instance-local guard as the fix.** The feature loader constructs a fresh adapter for each acquisition attempt, so fields on one `NativeAmoveFeature` cannot serialize distinct objects.
-- **Do not force Amove into `createFeatureLifecycle`.** Its post-readiness IPC order is a concrete constraint. Reopen that choice only if another feature needs the same post-ready sequence and a second adapter makes the seam real.
-- **Do not broaden into uninstall transaction ordering, native UI-state recovery, product controller cleanup, or changes to other Feature mode responsibilities.** Those are separate decisions.
+- Every native install, uninstall, and retry operation shares the existing per-feature queue with Open and other native adapter operations.
+- Queue order decides races. Open queued before uninstall completes first; Open queued after a confirmed uninstall rejects before acquiring an adapter.
+- Native host mutation, snapshot adoption, active selection, adapter cleanup, and install acquisition stay inside the same feature turn.
+- No same-ID operation awaits a later turn from inside its current turn.
+- A stale running-state recovery or active-page lazy load cannot register an adapter after uninstall. Every queued closure re-checks current state when it runs.
+- Successful uninstall followed by snapshot failure still removes/disposes the adapter and fences later acquisition until native state is confirmed.
+- Host request and snapshot failures follow the table above. Disposal errors remain logged and swallowed. Later queue turns remain usable after rejection.
+- Native retry selection and current install/load behavior remain intact. Local mode is unchanged.
+- No new queue, public interface, dependency, Swift change, renderer control, or domain term is introduced.
+- The focused tests, typecheck, full root suite, and `git diff --check` pass.

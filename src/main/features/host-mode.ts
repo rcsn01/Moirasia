@@ -2,10 +2,17 @@ import { isFeatureId, type FeatureId, type MoirasiaFeature } from '@moirasia/des
 import type { FeatureStatus } from '../../shared/contracts'
 import type { EmbeddedFeatureHost } from './embedded-host'
 import type { ShellSettingsStore } from '../settings'
-import { isNativeHostHealth, isNativeHostSnapshot, type NativeHostClientLike, type NativeHostConnectionEvent } from '../../shared/native-host-contracts'
+import { isNativeHostHealth, isNativeHostSnapshot, type NativeHostClientLike, type NativeHostConnectionEvent, type NativeHostSnapshot } from '../../shared/native-host-contracts'
 
 export type FeatureLoader = () => Promise<{ feature: MoirasiaFeature }>
 export type NativeFeatureLoader = (client: NativeHostClientLike) => Promise<{ feature: MoirasiaFeature }>
+
+type NativeInstallationTransition = {
+  installed: boolean
+  revision: number | undefined
+  outcome: 'pending' | 'succeeded' | 'rejected'
+  settling: boolean
+}
 
 // Keep these imports as string literals. Electron-vite turns each feature into
 // a separate chunk, and an uninstalled feature is never evaluated.
@@ -71,6 +78,9 @@ export class NativeFeatureMode implements FeatureMode {
   readonly #featureIds: readonly FeatureId[]
   readonly #links: FeatureModeLinks
   readonly #statuses = new Map<FeatureId, { installed: boolean; state: 'stopped' | 'starting' | 'running' | 'error'; error?: string }>()
+  readonly #fullStatuses = new Map<FeatureId, { installed: boolean; state: 'stopped' | 'starting' | 'running' | 'error'; error?: string }>()
+  readonly #transitions = new Map<FeatureId, NativeInstallationTransition>()
+  #snapshotRevision: number | undefined
   #serviceState: 'starting' | 'running' | 'error' | 'stopped' | undefined
   #serviceError: string | undefined
   #unsubscribeSnapshot: (() => void) | undefined
@@ -96,35 +106,107 @@ export class NativeFeatureMode implements FeatureMode {
     // before the shell renderer can navigate to its page.
     await Promise.all(this.#featureIds
       .filter((id) => this.installed(id))
-      .map((id) => this.#links.enqueue(id, async () => { await this.#links.acquire(id) })))
+      .map((id) => this.#links.enqueue(id, async () => {
+        if (this.#transitions.has(id) || !this.installed(id) || this.#links.instance(id)) return
+        await this.#links.acquire(id)
+      })))
   }
 
-  installed(id: FeatureId): boolean { return this.#statuses.get(id)?.installed ?? this.#isInstalledFromSettings(id) }
-  isLoaded(id: FeatureId, instanceLoaded: boolean): boolean { return instanceLoaded || this.#statuses.get(id)?.state === 'running' }
+  installed(id: FeatureId): boolean { return this.#transitions.get(id)?.installed ?? this.#statuses.get(id)?.installed ?? this.#isInstalledFromSettings(id) }
+  isLoaded(id: FeatureId, instanceLoaded: boolean): boolean {
+    if (this.#transitions.has(id)) return false
+    return instanceLoaded || this.#statuses.get(id)?.state === 'running'
+  }
 
   describeFeature(id: FeatureId, shared: SharedFeatureState): FeatureStatus {
     const native = this.#statuses.get(id)
-    const installed = native?.installed ?? this.#isInstalledFromSettings(id)
+    const transition = this.#transitions.get(id)
+    const installed = transition?.installed ?? native?.installed ?? this.#isInstalledFromSettings(id)
     const serviceError = installed ? this.#serviceError : undefined
     const state = this.#serviceState === 'starting' ? 'starting' : serviceError ? 'error' : native?.state ?? 'stopped'
-    const loadError = native?.error ?? serviceError ?? shared.loadError
-    const loaded = serviceError === undefined && (shared.instanceLoaded || (native?.state === 'running' && this.#serviceState !== 'starting'))
+    const loadError = transition ? this.#transitionError(id) : native?.error ?? serviceError ?? shared.loadError
+    const loaded = !transition && serviceError === undefined && (shared.instanceLoaded || (native?.state === 'running' && this.#serviceState !== 'starting'))
     return { id, installed, ...(state ? { state } : {}), loaded, restartPending: loaded && !installed, ...(loadError ? { loadError } : {}) }
   }
 
-  async setInstalled(id: FeatureId, installed: boolean): Promise<void> {
-    if (!installed && this.#links.activeId() === id) this.#links.setActive(undefined)
-    const current = this.#statuses.get(id)
-    const retry = installed && current?.installed === true && (current.state === 'error' || this.#serviceError !== undefined)
-    await this.#client.request(retry ? 'host.retryFeature' : 'host.setFeatureInstalled', { id, ...(retry ? {} : { installed }) })
-    await this.#refreshSnapshot()
+  setInstalled(id: FeatureId, installed: boolean): Promise<void> {
+    return this.#links.enqueue(id, async () => {
+      const current = this.#statuses.get(id)
+      const retry = installed && current?.installed === true && (current.state === 'error' || this.#serviceError !== undefined)
+      if (!installed && this.#links.activeId() === id) this.#links.setActive(undefined)
+
+      const transition: NativeInstallationTransition = { installed, revision: this.#snapshotRevision, outcome: 'pending', settling: false }
+      this.#transitions.set(id, transition)
+      this.#onStatusesChanged()
+
+      try {
+        await this.#client.request(retry ? 'host.retryFeature' : 'host.setFeatureInstalled', { id, ...(retry ? {} : { installed }) })
+      } catch (mutationError) {
+        transition.outcome = 'rejected'
+        transition.settling = true
+        let snapshot: NativeHostSnapshot | undefined
+        if (!this.#transitionMatchesLatest(id, transition)) {
+          try { snapshot = await this.#refreshSnapshot() }
+          catch { /* Keep the original host mutation error. */ }
+        }
+        const confirmedByEvent = this.#transitionMatchesLatest(id, transition)
+        const confirmedByRead = snapshot !== undefined && this.#readConfirmsLatestState(id, transition, snapshot)
+        transition.settling = false
+        if (confirmedByEvent || confirmedByRead) {
+          this.#clearTransition(id, transition)
+          if (this.#statuses.get(id)?.installed === false) await this.#disposeUninstalled(id)
+          else this.#loadRunningNativeAdapters()
+        }
+        throw mutationError
+      }
+
+      transition.outcome = 'succeeded'
+      transition.settling = true
+      let snapshotError: unknown
+      try { await this.#refreshSnapshot() }
+      catch (error) { snapshotError = error }
+      const confirmed = this.#transitionMatchesLatest(id, transition)
+      transition.settling = false
+      if (confirmed) this.#clearTransition(id, transition)
+
+      if (!installed) await this.#disposeUninstalled(id)
+      if (!confirmed) throw snapshotError ?? new Error(this.#transitionError(id))
+      if (installed && this.#statuses.get(id)?.state === 'running') await this.#links.acquire(id)
+    })
+  }
+
+  #transitionMatchesLatest(id: FeatureId, transition: NativeInstallationTransition): boolean {
+    const revision = this.#snapshotRevision
+    if (revision === undefined || (transition.revision !== undefined && revision <= transition.revision)) return false
+    return this.#fullStatuses.get(id)?.installed === transition.installed
+  }
+
+  #readConfirmsLatestState(id: FeatureId, transition: NativeInstallationTransition, snapshot: NativeHostSnapshot): boolean {
+    const snapshotStatus = snapshot.features.find((feature) => feature.id === id)
+    if (!snapshotStatus || (transition.revision !== undefined && snapshot.revision < transition.revision)) return false
+    return this.#snapshotRevision === snapshot.revision && this.#fullStatuses.get(id)?.installed === snapshotStatus.installed
+  }
+
+  #clearTransition(id: FeatureId, transition: NativeInstallationTransition): void {
+    if (this.#transitions.get(id) !== transition) return
+    const fullStatus = this.#fullStatuses.get(id)
+    if (fullStatus) this.#statuses.set(id, fullStatus)
+    this.#transitions.delete(id)
+    this.#onStatusesChanged()
+  }
+
+  #transitionError(id: FeatureId): string {
+    const label = `${id.charAt(0).toUpperCase()}${id.slice(1)}`
+    return `Waiting for the native host to confirm ${label} installation state.`
+  }
+
+  async #disposeUninstalled(id: FeatureId): Promise<void> {
+    if (this.#links.activeId() === id) this.#links.setActive(undefined)
     const instance = this.#links.instance(id)
-    if (instance && !installed) {
-      this.#links.removeInstance(id)
-      try { await instance.dispose() }
-      catch (error) { console.error(`Feature '${id}' failed to dispose after uninstall`, error) }
-    }
-    if (installed && this.#statuses.get(id)?.state === 'running') await this.#links.enqueue(id, async () => { await this.#links.acquire(id) })
+    if (!instance) return
+    this.#links.removeInstance(id)
+    try { await instance.dispose() }
+    catch (error) { console.error(`Feature '${id}' failed to dispose after uninstall`, error) }
   }
 
   resolveActive(id: FeatureId | undefined, _instanceLoaded: boolean): FeatureId | undefined {
@@ -138,12 +220,16 @@ export class NativeFeatureMode implements FeatureMode {
 
   applyActive(id: FeatureId | undefined): void {
     void this.#client.request('host.setUiState', { page: id ?? 'general' }).catch(() => undefined)
-    if (id && !this.#links.instance(id)) void this.#links.enqueue(id, async () => { await this.#links.acquire(id) })
+    if (id && !this.#links.instance(id)) void this.#links.enqueue(id, async () => {
+      if (this.#transitions.has(id) || !this.installed(id) || this.#links.activeId() !== id || this.#links.instance(id)) return
+      await this.#links.acquire(id)
+    })
   }
 
   activate(id: FeatureId): Promise<void> {
     // Share acquisition with snapshot recovery so Open waits for registration to commit.
     return this.#links.enqueue(id, async () => {
+      if (this.#transitions.has(id)) throw new Error(this.#transitionError(id))
       if (!this.installed(id)) throw new Error(`Feature '${id}' is not installed.`)
       const loaded = await this.#links.acquire(id)
       if (!loaded) throw new Error(this.#links.loadError(id) ?? `Feature '${id}' could not be loaded.`)
@@ -153,6 +239,7 @@ export class NativeFeatureMode implements FeatureMode {
   }
 
   async shelf(action: 'open' | 'toggle'): Promise<void> {
+    if (this.#transitions.has('amove')) throw new Error(this.#transitionError('amove'))
     if (!this.installed('amove')) throw new Error('Amove is not installed.')
     if (!await this.#links.acquire('amove')) throw new Error(this.#links.loadError('amove') ?? 'Amove UI adapter could not be loaded.')
     const instance = this.#links.instance('amove')
@@ -178,17 +265,23 @@ export class NativeFeatureMode implements FeatureMode {
   #loadRunningNativeAdapters(): void {
     if (this.#serviceError) return
     for (const id of this.#featureIds) {
-      if (this.#links.instance(id) || this.#statuses.get(id)?.state !== 'running') continue
-      void this.#links.enqueue(id, async () => { await this.#links.acquire(id) })
+      if (this.#links.instance(id) || !this.installed(id) || this.#statuses.get(id)?.state !== 'running') continue
+      void this.#links.enqueue(id, async () => {
+        if (this.#transitions.has(id) || this.#serviceError || !this.installed(id) || this.#statuses.get(id)?.state !== 'running' || this.#links.instance(id)) return
+        await this.#links.acquire(id)
+      })
     }
   }
 
-  async #refreshSnapshot(): Promise<void> {
+  async #refreshSnapshot(): Promise<NativeHostSnapshot | undefined> {
     const snapshot = await this.#client.request<unknown>('host.getSnapshot')
-    if (this.#applySnapshot(snapshot)) {
+    const full = isNativeHostSnapshot(snapshot)
+    const applied = this.#applySnapshot(snapshot, 'read')
+    if (applied) {
       this.#loadRunningNativeAdapters()
       this.#onStatusesChanged()
     }
+    return full && applied ? snapshot : undefined
   }
 
   #handleSnapshotChanged(value: unknown): void {
@@ -196,7 +289,7 @@ export class NativeFeatureMode implements FeatureMode {
       this.#onStatusesChanged()
       return
     }
-    if (this.#applySnapshot(value)) {
+    if (this.#applySnapshot(value, 'event')) {
       this.#loadRunningNativeAdapters()
       this.#onStatusesChanged()
     }
@@ -214,7 +307,7 @@ export class NativeFeatureMode implements FeatureMode {
     this.#serviceError = 'Native host is reconnecting.'
     this.#onStatusesChanged()
     if (!this.#recovery) {
-      this.#recovery = this.#refreshSnapshot().catch((error) => {
+      this.#recovery = this.#refreshSnapshot().then(() => undefined).catch((error) => {
         this.#serviceState = 'error'
         this.#serviceError = errorMessage(error)
         this.#onStatusesChanged()
@@ -240,8 +333,9 @@ export class NativeFeatureMode implements FeatureMode {
     return true
   }
 
-  #applySnapshot(value: unknown): boolean {
+  #applySnapshot(value: unknown, source: 'event' | 'read'): boolean {
     const full = isNativeHostSnapshot(value)
+    if (full && this.#snapshotRevision !== undefined && value.revision < this.#snapshotRevision) return false
     const features = full ? value.features : value && typeof value === 'object' ? (value as { features?: unknown }).features : undefined
     if (!Array.isArray(features)) return false
     const expected = new Set(this.#featureIds)
@@ -256,6 +350,25 @@ export class NativeFeatureMode implements FeatureMode {
     if (next.size !== expected.size || [...expected].some((id) => !next.has(id))) return false
     this.#statuses.clear()
     for (const [id, status] of next) this.#statuses.set(id, status)
+    if (full) {
+      this.#snapshotRevision = value.revision
+      for (const [id, status] of next) this.#fullStatuses.set(id, status)
+      for (const [id, transition] of this.#transitions) {
+        if (transition.settling || transition.outcome === 'pending') continue
+        const revisionValid = transition.outcome === 'rejected' && source === 'read'
+          ? transition.revision === undefined || value.revision >= transition.revision
+          : transition.revision === undefined || value.revision > transition.revision
+        const status = this.#fullStatuses.get(id)
+        const confirmsRequestedState = status?.installed === transition.installed
+        if (revisionValid && (confirmsRequestedState || (transition.outcome === 'rejected' && source === 'read'))) {
+          this.#transitions.delete(id)
+          if (status?.installed === false) void this.#links.enqueue(id, async () => {
+            if (this.#transitions.has(id) || this.#statuses.get(id)?.installed !== false) return
+            await this.#disposeUninstalled(id)
+          })
+        }
+      }
+    }
     this.#serviceState = 'running'
     this.#serviceError = undefined
     return true

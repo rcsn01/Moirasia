@@ -127,6 +127,19 @@ describe('Moirasia renderer', () => {
     expect(bridge.installFeature).toHaveBeenCalledWith('bonded')
   })
 
+  it('keeps Open disabled and Retry available while native installation is unconfirmed', async () => {
+    const confirmation = 'Waiting for the native host to confirm Amove installation state.'
+    const pending: ControllerSnapshot = { ...snapshot, features: snapshot.features.map((feature) => feature.id === 'amove' ? { ...feature, installed: true, loaded: false, loadError: confirmation } : feature) }
+    const bridge = api(pending); window.moirasia = bridge; const user = userEvent.setup(); render(<App />)
+    await screen.findByRole('heading', { name: 'General' })
+    await user.click(screen.getByRole('button', { name: 'Features' }))
+    const tile = screen.getByRole('heading', { name: 'Amove', level: 3 }).closest('[data-slot="card"]')!
+
+    expect(within(tile).getByText(confirmation)).toBeVisible()
+    expect(within(tile).getByRole('button', { name: 'Open' })).toBeDisabled()
+    expect(within(tile).getByRole('button', { name: 'Retry' })).toBeVisible()
+  })
+
   it('offers an in-place relaunch while a feature waits to unload', async () => {
     const restart: ControllerSnapshot = { ...snapshot, features: snapshot.features.map((feature) => feature.id === 'amove' ? { ...feature, installed: false, restartPending: true } : feature) }
     const bridge = api(restart); window.moirasia = bridge; const user = userEvent.setup(); render(<App />)
