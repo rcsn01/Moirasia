@@ -17,6 +17,82 @@ export type StandaloneLaunchOutcome =
   | 'start-failed'             // register() rejected; failure hook ran; app.quit() dispatched
   | 'launch-failed'            // the control/launch chain itself rejected; app.exit(1) dispatched
 
+export const SETTINGS_MENU_LABEL = 'Settings…'
+export const SETTINGS_MENU_ACCELERATOR = 'CommandOrControl+,'
+
+/** Add the standard macOS Settings command to an app-name menu. */
+export function addMacSettingsMenuItem(
+  template: readonly MenuItemConstructorOptions[],
+  productName: string,
+  onOpenSettings?: () => void,
+  platform: NodeJS.Platform = process.platform
+): MenuItemConstructorOptions[] {
+  if (platform !== 'darwin') return [...template]
+
+  const menu = [...template]
+  const appMenuIndex = menu.findIndex((item) => item.label === productName && Array.isArray(item.submenu))
+  if (appMenuIndex < 0) {
+    menu.unshift({
+      label: productName,
+      submenu: [
+        { role: 'about' },
+        { type: 'separator' },
+        settingsItem(onOpenSettings),
+        { type: 'separator' },
+        { role: 'services' },
+        { type: 'separator' },
+        { role: 'hide' },
+        { role: 'hideOthers' },
+        { role: 'unhide' },
+        { type: 'separator' },
+        { role: 'quit' }
+      ]
+    })
+    return menu
+  }
+
+  const appMenu = menu[appMenuIndex]!
+  const submenu = [...appMenu.submenu as MenuItemConstructorOptions[]]
+  if (submenu.some((item) => item.label === SETTINGS_MENU_LABEL)) return menu
+
+  const updateIndex = submenu.findIndex((item) => item.label === 'Check for Updates…')
+  const anchorIndex = updateIndex >= 0 ? updateIndex : submenu.findIndex((item) => item.role === 'about')
+  const boundaryIndex = anchorIndex + 1
+  if (submenu[boundaryIndex]?.type === 'separator') {
+    submenu.splice(boundaryIndex + 1, 0, settingsItem(onOpenSettings), { type: 'separator' })
+  } else {
+    submenu.splice(boundaryIndex, 0, { type: 'separator' }, settingsItem(onOpenSettings), { type: 'separator' })
+  }
+  menu[appMenuIndex] = { ...appMenu, submenu }
+  return menu
+}
+
+/** Minimal macOS menu for standalone apps that do not define their own menu. */
+export function defaultMacApplicationMenu(
+  productName: string,
+  onOpenSettings?: () => void,
+  platform: NodeJS.Platform = process.platform
+): MenuItemConstructorOptions[] {
+  return addMacSettingsMenuItem([
+    {
+      label: productName,
+      submenu: [
+        { role: 'about' },
+        { type: 'separator' },
+        { role: 'services' },
+        { type: 'separator' },
+        { role: 'hide' },
+        { role: 'hideOthers' },
+        { role: 'unhide' },
+        { type: 'separator' },
+        { role: 'quit' }
+      ]
+    },
+    { role: 'editMenu' },
+    { role: 'windowMenu' }
+  ], productName, onOpenSettings, platform)
+}
+
 export interface StandaloneLaunchOptions {
   /** Login-item control id when controlProtocol is 'moirasia'; otherwise names diagnostics. */
   readonly appId: string
@@ -50,6 +126,8 @@ export interface StandaloneLaunchOptions {
   readonly contentSecurityPolicy?: (rendererUrl: string | undefined) => string
   /** Application menu template; the module builds and installs it inside whenReady. */
   readonly menu?: () => MenuItemConstructorOptions[]
+  /** Open this product's settings page. Missing handlers leave the macOS command visible but disabled. */
+  readonly onOpenSettings?: () => void
   /** Quit when the last window closes. Default true; pass a predicate for presence-aware policy. */
   readonly quitOnLastWindow?: boolean | (() => boolean)
   /** Additive failure UX after a register() rejection (dialogs). The module always logs. */
@@ -105,7 +183,13 @@ export async function runStandaloneLaunch(options: StandaloneLaunchOptions): Pro
     try {
       await app.whenReady()
       if (options.contentSecurityPolicy) installContentSecurityPolicy(options.contentSecurityPolicy(process.env.ELECTRON_RENDERER_URL))
-      if (options.menu) Menu.setApplicationMenu(Menu.buildFromTemplate(options.menu()))
+      const menu = options.menu?.()
+      if (menu || process.platform === 'darwin') {
+        const template = process.platform === 'darwin'
+          ? addMacSettingsMenuItem(menu ?? defaultMacApplicationMenu(options.productName), options.productName, options.onOpenSettings)
+          : menu!
+        Menu.setApplicationMenu(Menu.buildFromTemplate(template))
+      }
       // Publish the promise before register starts so before-quit cannot run
       // disposal against a half-created feature.
       registration = Promise.resolve().then(() => options.register())
@@ -121,6 +205,15 @@ export async function runStandaloneLaunch(options: StandaloneLaunchOptions): Pro
     console.error(error)
     app.exit(1)
     return 'launch-failed'
+  }
+}
+
+function settingsItem(onOpenSettings?: () => void): MenuItemConstructorOptions {
+  return {
+    label: SETTINGS_MENU_LABEL,
+    accelerator: SETTINGS_MENU_ACCELERATOR,
+    enabled: onOpenSettings !== undefined,
+    ...(onOpenSettings ? { click: onOpenSettings } : {})
   }
 }
 

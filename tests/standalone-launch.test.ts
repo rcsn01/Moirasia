@@ -95,7 +95,13 @@ describe('runStandaloneLaunch', () => {
       handler({ responseHeaders: { 'x-frame': ['sameorigin'] } }, callback)
       expect(callback).toHaveBeenCalledWith({ responseHeaders: { 'x-frame': ['sameorigin'], 'Content-Security-Policy': ['policy:http://localhost:5173'] } })
 
-      expect(Menu.buildFromTemplate).toHaveBeenCalledWith([{ label: 'App' }])
+      expect(Menu.buildFromTemplate).toHaveBeenCalledOnce()
+      const builtTemplate = Menu.buildFromTemplate.mock.calls[0]![0]!
+      if (process.platform === 'darwin') {
+        expect(builtTemplate[0]).toMatchObject({ label: 'Amove', submenu: expect.arrayContaining([expect.objectContaining({ label: 'Settings…', enabled: false })]) })
+      } else {
+        expect(builtTemplate).toEqual([{ label: 'App' }])
+      }
       expect(Menu.setApplicationMenu).toHaveBeenCalledWith(Menu.buildFromTemplate.mock.results[0]!.value)
       expect(mocks.onHeadersReceived.mock.invocationCallOrder[0]!).toBeLessThan(Menu.setApplicationMenu.mock.invocationCallOrder[0]!)
       expect(Menu.setApplicationMenu.mock.invocationCallOrder[0]!).toBeLessThan(register.mock.invocationCallOrder[0]!)
@@ -106,6 +112,15 @@ describe('runStandaloneLaunch', () => {
       if (previousUrl === undefined) delete process.env.ELECTRON_RENDERER_URL
       else process.env.ELECTRON_RENDERER_URL = previousUrl
     }
+  })
+
+  it('installs a default macOS app menu when a standalone product has no custom menu', async () => {
+    if (process.platform !== 'darwin') return
+    await expect(runStandaloneLaunch(launchOptions({ register: () => undefined, dispose: () => undefined }))).resolves.toBe('started')
+    expect(Menu.buildFromTemplate.mock.calls[0]![0]![0]).toMatchObject({
+      label: 'Test',
+      submenu: expect.arrayContaining([expect.objectContaining({ label: 'Settings…', enabled: false })])
+    })
   })
 
   it('control mode: claims the process without registering a single listener', async () => {
@@ -305,10 +320,15 @@ describe('runStandaloneLaunch', () => {
     expect(app.exit).not.toHaveBeenCalled()
   })
 
-  it('omits CSP and menu wiring when the options are absent', async () => {
+  it('omits CSP when absent and installs a default menu only on macOS', async () => {
     await expect(runStandaloneLaunch(launchOptions({ register: () => undefined, dispose: () => undefined }))).resolves.toBe('started')
     expect(mocks.onHeadersReceived).not.toHaveBeenCalled()
-    expect(Menu.buildFromTemplate).not.toHaveBeenCalled()
-    expect(Menu.setApplicationMenu).not.toHaveBeenCalled()
+    if (process.platform === 'darwin') {
+      expect(Menu.buildFromTemplate).toHaveBeenCalledOnce()
+      expect(Menu.setApplicationMenu).toHaveBeenCalledOnce()
+    } else {
+      expect(Menu.buildFromTemplate).not.toHaveBeenCalled()
+      expect(Menu.setApplicationMenu).not.toHaveBeenCalled()
+    }
   })
 })

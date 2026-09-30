@@ -4,7 +4,7 @@ import { dirname, join } from 'node:path'
 import { APPEARANCES, DEFAULT_PRODUCT_APPEARANCES, PRODUCT_IDS, defaultAppearanceSnapshot, isAppearance, isProductId, type Appearance, type AppearanceSnapshot, type LoginItemControlResult, type ProductId } from './index'
 
 export { runLoginItemControl } from './login-item-control'
-export { runStandaloneLaunch } from './standalone-launch'
+export { addMacSettingsMenuItem, defaultMacApplicationMenu, runStandaloneLaunch, SETTINGS_MENU_ACCELERATOR, SETTINGS_MENU_LABEL } from './standalone-launch'
 export type { StandaloneLaunchOptions, StandaloneLaunchOutcome } from './standalone-launch'
 
 /** The product's default appearance — the seed table lives in ./index and stays its single owner. */
