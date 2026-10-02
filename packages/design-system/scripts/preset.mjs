@@ -3,13 +3,19 @@ import { mkdir, readFile, writeFile } from "node:fs/promises"
 import { dirname, resolve } from "node:path"
 import { fileURLToPath } from "node:url"
 import { decodePreset, encodePreset, isValidPreset } from "shadcn/preset"
+import { resolveFoundation, resolveProducts } from "./foundation.mjs"
+import { reactOutputs } from "./adapters/react.mjs"
+import { cssOutputs } from "./adapters/css.mjs"
+import { swiftOutput } from "./adapters/swift.mjs"
 
-const packageDir = resolve(dirname(fileURLToPath(import.meta.url)), "..")
-const workspaceDir = resolve(packageDir, "../..")
-const sourcePath = resolve(packageDir, "preset.source.json")
-const productPath = resolve(packageDir, "product-tokens.json")
-const lockPath = resolve(packageDir, "preset.lock.json")
-const command = process.argv[2] ?? "sync"
+export const workspaceDir = resolve(dirname(fileURLToPath(import.meta.url)), "../../..")
+const sourceFile = "packages/design-system/preset.source.json"
+const foundationFile = "packages/design-system/foundation.tokens.json"
+const productFile = "packages/design-system/product-tokens.json"
+const lockFile = "packages/design-system/preset.lock.json"
+const generatorFiles = ["preset.mjs", "foundation.mjs", "colors.mjs", "adapters/react.mjs", "adapters/css.mjs", "adapters/swift.mjs"]
+const stableJson = value => `${JSON.stringify(value, null, 2)}\n`
+const hash = value => createHash("sha256").update(value).digest("hex")
 
 const EXPECTED = {
   menuColor: "default-translucent",
@@ -24,28 +30,6 @@ const EXPECTED = {
   fontHeading: "inherit"
 }
 
-const CORE_LIGHT = {
-  background: "oklch(1 0 0)", foreground: "oklch(0.147 0.004 49.25)", card: "oklch(1 0 0)", "card-foreground": "oklch(0.147 0.004 49.25)", popover: "oklch(1 0 0)", "popover-foreground": "oklch(0.147 0.004 49.25)", primary: "oklch(0.216 0.006 56.043)", "primary-foreground": "oklch(0.985 0.001 106.423)", secondary: "oklch(0.97 0.001 106.424)", "secondary-foreground": "oklch(0.216 0.006 56.043)", muted: "oklch(0.97 0.001 106.424)", "muted-foreground": "oklch(0.553 0.013 58.071)", accent: "oklch(0.97 0.001 106.424)", "accent-foreground": "oklch(0.216 0.006 56.043)", destructive: "oklch(0.577 0.245 27.325)", border: "oklch(0.923 0.003 48.717)", input: "oklch(0.923 0.003 48.717)", ring: "oklch(0.709 0.01 56.259)", "chart-1": "oklch(0.869 0.005 56.366)", "chart-2": "oklch(0.553 0.013 58.071)", "chart-3": "oklch(0.444 0.011 73.639)", "chart-4": "oklch(0.374 0.01 67.558)", "chart-5": "oklch(0.268 0.007 34.298)", sidebar: "oklch(0.985 0.001 106.423)", "sidebar-foreground": "oklch(0.147 0.004 49.25)", "sidebar-primary": "oklch(0.216 0.006 56.043)", "sidebar-primary-foreground": "oklch(0.985 0.001 106.423)", "sidebar-accent": "oklch(0.97 0.001 106.424)", "sidebar-accent-foreground": "oklch(0.216 0.006 56.043)", "sidebar-border": "oklch(0.923 0.003 48.717)", "sidebar-ring": "oklch(0.709 0.01 56.259)"
-}
-
-const CORE_DARK = {
-  background: "oklch(0.147 0.004 49.25)", foreground: "oklch(0.985 0.001 106.423)", card: "oklch(0.216 0.006 56.043)", "card-foreground": "oklch(0.985 0.001 106.423)", popover: "oklch(0.216 0.006 56.043)", "popover-foreground": "oklch(0.985 0.001 106.423)", primary: "oklch(0.923 0.003 48.717)", "primary-foreground": "oklch(0.216 0.006 56.043)", secondary: "oklch(0.268 0.007 34.298)", "secondary-foreground": "oklch(0.985 0.001 106.423)", muted: "oklch(0.268 0.007 34.298)", "muted-foreground": "oklch(0.709 0.01 56.259)", accent: "oklch(0.268 0.007 34.298)", "accent-foreground": "oklch(0.985 0.001 106.423)", destructive: "oklch(0.704 0.191 22.216)", border: "oklch(1 0 0 / 10%)", input: "oklch(1 0 0 / 15%)", ring: "oklch(0.553 0.013 58.071)", "chart-1": "oklch(0.869 0.005 56.366)", "chart-2": "oklch(0.553 0.013 58.071)", "chart-3": "oklch(0.444 0.011 73.639)", "chart-4": "oklch(0.374 0.01 67.558)", "chart-5": "oklch(0.268 0.007 34.298)", sidebar: "oklch(0.216 0.006 56.043)", "sidebar-foreground": "oklch(0.985 0.001 106.423)", "sidebar-primary": "oklch(0.488 0.243 264.376)", "sidebar-primary-foreground": "oklch(0.985 0.001 106.423)", "sidebar-accent": "oklch(0.268 0.007 34.298)", "sidebar-accent-foreground": "oklch(0.985 0.001 106.423)", "sidebar-border": "oklch(1 0 0 / 10%)", "sidebar-ring": "oklch(0.553 0.013 58.071)"
-}
-
-function stableJson(value) { return `${JSON.stringify(value, null, 2)}\n` }
-function hash(value) { return createHash("sha256").update(value).digest("hex") }
-function cssVars(values, prefix = "") { return Object.entries(values).map(([key, value]) => `  --${prefix}${key}: ${value};`).join("\n") }
-function valueOf(node) { return node.$value }
-function tokenVars(node, prefix) {
-  const values = {}
-  for (const [key, child] of Object.entries(node)) {
-    if (key.startsWith("$")) continue
-    if (child && typeof child === "object" && "$value" in child) values[`${prefix}${key}`] = valueOf(child)
-    else Object.assign(values, tokenVars(child, `${prefix}${key}-`))
-  }
-  return values
-}
-
 function validateSource(source) {
   if (source.primitiveBase !== "base-ui" || source.tailwindVersion !== 4 || source.cssVariables !== true || source.shadcnVersion !== "4.16.1") throw new Error("Unsupported preset source metadata")
   if (!isValidPreset(source.code)) throw new Error(`Invalid shadcn preset code: ${source.code}`)
@@ -55,142 +39,73 @@ function validateSource(source) {
   return decoded
 }
 
-function presetCss() {
-  const themeColors = ["background", "foreground", "card", "card-foreground", "popover", "popover-foreground", "primary", "primary-foreground", "secondary", "secondary-foreground", "muted", "muted-foreground", "accent", "accent-foreground", "destructive", "border", "input", "ring", "chart-1", "chart-2", "chart-3", "chart-4", "chart-5", "sidebar", "sidebar-foreground", "sidebar-primary", "sidebar-primary-foreground", "sidebar-accent", "sidebar-accent-foreground", "sidebar-border", "sidebar-ring"]
-  const inline = themeColors.map((name) => `  --color-${name}: var(--${name});`).join("\n")
-  return `/* Generated from shadcn preset bKZTOcpW. Do not edit. */
-@custom-variant dark (&:is(.dark *));
-
-@theme inline {
-  --font-sans: "JetBrains Mono Variable", ui-monospace, monospace;
-  --font-mono: "JetBrains Mono Variable", ui-monospace, monospace;
-  --font-heading: var(--font-sans);
-${inline}
-  --radius-sm: calc(var(--radius) - 4px);
-  --radius-md: calc(var(--radius) - 2px);
-  --radius-lg: var(--radius);
-  --radius-xl: calc(var(--radius) + 4px);
-  --radius-2xl: calc(var(--radius) * 1.8);
-  --radius-3xl: calc(var(--radius) * 2.2);
-  --radius-4xl: calc(var(--radius) * 2.6);
-}
-
-:root {
-  color-scheme: light;
-  --radius: 0.625rem;
-  --menu-background: color-mix(in oklab, var(--popover), transparent 12%);
-  --menu-border: color-mix(in oklab, var(--border), transparent 18%);
-  --menu-shadow: 0 16px 48px rgb(28 25 23 / 14%);
-  --menu-backdrop-filter: blur(18px) saturate(1.12);
-${cssVars(CORE_LIGHT)}
-}
-
-.dark {
-  color-scheme: dark;
-  --menu-background: color-mix(in oklab, var(--popover), transparent 14%);
-  --menu-border: color-mix(in oklab, var(--border), transparent 12%);
-  --menu-shadow: 0 18px 54px rgb(0 0 0 / 34%);
-${cssVars(CORE_DARK)}
-}
-
-/* Local appearance scopes reset inherited dark-shell variables explicitly. */
-.light {
-  color-scheme: light;
-  --menu-background: color-mix(in oklab, var(--popover), transparent 12%);
-  --menu-border: color-mix(in oklab, var(--border), transparent 18%);
-  --menu-shadow: 0 16px 48px rgb(28 25 23 / 14%);
-  --menu-backdrop-filter: blur(18px) saturate(1.12);
-${cssVars(CORE_LIGHT)}
-}
-
-@layer base {
-  * { @apply border-border outline-ring/50; }
-  html { @apply font-mono; }
-  body { @apply bg-background font-sans text-foreground antialiased; }
-}
-`
-}
-
-function productCss(name, product) {
-  const header = `/* Generated ${name} product tokens. Do not edit. */\n`
-  if (name === "amove") {
-    const shelf = tokenVars(product.shelf, "amove-shelf-")
-    return `${header}:root {\n${cssVars(shelf)}\n}\n`
-  }
-  if (name === "vox") {
-    const light = tokenVars(product.light, "vox-")
-    const dark = tokenVars(product.dark, "vox-")
-    return `${header}:root {\n${cssVars(light)}\n}\n\n.dark {\n${cssVars(dark)}\n}\n\n.light {\n${cssVars(light)}\n}\n`
-  }
-  if (name === "bonded" || name === "exithibition" || name === "yn360") {
-    const light = tokenVars(product.light, `${name}-`)
-    const dark = tokenVars(product.dark, `${name}-`)
-    return `${header}:root {\n${cssVars(light)}\n}\n\n.dark {\n${cssVars(dark)}\n}\n\n.light {\n${cssVars(light)}\n}\n`
-  }
-  return `${header}:root {\n  color-scheme: dark;\n${cssVars(tokenVars(product.base, `${name}-`))}\n}\n`
-}
-
-function componentsJson() {
-  return stableJson({ "$schema": "https://ui.shadcn.com/schema.json", style: "base-mira", rsc: false, tsx: true, tailwind: { css: "src/styles.css", baseColor: "stone", cssVariables: true, prefix: "" }, iconLibrary: "lucide", aliases: { components: "#components", utils: "#lib/utils", ui: "#components", lib: "#lib", hooks: "#lib/hooks" }, rtl: false, menuColor: "default-translucent", menuAccent: "subtle", registries: {} })
-}
-
-function mainTokens(products) {
-  return `// Generated by @moirasia/design-system. Do not edit.\nexport const windowBackgrounds = {\n  amove: { shelf: ${JSON.stringify(products.amove.shelf.color.canvas.$value)} }\n} as const\n`
-}
-
-function buildOutputs(source, productTokens) {
+export function buildOutputs(source, authoredFoundation, authoredProducts, inputHashes = {}) {
   const decoded = validateSource(source)
-  const products = productTokens.product
+  const foundation = resolveFoundation(authoredFoundation)
+  const products = resolveProducts(authoredProducts)
   const outputs = new Map([
-    ["packages/ui-react/src/generated/preset.css", presetCss()],
-    ["packages/ui-react/src/products/amove.css", productCss("amove", products.amove)],
-    ["packages/ui-react/src/products/vox.css", productCss("vox", products.vox)],
-    ["packages/ui-react/src/products/exithibition.css", productCss("exithibition", products.exithibition)],
-    ["packages/ui-react/src/products/bonded.css", productCss("bonded", products.bonded)],
-    ["packages/ui-react/src/products/yn360.css", productCss("yn360", products.yn360)],
-    ["packages/ui-react/src/generated/tokens.ts", mainTokens(products)],
-    ["packages/ui-react/components.json", componentsJson()]
+    ...reactOutputs(foundation, products),
+    ...cssOutputs(foundation, products),
+    ["packages/ui-swift/Sources/MoirasiaUI/MoiraTokens.swift", swiftOutput(foundation, products)]
   ])
   const hashes = Object.fromEntries([...outputs].map(([path, content]) => [path, hash(content)]))
-  const lock = { presetCode: source.code, decoded, generator: "@moirasia/design-system@0.1.0", shadcnVersion: source.shadcnVersion, tailwindVersion: source.tailwindVersion, cssVariables: source.cssVariables, outputHash: hash(Object.entries(hashes).flat().join("\n")), outputs: hashes }
-  outputs.set("packages/design-system/preset.lock.json", stableJson(lock))
+  const lock = { presetCode: source.code, decoded, generator: "@moirasia/design-system@0.1.0", formatVersion: 1, shadcnVersion: source.shadcnVersion, tailwindVersion: source.tailwindVersion, cssVariables: source.cssVariables, inputs: inputHashes, outputHash: hash(Object.entries(hashes).flat().join("\n")), outputs: hashes }
+  outputs.set(lockFile, stableJson(lock))
   return outputs
 }
 
-async function inputs(sourceOverride) {
-  const source = sourceOverride ?? JSON.parse(await readFile(sourcePath, "utf8"))
-  const products = JSON.parse(await readFile(productPath, "utf8"))
-  return { source, products }
+async function json(root, path) {
+  const content = await readFile(resolve(root, path), "utf8")
+  try { return { content, value: JSON.parse(content) } }
+  catch (error) { throw new Error(`${path}: invalid JSON: ${error.message}`) }
+}
+async function assembled(root, code) {
+  const source = await json(root, sourceFile)
+  const foundation = await json(root, foundationFile)
+  const products = await json(root, productFile)
+  if (code !== undefined) { source.value.code = code; source.content = stableJson(source.value) }
+  const inputs = Object.fromEntries([[sourceFile, source.content], [foundationFile, foundation.content], [productFile, products.content]].map(([path, content]) => [path, hash(content)]))
+  for (const file of generatorFiles) {
+    const path = `packages/design-system/scripts/${file}`
+    inputs[path] = hash(await readFile(resolve(root, path), "utf8"))
+  }
+  return { source: source.content, outputs: buildOutputs(source.value, foundation.value, products.value, inputs) }
+}
+async function readArtifact(root, path) {
+  try { return await readFile(resolve(root, path), "utf8") }
+  catch (error) { if (error.code === "ENOENT") return undefined; throw error }
 }
 
-async function sync(sourceOverride) {
-  const { source, products } = await inputs(sourceOverride)
-  const outputs = buildOutputs(source, products)
-  if (sourceOverride) await writeFile(sourcePath, stableJson(source))
-  for (const [relativePath, content] of outputs) {
-    const outputPath = resolve(workspaceDir, relativePath)
-    await mkdir(dirname(outputPath), { recursive: true })
-    await writeFile(outputPath, content)
+// root is an internal test seam. CLI callers always use the location-derived workspace.
+export async function run(command = "sync", code, root = workspaceDir) {
+  if (!["sync", "check", "set"].includes(command)) throw new Error(`Unknown preset command: ${command}`)
+  if (command === "set" && !code) throw new Error("Usage: pnpm ui:preset:set <code>")
+  const { source, outputs } = await assembled(root, command === "set" ? code : undefined)
+  if (command === "check") {
+    const failures = []
+    for (const [path, content] of outputs) if (await readArtifact(root, path) !== content) failures.push(`${path}: missing or stale generated artifact`)
+    for (const [path, expected] of [
+      ["packages/ui-react/package.json", { "@fontsource-variable/jetbrains-mono": "^5.3.0", shadcn: "4.16.1" }],
+      ["packages/ui-css/package.json", { "@fontsource-variable/jetbrains-mono": "^5.3.0" }],
+      ["apps/standalone/Vox/package.json", { "@fontsource-variable/jetbrains-mono": "^5.3.0" }]
+    ]) {
+      const content = await readArtifact(root, path)
+      let manifest
+      try { manifest = content && JSON.parse(content) } catch { failures.push(`${path}: invalid JSON`) }
+      for (const [name, version] of Object.entries(expected)) if (manifest?.dependencies?.[name] !== version) failures.push(`${path}: expected ${name} ${version}`)
+    }
+    if (failures.length) throw new Error(`UI artifacts/dependencies are stale:\n${failures.map(failure => `- ${failure}`).join("\n")}`)
+    return
+  }
+  // All validation and rendering has completed before even set can write its source.
+  if (command === "set") await writeFile(resolve(root, sourceFile), source)
+  for (const [path, content] of outputs) {
+    await mkdir(dirname(resolve(root, path)), { recursive: true })
+    await writeFile(resolve(root, path), content)
   }
 }
 
-async function check() {
-  const { source, products } = await inputs()
-  const outputs = buildOutputs(source, products)
-  const stale = []
-  for (const [relativePath, content] of outputs) if (await readFile(resolve(workspaceDir, relativePath), "utf8").catch(() => "") !== content) stale.push(relativePath)
-  if (stale.length) throw new Error(`Generated UI artifacts are stale:\n${stale.map((path) => `- ${path}`).join("\n")}`)
-  const uiPackage = JSON.parse(await readFile(resolve(workspaceDir, "packages/ui-react/package.json"), "utf8"))
-  if (uiPackage.dependencies?.["@fontsource-variable/jetbrains-mono"] !== "^5.3.0" || uiPackage.dependencies?.shadcn !== "4.16.1") throw new Error("ui-react preset dependencies are stale")
-  const voxPackage = JSON.parse(await readFile(resolve(workspaceDir, "apps/standalone/Vox/package.json"), "utf8"))
-  if (voxPackage.dependencies?.["@fontsource-variable/jetbrains-mono"] !== "^5.3.0") throw new Error("Vox local font dependency is stale")
+if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+  try { await run(process.argv[2] ?? "sync", process.argv[3]) }
+  catch (error) { console.error(error.message); process.exitCode = 1 }
 }
-
-if (command === "set") {
-  const code = process.argv[3]
-  if (!code) throw new Error("Usage: pnpm ui:preset:set <code>")
-  const current = JSON.parse(await readFile(sourcePath, "utf8"))
-  await sync({ ...current, code })
-} else if (command === "sync") await sync()
-else if (command === "check") await check()
-else throw new Error(`Unknown preset command: ${command}`)

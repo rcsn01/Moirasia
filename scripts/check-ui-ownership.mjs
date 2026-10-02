@@ -140,6 +140,20 @@ for (const [product, allowed] of Object.entries(allowedTokens)) {
 }
 for (const mode of Object.keys(productTokens.amove).filter((key) => !key.startsWith("$") && key !== "shelf")) failures.push(`packages/design-system/product-tokens.json: amove.${mode} is structural; only the bespoke shelf may own product colors`)
 
+// Plain-CSS consumers own layout and scene data, not shared structural tokens.
+for (const root of ["apps/standalone/LiteMaptica/src", "apps/standalone/Mini-NSW/app/src/renderer"]) {
+  for (const path of await filesBelow(resolve(workspace, root))) {
+    if (!path.endsWith(".css")) continue
+    const content = await readFile(path, "utf8")
+    if (/--moira-[\w-]+\s*:/.test(content)) failures.push(`${path}: redefines a shared presentation token`)
+  }
+}
+for (const name of ["litemaptica", "mini-nsw"]) {
+  const path = `packages/ui-css/themes/${name}.css`
+  const content = await readFile(resolve(workspace, path), "utf8")
+  if (/--moira-(?:font|radius|control-height|space|motion)-[\w-]+\s*:/.test(content)) failures.push(`${path}: product theme redefines shared dimensions/type/motion`)
+}
+
 if (failures.length) {
   console.error(`UI ownership check failed:\n${failures.map((failure) => `- ${failure}`).join("\n")}`)
   process.exitCode = 1

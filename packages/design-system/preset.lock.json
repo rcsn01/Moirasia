@@ -13,10 +13,22 @@
     "fontHeading": "inherit"
   },
   "generator": "@moirasia/design-system@0.1.0",
+  "formatVersion": 1,
   "shadcnVersion": "4.16.1",
   "tailwindVersion": 4,
   "cssVariables": true,
-  "outputHash": "2314084159269f5f1d03d07ccb1e809ba8bc9f133c9c698b3d8c08bbc635c2a4",
+  "inputs": {
+    "packages/design-system/preset.source.json": "0e1ef05d2d48b9e8d515e6c96b62f4475bcc137ac34a4ea24f01e6a3ab000906",
+    "packages/design-system/foundation.tokens.json": "a8ba08d35f57d2240c629b38b181834e2cf161d98784c990f66ef0b33f31a870",
+    "packages/design-system/product-tokens.json": "64b299bcead2372a2c5c54b47992b021aaa2ae6baf298ada1bbbd67e39b2b970",
+    "packages/design-system/scripts/preset.mjs": "1a6bf0457a38d4e9eba99d0fb3fa00cc0c9be594347df9a3fe7d83b91c272728",
+    "packages/design-system/scripts/foundation.mjs": "6f40eb6e932d31f2e2c2dbc402dc985d578d237f9a2845fc9180ad2c848cbc5c",
+    "packages/design-system/scripts/colors.mjs": "2aeae8869bba8550e1179d119110cfc60535b94710e923dcbbe1be45b22f09ac",
+    "packages/design-system/scripts/adapters/react.mjs": "192724fde867ad2b744f178d8faac64974086a253af638058cf530bd8ee8f541",
+    "packages/design-system/scripts/adapters/css.mjs": "52acdfc6a4c29755ae68b3800b86f0859f20f1c4997da3fa759baaecb5369a7f",
+    "packages/design-system/scripts/adapters/swift.mjs": "7bf7280876ad1e392fa646e800413e8097df31faeb47f2e41f27a3e85a55202b"
+  },
+  "outputHash": "abad76f33819bf797a7b9a63b9f2526f1341d0c2afdbc8c4c2fcea4f58f50e8c",
   "outputs": {
     "packages/ui-react/src/generated/preset.css": "14880838f92d74e0bafb59f4f9929d61a4f3b55ebe9f35844640fc45232838ac",
     "packages/ui-react/src/products/amove.css": "6d4123bb2073c4c81110dc792d4ea4a405534d2d42a57ff08e049a04ee763321",
@@ -25,6 +37,13 @@
     "packages/ui-react/src/products/bonded.css": "7b6e45628601dd9ce3870e7ee52e430457fdb0ae25192042e6449301f40861e0",
     "packages/ui-react/src/products/yn360.css": "82fc9e44bc1b7bd569abb7e637536503cb4a5c307d680b78f16829703f9001df",
     "packages/ui-react/src/generated/tokens.ts": "f47d8e6c5d3c97589b72233cee680cfe064cdc7b64cf1733550a84b222d1bb55",
-    "packages/ui-react/components.json": "3f24f2a0ca90cc73751e7ce9f6b1f2f71a68250872f9f80e436955d22e23c0bf"
+    "packages/ui-react/components.json": "3f24f2a0ca90cc73751e7ce9f6b1f2f71a68250872f9f80e436955d22e23c0bf",
+    "packages/ui-css/foundation.css": "8a439e8da8de33f86d076ae8f5dc63fa25a300d52f9b0a04d4d55f2ee12669ad",
+    "packages/ui-css/themes/amove.css": "391ac5013a0911dad8f79253b8ac61a23b490a9f81d35d901906b77fd0fc621a",
+    "packages/ui-css/themes/litemaptica.css": "343e54619c9d5dbb975cfbc9a2e4f0b62cd60dd260e83116c0be3d478731a64c",
+    "packages/ui-css/themes/exithibition.css": "21b7dc119dc2ec1f9b7fdd7f1b3817f5c8f1519f7c76f0fff747d0ce099b0d63",
+    "packages/ui-css/themes/openagent.css": "391ac5013a0911dad8f79253b8ac61a23b490a9f81d35d901906b77fd0fc621a",
+    "packages/ui-css/themes/mini-nsw.css": "fab1f4c45e64e418c5633eccbea52616b33741349aa416af9745a21432018379",
+    "packages/ui-swift/Sources/MoirasiaUI/MoiraTokens.swift": "710ef718ea8d2a531c933af4cabc4b18e005fea55d1e858290533c9fec62243d"
   }
 }

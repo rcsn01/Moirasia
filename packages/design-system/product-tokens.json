@@ -2,28 +2,341 @@
   "$schema": "https://www.designtokens.org/schemas/2025.10/format.json",
   "product": {
     "amove": {
-      "$extensions": { "moirasia.themePolicy": "light-dark-system" },
-      "shelf": { "color": { "$type": "color", "canvas": { "$value": "#1c1917" }, "surface": { "$value": "#292524" }, "surface-raised": { "$value": "#44403c" }, "surface-overlay": { "$value": "rgba(28, 25, 23, 0.92)" }, "text-primary": { "$value": "#fafaf9" }, "text-muted": { "$value": "#d6d3d1" }, "border": { "$value": "rgba(255, 255, 255, 0.14)" }, "control": { "$value": "rgba(255, 255, 255, 0.07)" }, "control-hover": { "$value": "rgba(255, 255, 255, 0.15)" }, "selection": { "$value": "rgba(56, 131, 162, 0.52)" }, "focus": { "$value": "#52add0" }, "close": { "$value": "#ff5f57" }, "close-mark": { "$value": "#6f1714" }, "document": { "$value": "#f5f5f4" }, "document-fold": { "$value": "#a8a29e" }, "shadow": { "$value": "rgba(0, 0, 0, 0.4)" } } }
+      "$extensions": {
+        "moirasia.themePolicy": "light-dark-system"
+      },
+      "shelf": {
+        "color": {
+          "$type": "color",
+          "canvas": {
+            "$value": "#1c1917"
+          },
+          "surface": {
+            "$value": "#292524"
+          },
+          "surface-raised": {
+            "$value": "#44403c"
+          },
+          "surface-overlay": {
+            "$value": "rgba(28, 25, 23, 0.92)"
+          },
+          "text-primary": {
+            "$value": "#fafaf9"
+          },
+          "text-muted": {
+            "$value": "#d6d3d1"
+          },
+          "border": {
+            "$value": "rgba(255, 255, 255, 0.14)"
+          },
+          "control": {
+            "$value": "rgba(255, 255, 255, 0.07)"
+          },
+          "control-hover": {
+            "$value": "rgba(255, 255, 255, 0.15)"
+          },
+          "selection": {
+            "$value": "rgba(56, 131, 162, 0.52)"
+          },
+          "focus": {
+            "$value": "#52add0"
+          },
+          "close": {
+            "$value": "#ff5f57"
+          },
+          "close-mark": {
+            "$value": "#6f1714"
+          },
+          "document": {
+            "$value": "#f5f5f4"
+          },
+          "document-fold": {
+            "$value": "#a8a29e"
+          },
+          "shadow": {
+            "$value": "rgba(0, 0, 0, 0.4)"
+          }
+        }
+      }
     },
     "vox": {
-      "$extensions": { "moirasia.themePolicy": "light-dark-system" },
-      "light": { "color": { "$type": "color", "signal": { "$value": "#65a30d" }, "signal-strong": { "$value": "#15803d" }, "signal-soft": { "$value": "rgba(101, 163, 13, 0.08)" }, "signal-glow": { "$value": "rgba(101, 163, 13, 0.22)" }, "overlay": { "$value": "rgba(250, 250, 249, 0.94)" }, "danger": { "$value": "#dc2626" } } },
-      "dark": { "color": { "$type": "color", "signal": { "$value": "#a3e635" }, "signal-strong": { "$value": "#86efac" }, "signal-soft": { "$value": "rgba(163, 230, 53, 0.07)" }, "signal-glow": { "$value": "rgba(163, 230, 53, 0.48)" }, "overlay": { "$value": "rgba(28, 25, 23, 0.92)" }, "danger": { "$value": "#fb7185" } } }
+      "$extensions": {
+        "moirasia.themePolicy": "light-dark-system"
+      },
+      "light": {
+        "color": {
+          "$type": "color",
+          "signal": {
+            "$value": "#65a30d"
+          },
+          "signal-strong": {
+            "$value": "#15803d"
+          },
+          "signal-soft": {
+            "$value": "rgba(101, 163, 13, 0.08)"
+          },
+          "signal-glow": {
+            "$value": "rgba(101, 163, 13, 0.22)"
+          },
+          "overlay": {
+            "$value": "rgba(250, 250, 249, 0.94)"
+          },
+          "danger": {
+            "$value": "#dc2626"
+          }
+        }
+      },
+      "dark": {
+        "color": {
+          "$type": "color",
+          "signal": {
+            "$value": "#a3e635"
+          },
+          "signal-strong": {
+            "$value": "#86efac"
+          },
+          "signal-soft": {
+            "$value": "rgba(163, 230, 53, 0.07)"
+          },
+          "signal-glow": {
+            "$value": "rgba(163, 230, 53, 0.48)"
+          },
+          "overlay": {
+            "$value": "rgba(28, 25, 23, 0.92)"
+          },
+          "danger": {
+            "$value": "#fb7185"
+          }
+        }
+      }
     },
     "exithibition": {
-      "$extensions": { "moirasia.themePolicy": "light-dark-system", "moirasia.defaultAppearance": "dark" },
-      "light": { "color": { "$type": "color", "cool": { "$value": "#d6e8e0" }, "warm": { "$value": "#15803d" }, "hot": { "$value": "#dc2626" }, "load-low": { "$value": "#d6f5e8" }, "load-high": { "$value": "#0f9f70" }, "focus": { "$value": "#087a55" }, "selected": { "$value": "#0f9f70" }, "battery": { "$value": "#15803d" }, "storage": { "$value": "#2563eb" }, "fan": { "$value": "#7c3aed" } } },
-      "dark": { "color": { "$type": "color", "cool": { "$value": "#173e36" }, "warm": { "$value": "#55e6a5" }, "hot": { "$value": "#ff744d" }, "load-low": { "$value": "#14362d" }, "load-high": { "$value": "#38d995" }, "focus": { "$value": "#7ef6c2" }, "selected": { "$value": "#baffdc" }, "battery": { "$value": "#63cf78" }, "storage": { "$value": "#51a8e8" }, "fan": { "$value": "#bd8aff" } } }
+      "$extensions": {
+        "moirasia.themePolicy": "light-dark-system",
+        "moirasia.defaultAppearance": "dark"
+      },
+      "light": {
+        "color": {
+          "$type": "color",
+          "cool": {
+            "$value": "#d6e8e0"
+          },
+          "warm": {
+            "$value": "#15803d"
+          },
+          "hot": {
+            "$value": "#dc2626"
+          },
+          "load-low": {
+            "$value": "#d6f5e8"
+          },
+          "load-high": {
+            "$value": "#0f9f70"
+          },
+          "focus": {
+            "$value": "#087a55"
+          },
+          "selected": {
+            "$value": "#0f9f70"
+          },
+          "battery": {
+            "$value": "#15803d"
+          },
+          "storage": {
+            "$value": "#2563eb"
+          },
+          "fan": {
+            "$value": "#7c3aed"
+          }
+        }
+      },
+      "dark": {
+        "color": {
+          "$type": "color",
+          "cool": {
+            "$value": "#173e36"
+          },
+          "warm": {
+            "$value": "#55e6a5"
+          },
+          "hot": {
+            "$value": "#ff744d"
+          },
+          "load-low": {
+            "$value": "#14362d"
+          },
+          "load-high": {
+            "$value": "#38d995"
+          },
+          "focus": {
+            "$value": "#7ef6c2"
+          },
+          "selected": {
+            "$value": "#baffdc"
+          },
+          "battery": {
+            "$value": "#63cf78"
+          },
+          "storage": {
+            "$value": "#51a8e8"
+          },
+          "fan": {
+            "$value": "#bd8aff"
+          }
+        }
+      }
     },
     "bonded": {
-      "$extensions": { "moirasia.themePolicy": "light-dark-system" },
-      "light": { "color": { "$type": "color", "status-active": { "$value": "#168451" }, "status-warning": { "$value": "#855d19" }, "status-inactive": { "$value": "#737d8e" }, "status-danger": { "$value": "#8f312e" }, "protocol-tcp": { "$value": "#1d64bf" }, "protocol-udp": { "$value": "#7f581c" }, "protocol-quic": { "$value": "#6550a6" } } },
-      "dark": { "color": { "$type": "color", "status-active": { "$value": "#63cf78" }, "status-warning": { "$value": "#e3c37d" }, "status-inactive": { "$value": "#aab2bf" }, "status-danger": { "$value": "#f0a9a5" }, "protocol-tcp": { "$value": "#78b7ff" }, "protocol-udp": { "$value": "#e3c37d" }, "protocol-quic": { "$value": "#bba8ff" } } }
+      "$extensions": {
+        "moirasia.themePolicy": "light-dark-system"
+      },
+      "light": {
+        "color": {
+          "$type": "color",
+          "status-active": {
+            "$value": "#168451"
+          },
+          "status-warning": {
+            "$value": "#855d19"
+          },
+          "status-inactive": {
+            "$value": "#737d8e"
+          },
+          "status-danger": {
+            "$value": "#8f312e"
+          },
+          "protocol-tcp": {
+            "$value": "#1d64bf"
+          },
+          "protocol-udp": {
+            "$value": "#7f581c"
+          },
+          "protocol-quic": {
+            "$value": "#6550a6"
+          }
+        }
+      },
+      "dark": {
+        "color": {
+          "$type": "color",
+          "status-active": {
+            "$value": "#63cf78"
+          },
+          "status-warning": {
+            "$value": "#e3c37d"
+          },
+          "status-inactive": {
+            "$value": "#aab2bf"
+          },
+          "status-danger": {
+            "$value": "#f0a9a5"
+          },
+          "protocol-tcp": {
+            "$value": "#78b7ff"
+          },
+          "protocol-udp": {
+            "$value": "#e3c37d"
+          },
+          "protocol-quic": {
+            "$value": "#bba8ff"
+          }
+        }
+      }
     },
     "yn360": {
-      "$extensions": { "moirasia.themePolicy": "light-dark-system" },
-      "light": { "color": { "$type": "color", "status-connected": { "$value": "#15803d" }, "status-scan": { "$value": "#1d64bf" }, "status-reconnect": { "$value": "#855d19" }, "channel-red": { "$value": "#dc2626" }, "channel-green": { "$value": "#16a34a" }, "channel-blue": { "$value": "#2563eb" }, "channel-warm": { "$value": "#d97706" }, "channel-cool": { "$value": "#0891b2" } } },
-      "dark": { "color": { "$type": "color", "status-connected": { "$value": "#65d6a3" }, "status-scan": { "$value": "#7ca8ff" }, "status-reconnect": { "$value": "#f3c873" }, "channel-red": { "$value": "#f27e87" }, "channel-green": { "$value": "#65d6a3" }, "channel-blue": { "$value": "#75d2e8" }, "channel-warm": { "$value": "#f2b158" }, "channel-cool": { "$value": "#83cbe8" } } }
+      "$extensions": {
+        "moirasia.themePolicy": "light-dark-system"
+      },
+      "light": {
+        "color": {
+          "$type": "color",
+          "status-connected": {
+            "$value": "#15803d"
+          },
+          "status-scan": {
+            "$value": "#1d64bf"
+          },
+          "status-reconnect": {
+            "$value": "#855d19"
+          },
+          "channel-red": {
+            "$value": "#dc2626"
+          },
+          "channel-green": {
+            "$value": "#16a34a"
+          },
+          "channel-blue": {
+            "$value": "#2563eb"
+          },
+          "channel-warm": {
+            "$value": "#d97706"
+          },
+          "channel-cool": {
+            "$value": "#0891b2"
+          }
+        }
+      },
+      "dark": {
+        "color": {
+          "$type": "color",
+          "status-connected": {
+            "$value": "#65d6a3"
+          },
+          "status-scan": {
+            "$value": "#7ca8ff"
+          },
+          "status-reconnect": {
+            "$value": "#f3c873"
+          },
+          "channel-red": {
+            "$value": "#f27e87"
+          },
+          "channel-green": {
+            "$value": "#65d6a3"
+          },
+          "channel-blue": {
+            "$value": "#75d2e8"
+          },
+          "channel-warm": {
+            "$value": "#f2b158"
+          },
+          "channel-cool": {
+            "$value": "#83cbe8"
+          }
+        }
+      }
+    },
+    "litemaptica": {
+      "$extensions": {
+        "moirasia.themePolicy": "dark"
+      },
+      "base": {
+        "color": {
+          "$type": "color",
+          "confidence-high": {
+            "$value": "#4acd76"
+          },
+          "confidence-medium": {
+            "$value": "#f5d571"
+          },
+          "confidence-low": {
+            "$value": "#e64642"
+          }
+        }
+      }
+    },
+    "mini-nsw": {
+      "$extensions": {
+        "moirasia.themePolicy": "light"
+      },
+      "base": {
+        "color": {
+          "$type": "color",
+          "timeline-marker": {
+            "$value": "#334155"
+          }
+        }
+      }
     }
   }
 }

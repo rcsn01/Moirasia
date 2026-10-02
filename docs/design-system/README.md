@@ -1,166 +1,50 @@
 # Moirasia design system
 
-Moirasia shares design decisions without forcing web and native applications
-through one component implementation. React applications now have a canonical
-component layer:
+`packages/design-system` owns shared presentation semantics and generates the React, plain-CSS and native SwiftUI adapters. There is no separate legacy authoring module. App layouts, workflows and runtime ownership remain app-specific.
 
-- `@moirasia/ui-react` is the source-owned shadcn package for React 19. It uses
-  Tailwind CSS 4, Base UI, the Nova preset, neutral CSS-variable themes, Lucide
-  icons, and a locally bundled Geist Sans variable font.
-- Generic React controls belong in `@moirasia/ui-react`; application layouts,
-  product-specific status presentations, and workflows remain app-owned.
+## Sources and generation
 
-The earlier cross-platform token foundation remains transitional infrastructure
-for applications that have not migrated:
+- `foundation.tokens.json` authors primitive dimensions, motion, typography, semantic light/dark roles and explicit platform policy.
+- `product-tokens.json` authors visualization colors and Amove's bespoke shelf presentation.
+- `preset.source.json` pins shadcn `bKZTOcpW`, Base UI, Tailwind 4, Mira, stone and JetBrains Mono.
 
-1. `packages/design-tokens/tokens.json` is the DTCG-compatible legacy source for
-   primitive, semantic, and product tokens.
-2. `packages/ui-css` exposes generated CSS variables for web applications.
-3. `packages/ui-swift` exposes generated SwiftUI constants for native Apple
-   applications. Other framework adapters should be added only when repeated
-   real usage justifies them.
+Run `pnpm ui:preset:sync` to regenerate all adapters and `pnpm ui:preset:check` to detect drift without writing. `pnpm --filter @moirasia/design-system test` exercises validation, conversions, compatibility and the generation interface. See `packages/design-system/README.md` for conversion tolerances and output guarantees.
 
-Do not bridge those legacy variables into the React theme. React applications
-should import `@moirasia/ui-react/styles.css` once and migrate screen-by-screen.
-The existing CSS and Swift adapters remain available until their owning
-applications move independently.
+## Ownership and product policy
 
-Run `npm run build` from `packages/design-tokens` after changing tokens. The
-generator updates both the CSS themes and
-`packages/ui-swift/Sources/MoirasiaUI/MoiraTokens.swift`. Run `npm run check`
-there in CI to verify that every committed adapter is current.
+Common canvas/surface/text/border/action/focus roles, typography, spacing, radii and control sizes belong to the shared foundation. Product themes must not redefine those decisions. Product-specific status and visualization colors may express domain meaning. Separate mixed usages rather than preserving a branded ordinary button because it once used a broad accent name.
 
-## Naming and overrides
+Amove's floating shelf is an explicit bespoke exception; its main window uses shared structure. Bonded protocol/enforcement colors, Vox signal colors, Exithibition telemetry and YN360 channel indicators remain domain data. LiteMaptica confidence colors and Mini-NSW's simulation-time marker are domain colors, not control colors. Native platform minimums and Herm-Bot mobile variants remain platform adaptations, not arbitrary product overrides.
 
-Application code should consume semantic variables such as
-`--moira-color-text-primary`, `--moira-color-warning-surface`, and
-`--moira-control-height-medium`. Primitive variables are emitted to support
-adapter development, but they should not be the normal application API.
+## Consumer adapters
 
-Product themes may override accent/action, brand typography, and a small number
-of deliberate density or shape decisions. They must not redefine shared
-success, warning, or danger meanings. The Amove theme keeps its neutral-blue
-accent separate from status colors.
-
-## Amove pilot inventory
-
-The original main-window stylesheet contained 45 distinct literal colors and
-rgba values, 28 distinct pixel dimensions, one-off light/dark state blocks, and
-no shared hover, pressed, focus-visible, reduced-motion, or semantic disabled
-treatments. Repeated concepts included:
-
-- near-white canvas, raised controls, primary/muted text, and neutral borders;
-- 7–10 px control radii and a pill radius;
-- 4–42 px spacing values centered on a four-point rhythm;
-- 34–36 px controls, 12–31 px type, and sans/monospace roles;
-- neutral-blue action/focus, plus success, warning, and danger statuses.
-
-The pilot replaces those concepts with shared variables while leaving component
-layout, accessibility roles, keyboard behavior, and the floating shelf intact.
-
-## Adopting in another web app
-
-Add `@moirasia/ui-css` as a local dependency using that application's existing
-package manager, import `@moirasia/ui-css/foundation.css` once at its renderer
-entry point, and map existing literals to semantic variables incrementally.
-Create a product entry point only if the application needs intentional brand
-overrides. Do not import another application's source or theme CSS.
-
-The public product entry points currently are:
-
-- `@moirasia/ui-css/amove.css`
-- `@moirasia/ui-css/litemaptica.css`
-- `@moirasia/ui-css/openagent.css`
-- `@moirasia/ui-css/mini-nsw.css`
-- `@moirasia/ui-css/exithibition.css` for parity with the native theme
-
-## LiteMaptica pilot
-
-LiteMaptica is the second adopter and exercises the same CSS output through
-React, Tauri, and Bun. Its `litemaptica.css` entry point deliberately keeps the
-application's always-dark green reconstruction workspace while inheriting the
-shared typography, spacing, radius, motion, focus, disabled, and status roles.
-This demonstrates family resemblance without turning Amove and LiteMaptica
-into identical skins.
-
-## Exithibition adopter
-
-Exithibition is a standalone Electron and React application. It consumes
-`@moirasia/ui-react`, `@moirasia/desktop-shell`, and the generated Exithibition
-product palette. The dashboard and inspector use shared roles while the
-schematic retains its monochrome and heat-driven visualization colors.
-
-Verify it with:
-
-```sh
-pnpm -C apps/standalone/Exithibition test
-```
-
-## OpenAgent adopter
-
-OpenAgent consumes `@moirasia/ui-css/openagent.css` from its existing
-`@openagent/ui` package. Its default theme maps typography, four-point spacing,
-core surfaces, primary and muted text, borders, focus, and primary status roles
-to Moirasia semantics. OpenAgent's mature component, syntax, diff, avatar, and
-agent palettes remain product-owned, and its runtime theme mechanism can still
-override the default variables.
-
-Verify the focused integration with:
-
-```sh
-cd apps/OpenAgent
-bun --cwd packages/ui test
-bun --cwd packages/ui typecheck
-bun --cwd packages/app build
-```
-
-## Mini NSW adopter
-
-Mini NSW consumes `@moirasia/ui-css/mini-nsw.css` through npm. Its control bar,
-station panel, timeline, fields, selection, hover, focus-visible, pressed, and
-disabled states use shared semantic roles. Three.js terrain, water, population,
-and rail colors remain simulation data rather than UI tokens.
-
-Verify the application with:
-
-```sh
-cd apps/standalone/Mini-NSW/app
-npm test
-npm run typecheck
-npm run build
-```
-
-## YN360 adopter
-
-YN360 Controller is the first standalone app under `apps/standalone/` built on the
-shared React stack. It consumes `@moirasia/ui-react/products/yn360.css` through
-npm, renders inside `DesktopAppShell` with the family product bar and sun/moon
-appearance toggle, and follows the light/dark Mira theme. Its connection status
-roles and RGB/white channel colors are product data tokens generated from the
-design system; the light output itself stays app-owned simulation data.
-
-Verify the application with:
-
-```sh
-cd apps/standalone/YN360
-pnpm typecheck
-pnpm test
-pnpm build
-```
-
-Vox has since adopted the same standalone setup under `apps/standalone/Vox`: it
-renders in its own `DesktopAppShell` window with product tokens, keeps its Bun
-workflow, and reverse-migrates the former Moirasia suite data on first launch.
-
-## Adoption status
-
-| Application | Adapter | Product identity retained |
+| Consumer | Adapter | Retained presentation policy |
 | --- | --- | --- |
-| Amove | CSS / React | Neutral-blue desktop controls and floating shelf |
-| LiteMaptica | CSS / React | Always-dark green reconstruction workspace |
-| Exithibition | React packages | Monochrome telemetry schematic |
-| OpenAgent | CSS / SolidJS | Extensible theme, syntax, diff, and agent palettes |
-| Mini NSW | CSS / vanilla TypeScript | Light rail-map workspace and scene rendering |
-| YN360 | React / ui-react product tokens | Light-control RGB/white workspace with channel data colors |
+| Moirasia, Amove, Bonded, Shout | ui-react and desktop-shell | Existing React appearance; integrated feature layouts remain app-owned |
+| Exithibition, Orbis, Vox, YN360 | ui-react and desktop-shell | Independent windows; Exithibition defaults dark; domain palettes remain |
+| Herm-Bot | Vendored ui-react package and mobile adapters | Existing mobile controls and touch targets |
+| LiteMaptica | ui-css in Tauri/React | Fixed dark shared structure; map/material/confidence colors remain |
+| Mini-NSW | ui-css in Electron/DOM/Three.js | Fixed light shared structure; traffic/terrain/rail colors remain |
+| Semiquaver | ui-swift | Native system typography, adaptive colors and accessibility |
 
-Semiquaver is intentionally outside the current adoption scope.
+Standalone applications remain independent. Do not embed, launch or control them through Moirasia. `openagent.css` remains an exported compatibility entrypoint but has no current repository consumer; OpenAgent is not an integrated app.
+
+## React adoption
+
+Import `@moirasia/ui-react/styles.css` once and declare renderer-owned Tailwind source paths. The preset CSS and current component behavior are the visual reference; do not bridge an independently authored legacy palette into it. Generic React controls belong in ui-react, app content and layouts in their apps, and desktop-shell owns primary-window chrome and appearance controls.
+
+## Plain CSS adoption
+
+Use the owning application's package manager and import `@moirasia/ui-css/foundation.css` once, or the approved fixed-mode product entrypoint. Existing amove, litemaptica, exithibition, openagent and mini-nsw CSS paths remain available. Use semantic properties, not primitive neutral names in app code.
+
+JetBrains Mono is bundled through a declared local font dependency, not loaded from a CDN. Verify font files in built Tauri/Electron renderer output. With local file dependencies, refresh the installed package copy and declare the same font package in consumers whose package manager does not resolve local transitive dependencies reliably. See `packages/ui-css/README.md`.
+
+## Native adoption
+
+Semiquaver consumes the local MoirasiaUI Swift package. Native colors follow platform appearance and preserve alpha; MoiraExithibition remains fixed-dark. macOS text uses the authored point scale. iOS text uses semantic system styles and Dynamic Type. Preserve native focus, accessibility, reduced motion and touch minimums instead of matching web screenshots numerically.
+
+## Verification
+
+Generation tests and typechecking do not prove a rendered workflow. Verify the React reference in both modes, an integrated feature in embedded and standalone presentations, fixed-mode CSS apps under both OS preferences, and native light/dark and text-size behavior. Exercise selected, disabled, error, focus and reduced-motion states. Never enable PF rules, change audio devices, access real libraries or launch standalone apps through Moirasia for appearance tests.
+
+Use each app's existing test/build commands. Semiquaver's Node test checks packaging only; use its Semiquaver-macOS and Semiquaver Xcode schemes for native tests, with code signing disabled. Record missing platform runs as gaps, not passes.
