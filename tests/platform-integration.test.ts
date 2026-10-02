@@ -9,28 +9,26 @@ const electron = vi.hoisted(() => ({
 vi.mock('electron', () => ({ Menu: electron }))
 
 describe('Bonded platform integration', () => {
-  it('assigns Bonded Command+4 in the application menu', async () => {
+  it('assigns Bonded Command+2 in the application menu', async () => {
     const { installApplicationMenu } = await import('../src/main/menu')
     const send = vi.fn(), open = vi.fn()
     installApplicationMenu(open, send, vi.fn())
     const template = electron.buildFromTemplate.mock.calls[0]![0] as Array<{ label?: string; submenu?: Array<{ label?: string; accelerator?: string; click?: () => void }> }>
     const bonded = template.find((item) => item.label === 'Applications')!.submenu!.find((item) => item.label === 'Bonded')!
-    expect(bonded.accelerator).toBe('CommandOrControl+3')
+    expect(bonded.accelerator).toBe('CommandOrControl+2')
     bonded.click?.()
     expect(open).toHaveBeenCalledWith('bonded')
   })
 
-  it('assigns Vox Command+2 in the application menu', async () => {
+  it('excludes standalone apps from the menu and native agent', async () => {
     const { installApplicationMenu } = await import('../src/main/menu')
-    const open = vi.fn()
-    installApplicationMenu(open, vi.fn(), vi.fn())
-    const template = electron.buildFromTemplate.mock.calls.at(-1)![0] as Array<{ label?: string; submenu?: Array<{ label?: string; accelerator?: string; click?: () => void }> }>
-    const vox = template.find((item) => item.label === 'Applications')!.submenu!.find((item) => item.label === 'Vox')!
-    expect(vox.accelerator).toBe('CommandOrControl+2')
-    vox.click?.()
-    expect(open).toHaveBeenCalledWith('vox')
+    installApplicationMenu(vi.fn(), vi.fn(), vi.fn())
+    const template = electron.buildFromTemplate.mock.calls.at(-1)![0] as Array<{ label?: string; submenu?: Array<{ label?: string }> }>
+    expect(template.find((item) => item.label === 'Applications')!.submenu!.map((item) => item.label)).toEqual(['Amove', 'Bonded', 'Shout'])
+    const source = await readFile(new URL('../native/application-agent/main.swift', import.meta.url), 'utf8')
+    expect(source).not.toContain('com.moirasia.vox')
+    expect(source).not.toContain('id: "vox"')
   })
-
 
   it('routes Settings and File > Features to the new controller pages', async () => {
     const { installApplicationMenu } = await import('../src/main/menu')

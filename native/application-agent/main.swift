@@ -3,7 +3,7 @@ import Darwin
 import Foundation
 
 struct Product { let id: String; let name: String; let bundleIdentifier: String }
-let products = [Product(id: "amove", name: "Amove", bundleIdentifier: "com.opense.Amove"), Product(id: "vox", name: "Vox", bundleIdentifier: "com.moirasia.vox"), Product(id: "bonded", name: "Bonded", bundleIdentifier: "com.opense.Bonded")]
+let products = [Product(id: "amove", name: "Amove", bundleIdentifier: "com.opense.Amove"), Product(id: "bonded", name: "Bonded", bundleIdentifier: "com.opense.Bonded")]
 func path(for product: Product) -> String? { NSWorkspace.shared.urlForApplication(withBundleIdentifier: product.bundleIdentifier)?.path }
 func running(_ product: Product) -> [NSRunningApplication] { NSRunningApplication.runningApplications(withBundleIdentifier: product.bundleIdentifier) }
 func printJSON(_ value: Any) { let data = try! JSONSerialization.data(withJSONObject: value, options: [.sortedKeys]); print(String(data: data, encoding: .utf8)!) }

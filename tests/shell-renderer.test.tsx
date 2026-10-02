@@ -12,7 +12,6 @@ import { App } from '../src/renderer/shell/app'
 
 const snapshot: ControllerSnapshot = { applications: [
   { id: 'amove', label: 'Amove', bundleId: 'com.opense.Amove', installed: true, running: false },
-  { id: 'vox', label: 'Vox', bundleId: 'com.moirasia.vox', installed: true, running: true },
   { id: 'bonded', label: 'Bonded', bundleId: 'com.opense.Bonded', installed: true, running: false }
 ], appearances: { version: 1, revision: 1, values: { moirasia: 'system', amove: 'system', vox: 'dark', bonded: 'system' } }, features: [
   { id: 'amove', installed: true, loaded: true, restartPending: false },

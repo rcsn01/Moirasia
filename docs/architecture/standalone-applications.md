@@ -1,6 +1,6 @@
 # Standalone application architecture
 
-Moirasia has two separate relationships with product applications. It controls the installed Amove, Vox, Bonded, and Shout bundles through its AppKit application agent. It also hosts Amove, Bonded, and Shout as embedded features. Exithibition and Orbis are standalone-only applications and have neither relationship with Moirasia.
+Moirasia has two separate relationships with product applications. It controls the installed Amove, Bonded, and Shout bundles through its AppKit application agent. It also hosts Amove, Bonded, and Shout as embedded features. Vox, Exithibition, and Orbis are standalone-only applications and have neither relationship with Moirasia.
 
 ## Repository ownership
 
@@ -10,7 +10,7 @@ The repositories share the visual system through local `@moirasia/desktop-shell`
 
 ## Controlled applications
 
-The application catalog in `packages/desktop-shell/src/application-catalog.ts` contains Amove, Vox, Bonded, and Shout. It supplies the Applications menu, Command+1 through Command+4, controller snapshots, and the AppKit agent contract. Those bundles support the `--moirasia-control` login-item protocol.
+The application catalog in `packages/desktop-shell/src/application-catalog.ts` contains Amove, Bonded, and Shout. It supplies the Applications menu, Command+1 through Command+3, controller snapshots, and the AppKit agent contract. Those bundles support the `--moirasia-control` login-item protocol.
 
 Exithibition and Orbis do not appear in the catalog or AppKit agent. Their launchers pass `controlProtocol: 'none'` to `runStandaloneLaunch`, so they use its single-instance, activation, error, and teardown behavior without accepting Moirasia commands.
 

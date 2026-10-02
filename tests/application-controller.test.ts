@@ -13,7 +13,7 @@ interface FakeRecord { id: ApplicationId; installed: boolean; running: boolean; 
 
 const APP_RECORDS: FakeRecord[] = [
   { id: 'amove', installed: true, running: false, path: '/Applications/Amove.app' },
-  { id: 'vox', installed: true, running: true, path: '/Applications/Vox.app' }
+  { id: 'bonded', installed: true, running: true, path: '/Applications/Bonded.app' }
 ]
 
 function controlResult(status: LoginItemControlResult['status'], appId: ApplicationId): LoginItemControlResult {
@@ -136,7 +136,7 @@ describe('ApplicationController', () => {
 
     agent.setRecords([{ id: 'amove', installed: true, running: true, path: '/Applications/Amove.app' }])
     const snapshot = await controller.refresh()
-    expect(snapshot.applications).toHaveLength(4)
+    expect(snapshot.applications).toHaveLength(3)
     const amove = snapshot.applications.find(({ id }) => id === 'amove')!
     expect(amove).toMatchObject({ id: 'amove', label: 'Amove', bundleId: 'com.opense.Amove', installed: true, running: true, path: '/Applications/Amove.app' })
     expect(amove.loginItem?.status).toBe('enabled')
@@ -150,7 +150,7 @@ describe('ApplicationController', () => {
     ;(first.applications as ApplicationStatus[]).push({ id: 'bonded', label: 'Bonded', bundleId: 'com.opense.Bonded', installed: true, running: true })
     ;(first.applications[0] as { running: boolean }).running = true
     const second = controller.snapshot()
-    expect(second.applications).toHaveLength(4)
+    expect(second.applications).toHaveLength(3)
     expect(second.applications.find(({ id }) => id === 'amove')?.running).toBe(false)
     expect(second.applications.find(({ id }) => id === 'bonded')?.installed).toBe(false)
   })
@@ -237,13 +237,13 @@ describe('ApplicationController', () => {
     const gate = deferred()
     agent.gates.set('open:amove', gate)
     const first = controller.open('amove')
-    const second = controller.quit('vox')
-    await agent.entry('quit:vox')
-    expect(agent.calls).toContain('quit:vox')
+    const second = controller.quit('bonded')
+    await agent.entry('quit:bonded')
+    expect(agent.calls).toContain('quit:bonded')
     gate.resolve()
     const [afterOpen, afterQuit] = await Promise.all([first, second])
     expect(afterOpen.applications.find(({ id }) => id === 'amove')?.running).toBe(true)
-    expect(afterQuit.applications.find(({ id }) => id === 'vox')?.running).toBe(false)
+    expect(afterQuit.applications.find(({ id }) => id === 'bonded')?.running).toBe(false)
   })
 
   it('routes setLoginItem through the queue, stores the result, and clears the pending flag on enabled results', async () => {
@@ -268,26 +268,26 @@ describe('ApplicationController', () => {
 
   it('retries pending login items through the agent on refresh and clears the pending flag on an enabled result', async () => {
     const { controller, settings, agent } = await makeController({ records: APP_RECORDS })
-    await settings.update({ pendingLoginItems: { vox: true } })
+    await settings.update({ pendingLoginItems: { bonded: true } })
     const snapshot = await controller.refresh()
-    expect(agent.calls).toContain('setLoginItem:vox:on')
-    expect(snapshot.applications.find(({ id }) => id === 'vox')?.loginItem).toMatchObject({ status: 'enabled', appId: 'vox' })
+    expect(agent.calls).toContain('setLoginItem:bonded:on')
+    expect(snapshot.applications.find(({ id }) => id === 'bonded')?.loginItem).toMatchObject({ status: 'enabled', appId: 'bonded' })
     expect(settings.get().pendingLoginItems).toEqual({})
   })
 
   it('keeps a failing retry pending and silent, then retries on the next refresh', async () => {
     const { controller, settings, agent } = await makeController({ records: APP_RECORDS })
-    await settings.update({ pendingLoginItems: { vox: true } })
+    await settings.update({ pendingLoginItems: { bonded: true } })
     agent.state.failSetLogin = new Error('control failed')
     const first = await controller.refresh()
-    expect(agent.calls).toContain('setLoginItem:vox:on')
-    expect(settings.get().pendingLoginItems).toEqual({ vox: true })
-    expect(first.applications.find(({ id }) => id === 'vox')?.error).toBeUndefined()
+    expect(agent.calls).toContain('setLoginItem:bonded:on')
+    expect(settings.get().pendingLoginItems).toEqual({ bonded: true })
+    expect(first.applications.find(({ id }) => id === 'bonded')?.error).toBeUndefined()
 
     agent.state.failSetLogin = undefined
     const second = await controller.refresh()
-    expect(agent.calls.filter((call) => call === 'setLoginItem:vox:on')).toHaveLength(2)
-    expect(second.applications.find(({ id }) => id === 'vox')?.loginItem?.status).toBe('enabled')
+    expect(agent.calls.filter((call) => call === 'setLoginItem:bonded:on')).toHaveLength(2)
+    expect(second.applications.find(({ id }) => id === 'bonded')?.loginItem?.status).toBe('enabled')
     expect(settings.get().pendingLoginItems).toEqual({})
   })
 
@@ -373,7 +373,7 @@ describe('ApplicationController', () => {
     const refreshing = controller.refresh()
     await agent.entry('snapshot', 2)
     await drain()
-    agent.setRecords([{ id: 'vox', installed: true, running: true, path: '/Applications/Vox.app' }])
+    agent.setRecords([{ id: 'bonded', installed: true, running: true, path: '/Applications/Bonded.app' }])
     openGate.resolve()
 
     await opening
@@ -383,41 +383,41 @@ describe('ApplicationController', () => {
   })
 
   it('skips a pending retry for an installed application without a path', async () => {
-    const { controller, settings, agent } = await makeController({ records: [{ id: 'vox', installed: true, running: false }] })
-    await settings.update({ pendingLoginItems: { vox: true } })
+    const { controller, settings, agent } = await makeController({ records: [{ id: 'bonded', installed: true, running: false }] })
+    await settings.update({ pendingLoginItems: { bonded: true } })
 
     const snapshot = await controller.refresh()
     expect(agent.calls).toEqual(['snapshot'])
-    expect(settings.get().pendingLoginItems).toEqual({ vox: true })
-    expect(snapshot.applications.find(({ id }) => id === 'vox')?.loginItem).toBeUndefined()
+    expect(settings.get().pendingLoginItems).toEqual({ bonded: true })
+    expect(snapshot.applications.find(({ id }) => id === 'bonded')?.loginItem).toBeUndefined()
   })
 
   it('keeps a pending retry for a non-enabled login-item result', async () => {
     const { controller, settings, agent } = await makeController({ records: APP_RECORDS })
-    await settings.update({ pendingLoginItems: { vox: true } })
+    await settings.update({ pendingLoginItems: { bonded: true } })
     agent.state.setLoginStatus = 'requires-approval'
 
     const snapshot = await controller.refresh()
-    expect(snapshot.applications.find(({ id }) => id === 'vox')?.loginItem).toMatchObject({ status: 'requires-approval', appId: 'vox' })
-    expect(settings.get().pendingLoginItems).toEqual({ vox: true })
-    expect(snapshot.applications.find(({ id }) => id === 'vox')?.error).toBeUndefined()
+    expect(snapshot.applications.find(({ id }) => id === 'bonded')?.loginItem).toMatchObject({ status: 'requires-approval', appId: 'bonded' })
+    expect(settings.get().pendingLoginItems).toEqual({ bonded: true })
+    expect(snapshot.applications.find(({ id }) => id === 'bonded')?.error).toBeUndefined()
   })
 
   it('does not run pending retries from an action-final snapshot reconciliation', async () => {
     const { controller, settings, agent } = await makeController({ records: APP_RECORDS })
     await controller.refresh()
-    await settings.update({ pendingLoginItems: { amove: true, vox: true } })
+    await settings.update({ pendingLoginItems: { amove: true, bonded: true } })
     agent.state.failSetLogin = new Error('control failed')
 
     await expect(controller.setLoginItem('amove', false)).rejects.toThrow('control failed')
     expect(agent.calls).toEqual(['snapshot', 'setLoginItem:amove:off', 'snapshot'])
-    expect(settings.get().pendingLoginItems).toEqual({ amove: true, vox: true })
+    expect(settings.get().pendingLoginItems).toEqual({ amove: true, bonded: true })
 
     agent.state.failSetLogin = undefined
     const snapshot = await controller.refresh()
-    expect(agent.calls).toEqual(['snapshot', 'setLoginItem:amove:off', 'snapshot', 'snapshot', 'setLoginItem:amove:on', 'setLoginItem:vox:on'])
+    expect(agent.calls).toEqual(['snapshot', 'setLoginItem:amove:off', 'snapshot', 'snapshot', 'setLoginItem:amove:on', 'setLoginItem:bonded:on'])
     expect(snapshot.applications.find(({ id }) => id === 'amove')?.loginItem?.status).toBe('enabled')
-    expect(snapshot.applications.find(({ id }) => id === 'vox')?.loginItem?.status).toBe('enabled')
+    expect(snapshot.applications.find(({ id }) => id === 'bonded')?.loginItem?.status).toBe('enabled')
     expect(settings.get().pendingLoginItems).toEqual({})
   })
 

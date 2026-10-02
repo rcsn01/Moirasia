@@ -50,20 +50,28 @@ describe('ShellSettingsStore', () => {
   it('migrates enabled legacy auto-start values to pending login items', async () => {
     const directory = await mkdtemp(join(tmpdir(), 'moirasia-settings-'))
     const store = new ShellSettingsStore(join(directory, 'settings.json'))
-    await writeFile(store.filePath, JSON.stringify({ version: 1, launchAtLogin: false, autoStart: { amove: false, vox: true, exithibition: false } }))
+    await writeFile(store.filePath, JSON.stringify({ version: 1, launchAtLogin: false, autoStart: { amove: true, vox: true, exithibition: false } }))
     const updated = await store.load()
-    expect(updated.pendingLoginItems).toEqual({ vox: true })
+    expect(updated.pendingLoginItems).toEqual({ amove: true })
     expect(updated.features).toEqual({})
   })
 
   it('migrates v2 settings to v4 with Dock presence and no features installed by default', async () => {
     const directory = await mkdtemp(join(tmpdir(), 'moirasia-settings-'))
     const store = new ShellSettingsStore(join(directory, 'settings.json'))
-    await writeFile(store.filePath, JSON.stringify({ version: 2, launchAtLogin: true, pendingLoginItems: { amove: true, bogus: true } }))
+    await writeFile(store.filePath, JSON.stringify({ version: 2, launchAtLogin: true, pendingLoginItems: { amove: true, vox: true, bogus: true } }))
 
     const migrated = await store.load()
 
     expect(migrated).toEqual({ version: 4, launchAtLogin: true, appPresence: 'dock', pendingLoginItems: { amove: true }, features: {} })
+  })
+
+  it('drops saved Vox login-item requests from current settings', async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'moirasia-settings-'))
+    const store = new ShellSettingsStore(join(directory, 'settings.json'))
+    await writeFile(store.filePath, JSON.stringify({ version: 4, launchAtLogin: false, appPresence: 'dock', pendingLoginItems: { vox: true, bonded: true }, features: {} }))
+    expect((await store.load()).pendingLoginItems).toEqual({ bonded: true })
+    expect(JSON.parse(await readFile(store.filePath, 'utf8')).pendingLoginItems).toEqual({ bonded: true })
   })
 
   it('round-trips app presence and feature flags across writes and reloads', async () => {

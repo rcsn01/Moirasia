@@ -1,6 +1,6 @@
 # Moirasia
 
-Moirasia is a macOS controller for Amove, Vox, Bonded, and Shout, and an embedded feature host for Amove, Bonded, and Shout. Its Applications menu discovers those four standalone bundles and opens or focuses them. On macOS with native artifacts, the feature service owns persistent Bonded, Shout, and Amove background state while Electron owns the UI and Amove shelf. Closing the final shell and shelf window lets Electron exit; reopening reconnects to the native host. Builds without native artifacts keep the existing Electron controllers. Exithibition and Orbis are standalone-only repositories under `apps/standalone`; they share Moirasia's UI packages but have no controller or embedded runtime integration.
+Moirasia is a macOS controller for Amove, Bonded, and Shout, and an embedded feature host for Amove, Bonded, and Shout. Its Applications menu discovers those three integrated-app bundles and opens or focuses them. On macOS with native artifacts, the feature service owns persistent Bonded, Shout, and Amove background state while Electron owns the UI and Amove shelf. Closing the final shell and shelf window lets Electron exit; reopening reconnects to the native host. Builds without native artifacts keep the existing Electron controllers. Exithibition and Orbis are standalone-only repositories under `apps/standalone`; they share Moirasia's UI packages but have no controller or embedded runtime integration.
 
 ## Development
 
@@ -114,7 +114,7 @@ Independent product repositories are split by suite support: Amove and Bonded li
 
 ## Application control
 
-The packaged AppKit helper uses Launch Services and `NSWorkspace` to resolve fixed bundle identifiers, inspect running applications, launch or activate them, request normal termination, and open Login Items settings. Command+1 through Command+4 open or focus Amove, Vox, Bonded, and Shout respectively. Vox has no embedded panel. Bonded and Shout remain available both as embedded features and standalone bundles, and each runtime lease ensures only one host owns its sensitive session at a time (Bonded's network monitor and PF helper; Shout's audio helper and default-input ownership).
+The packaged AppKit helper uses Launch Services and `NSWorkspace` to resolve fixed bundle identifiers, inspect running applications, launch or activate them, request normal termination, and open Login Items settings. Command+1 through Command+3 open or focus Amove, Bonded, and Shout respectively. Vox is standalone-only and is not launched or controlled by Moirasia. Bonded and Shout remain available both as embedded features and standalone bundles, and each runtime lease ensures only one host owns its sensitive session at a time (Bonded's network monitor and PF helper; Shout's audio helper and default-input ownership).
 
 Each controlled standalone bundle accepts one headless command without creating product windows or starting its runtime:
 
