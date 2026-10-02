@@ -2,13 +2,30 @@
 
 ## Status and product goal
 
-Phase 0 is implemented in `apps/standalone/Pixim/` as an independent native feasibility prototype with original artwork. The initial UIImage and timeline probes remained static. The user chose further investigation, and a fourth probe now renders actual companion session age through an original bitmap digit font. It changes Island frames in Simulator at one frame per second with the host app terminated, including before and after a five-minute wait. This slower ten-second cycle is positive Simulator evidence, not real-device or App Review clearance. The full Pokémon product is not implemented; physical-device continuous-playback verification and artwork rights remain gates. See [prototype verification](apps/standalone/Pixim/VERIFICATION.md). The existing root `plan.md`, which covers the shared UI foundation migration, remains unchanged.
+The personal-use implementation is complete in `apps/standalone/Pixim/`. It includes five Pokémon, original-timing animated catalog previews, persisted preference, one mutable Live Activity, recovery, removal, retry, attribution and source hashes. The user approved local personal use despite unresolved redistribution rights and accepted ten sampled Island poses over ten seconds. This scope decision does not authorize publication.
+
+The initial UIImage and timeline probes stayed static. System-managed text measuring actual session age with bitmap digit glyphs now advances frames with the host terminated. Earlier original-art Simulator sampling passed before and after five minutes. All five Pokémon passed actual SpringBoard pixel-motion checks with the host terminated. The user also confirmed sustained motion on their physical iPhone through leaving/locking and waiting five minutes, without supplying independent model/OS/video/power evidence.
+
+Seventeen unit/integration tests, two catalog UI tests and three diagnostic UI regression tests passed. Unsigned Release build, byte-idempotent asset generation and shared UI ownership checks passed. See [verification](apps/standalone/Pixim/VERIFICATION.md). The existing root `plan.md` remains unchanged.
+
+### Completion and remaining acceptance
+
+- [x] Independent native app and Live Activity extension with all four layouts.
+- [x] Five pinned personal-only assets, stable canvases, full original preview timing and sampled Island fonts.
+- [x] User-initiated start/change/remove, latest-intent ordering, recovery, preference, retry and lifecycle observation.
+- [x] Accessibility labels, minimum touch targets, paused/inactive/offscreen previews and motion-freeze branches.
+- [x] Actual Simulator catalog workflow and terminated-host motion evidence for every companion.
+- [ ] Independently record physical model/OS/video and test power, eight-hour expiry, AOD, minimal/competing activities, Lock Screen and native accessibility Settings.
+- [ ] Exercise the minimum supported iOS runtime.
+- [ ] Clear artwork/branding rights and review suitability before any redistribution.
+
+The sections below retain the original research and acceptance requirements. The user-approved personal prototype is delivered; the unperformed hardware and distribution checks are not marked complete.
 
 Build an independent native iPhone app whose main interface is a small catalog of pixel Pokémon animations. Choosing one starts or changes the companion shown through a Live Activity in the Dynamic Island. The app is not embedded in, launched by, or controlled by Moirasia. Use the shared `MoirasiaUI` package for the app's controls, typography, spacing and semantic colors.
 
 Working directory name: `apps/standalone/Pixim/`. This is a provisional internal name, not an approved public brand.
 
-**The exact requested experience is not yet proven feasible.** Apple provides a supported way to display content in the Dynamic Island, but its documentation does not establish an autonomous, continuously looping ten-frame sprite there. Do not describe a static companion or an animation that only runs inside the app as completion of the requested animated Island feature. First prove the animation on a real iPhone. If that fails, ask the user whether to accept a static Island companion with animated catalog previews or stop development.
+**The original feasibility requirement follows. Simulator motion now passes and the user reports physical-device success; independent hardware acceptance remains open.** Apple provides a supported way to display content in the Dynamic Island, but its documentation does not establish an autonomous, continuously looping ten-frame sprite there. Do not describe a static companion or an animation that only runs inside the app as completion of the requested animated Island feature. First prove the animation on a real iPhone. If that fails, ask the user whether to accept a static Island companion with animated catalog previews or stop development.
 
 ## 1. Getting content into the Dynamic Island
 
