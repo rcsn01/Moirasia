@@ -2,11 +2,11 @@
 
 ## Status and product goal
 
-The personal-use implementation is complete in `apps/standalone/Pixim/`. It includes five Pokémon, original-timing animated catalog previews, persisted preference, one mutable Live Activity, recovery, removal, retry, attribution and source hashes. The user approved local personal use despite unresolved redistribution rights and accepted ten sampled Island poses over ten seconds. This scope decision does not authorize publication.
+The personal-use implementation is complete in `apps/standalone/Pixim/`. It includes five Pokémon, original-timing animated catalog previews, persisted preference, one mutable Live Activity, recovery, removal, retry, attribution and source hashes. The user approved local personal use despite unresolved redistribution rights and initially accepted ten sampled Island poses over ten seconds. After confirming faster Pokémon playback on Iphen, the user requested fast mode as the default. iOS 18+ now requests 100 ms text precision for a one-second ten-pose loop; iOS 17 retains the seconds fallback. This scope decision does not authorize publication.
 
 The initial UIImage and timeline probes stayed static. System-managed text measuring actual session age with bitmap digit glyphs now advances frames with the host terminated. Earlier original-art Simulator sampling passed before and after five minutes. All five Pokémon passed actual SpringBoard pixel-motion checks with the host terminated. The user also confirmed sustained motion on their physical iPhone through leaving/locking and waiting five minutes, without supplying independent model/OS/video/power evidence.
 
-Seventeen unit/integration tests, two catalog UI tests and three diagnostic UI regression tests passed. Unsigned Release build, byte-idempotent asset generation and shared UI ownership checks passed. See [verification](apps/standalone/Pixim/VERIFICATION.md). The existing root `plan.md` remains unchanged.
+The latest default-fast verification passed seventeen unit/integration tests and three catalog UI tests. Earlier diagnostic regression checks also passed. Subsecond sampling measured at least 7.1 changes/sec before and after five minutes with the host terminated, limited by capture rate; all five Pokémon passed actual compact motion checks under the new default. Unsigned Release build, byte-idempotent asset generation and shared UI ownership checks passed. See [verification](apps/standalone/Pixim/VERIFICATION.md). The existing root `plan.md` remains unchanged.
 
 ### Completion and remaining acceptance
 
