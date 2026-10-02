@@ -2,11 +2,11 @@
 
 ## Status and product goal
 
-Phase 0 is implemented in `apps/standalone/IslandCompanion/` as an independent native feasibility prototype with original artwork. Simulator lifecycle tests pass, but both attempted Island playback methods remained static, including a five-minute timeline probe. The full Pokémon product is not implemented; development stops at the feasibility gate pending a user decision and real-device evidence. See [prototype verification](apps/standalone/IslandCompanion/VERIFICATION.md). The existing root `plan.md`, which covers the shared UI foundation migration, remains unchanged.
+Phase 0 is implemented in `apps/standalone/Pixim/` as an independent native feasibility prototype with original artwork. The initial UIImage and timeline probes remained static. The user chose further investigation, and a fourth probe now renders actual companion session age through an original bitmap digit font. It changes Island frames in Simulator at one frame per second with the host app terminated, including before and after a five-minute wait. This slower ten-second cycle is positive Simulator evidence, not real-device or App Review clearance. The full Pokémon product is not implemented; physical-device continuous-playback verification and artwork rights remain gates. See [prototype verification](apps/standalone/Pixim/VERIFICATION.md). The existing root `plan.md`, which covers the shared UI foundation migration, remains unchanged.
 
 Build an independent native iPhone app whose main interface is a small catalog of pixel Pokémon animations. Choosing one starts or changes the companion shown through a Live Activity in the Dynamic Island. The app is not embedded in, launched by, or controlled by Moirasia. Use the shared `MoirasiaUI` package for the app's controls, typography, spacing and semantic colors.
 
-Working directory name: `apps/standalone/IslandCompanion/`. This is a provisional internal name, not an approved public brand.
+Working directory name: `apps/standalone/Pixim/`. This is a provisional internal name, not an approved public brand.
 
 **The exact requested experience is not yet proven feasible.** Apple provides a supported way to display content in the Dynamic Island, but its documentation does not establish an autonomous, continuously looping ten-frame sprite there. Do not describe a static companion or an animation that only runs inside the app as completion of the requested animated Island feature. First prove the animation on a real iPhone. If that fails, ask the user whether to accept a static Island companion with animated catalog previews or stop development.
 
@@ -134,7 +134,7 @@ Reuse `MoirasiaUI` in native contexts. Use native minimum touch targets of at le
 Proposed app-owned organization:
 
 ```text
-apps/standalone/IslandCompanion/
+apps/standalone/Pixim/
   IslandCompanion.xcodeproj
   App/
     CatalogView.swift
