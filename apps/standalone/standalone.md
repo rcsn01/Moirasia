@@ -1,0 +1,1 @@
+put standalone apps here

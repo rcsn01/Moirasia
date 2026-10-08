@@ -2,7 +2,7 @@
 .DS_Store
 
 # Applications under apps/integrated and apps/standalone remain independent, ignored repositories.
-/apps/
+# /apps/
 
 # Root JavaScript dependencies and build output
 /.pnpm-store/
@@ -23,3 +23,4 @@
 
 *.log
 native/moirasia-runtime/.build/
+/apps/standalone/Herm-Bot
