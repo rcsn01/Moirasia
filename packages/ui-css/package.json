@@ -19,6 +19,7 @@
     "./mini-nsw.css": "./mini-nsw.css"
   },
   "dependencies": {
-    "@fontsource-variable/jetbrains-mono": "^5.3.0"
+    "@fontsource-variable/jetbrains-mono": "^5.3.0",
+    "@fontsource/actor": "^5.3.0"
   }
 }

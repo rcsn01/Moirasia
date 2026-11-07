@@ -14,7 +14,7 @@ await mkdir(evidence, { recursive: true })
 const foundation = resolveFoundation(JSON.parse(await readFile(resolve(root, "packages/design-system/foundation.tokens.json"), "utf8")))
 const browser = await chromium.launch({ headless: true, executablePath: process.env.CHROME_PATH })
 const results = []
-const fontFaces = page => page.evaluate(() => [...document.fonts].filter(font => font.family.includes("JetBrains Mono") && font.status === "loaded").length)
+const fontFaces = page => page.evaluate(() => [...document.fonts].filter(font => font.family === "Actor" && font.status === "loaded").length)
 const cssRoles = page => page.evaluate(() => {
   const style = getComputedStyle(document.documentElement)
   return Object.fromEntries(["canvas", "surface", "text-primary", "danger-action", "warning-text", "focus", "shadow"].map(role => [role, style.getPropertyValue(`--moira-color-${role}`).trim()]))

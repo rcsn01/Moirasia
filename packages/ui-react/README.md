@@ -2,7 +2,7 @@
 
 The source-owned shadcn component layer for Moirasia React applications. It uses
 the Base UI Mira preset, neutral CSS-variable theming, Lucide icons, and a local
-JetBrains Mono variable font. Consumers import component source through the published
+Actor main font and JetBrains Mono variable font for monospace text. Consumers import component source through the published
 subpaths and include `@moirasia/ui-react/styles.css` once at their renderer
 entry point. Each renderer must also declare its own Tailwind source paths and
 enable Tailwind 4's Vite plugin:

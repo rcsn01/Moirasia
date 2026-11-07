@@ -85,8 +85,8 @@ export async function run(command = "sync", code, root = workspaceDir) {
     const failures = []
     for (const [path, content] of outputs) if (await readArtifact(root, path) !== content) failures.push(`${path}: missing or stale generated artifact`)
     for (const [path, expected] of [
-      ["packages/ui-react/package.json", { "@fontsource-variable/jetbrains-mono": "^5.3.0", shadcn: "4.16.1" }],
-      ["packages/ui-css/package.json", { "@fontsource-variable/jetbrains-mono": "^5.3.0" }],
+      ["packages/ui-react/package.json", { "@fontsource/actor": "^5.3.0", "@fontsource-variable/jetbrains-mono": "^5.3.0", shadcn: "4.16.1" }],
+      ["packages/ui-css/package.json", { "@fontsource/actor": "^5.3.0", "@fontsource-variable/jetbrains-mono": "^5.3.0" }],
       ["apps/standalone/Vox/package.json", { "@fontsource-variable/jetbrains-mono": "^5.3.0" }]
     ]) {
       const content = await readArtifact(root, path)

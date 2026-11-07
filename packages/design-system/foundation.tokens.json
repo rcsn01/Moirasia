@@ -143,7 +143,7 @@
       "family": {
         "$type": "fontFamily",
         "sans": {
-          "$value": "\"JetBrains Mono Variable\", ui-monospace, monospace"
+          "$value": "\"Actor\", ui-sans-serif, system-ui, sans-serif"
         },
         "mono": {
           "$value": "\"JetBrains Mono Variable\", ui-monospace, monospace"

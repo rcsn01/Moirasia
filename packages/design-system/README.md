@@ -4,7 +4,7 @@ This package is the single authoring and generation owner for React, plain CSS a
 
 - `foundation.tokens.json` contains DTCG-style primitive and semantic tokens, complete light/dark roles, web preset mappings and native policy.
 - `product-tokens.json` contains visualization colors and the explicit bespoke Amove shelf exception. Runtime validation restricts each product to its actual roles and modes.
-- `preset.source.json` pins shadcn `bKZTOcpW`, Base UI, Mira, stone and JetBrains Mono. Other presets are rejected before any write.
+- `preset.source.json` pins shadcn `bKZTOcpW`, Base UI, Mira, stone and JetBrains Mono. Other presets are rejected before any write. The authored web typography overrides the preset's main font with locally bundled Actor, while monospace text keeps JetBrains Mono.
 - `preset.lock.json` records input/generator hashes, format version and all 15 payload hashes. The lock itself is the sixteenth generated artifact.
 
 Run from the workspace root:

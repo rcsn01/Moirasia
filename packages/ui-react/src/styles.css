@@ -1,6 +1,7 @@
 @import "tailwindcss";
 @import "shadcn/tailwind.css";
 @import "tw-animate-css";
+@import "@fontsource/actor";
 @import "@fontsource-variable/jetbrains-mono";
 @import "./generated/preset.css";
 

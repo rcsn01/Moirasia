@@ -44,6 +44,16 @@ test("React reference is byte-stable and all adapters share resolved semantic da
   assert.match(fixed, /windowBackground = color\(/)
 })
 
+test("web typography uses Actor for main text and preserves JetBrains Mono for code", () => {
+  const react = outputs.get("packages/ui-react/src/generated/preset.css")
+  const css = outputs.get("packages/ui-css/foundation.css")
+  assert.ok(react.includes('--font-sans: "Actor", ui-sans-serif, system-ui, sans-serif;'))
+  assert.ok(css.includes('--moira-font-family-sans: "Actor", ui-sans-serif, system-ui, sans-serif;'))
+  assert.ok(react.includes('--font-mono: "JetBrains Mono Variable", ui-monospace, monospace;'))
+  assert.ok(css.includes('--moira-font-family-mono: "JetBrains Mono Variable", ui-monospace, monospace;'))
+  assert.ok(css.includes('@import "@fontsource/actor";'))
+})
+
 test("all legacy CSS names and Swift exports remain available", () => {
   const allCss = [...outputs].filter(([path]) => path.endsWith(".css") && path.includes("ui-css")).map(([, content]) => content).join("\n")
   const names = new Set([...allCss.matchAll(/(--moira-[\w-]+)\s*:/g)].map(match => match[1]))
@@ -130,6 +140,7 @@ test("check reports every missing/stale output and dependency mismatch without w
   await assert.rejects(run("check", undefined, root), error => {
     for (const path of outputs.keys()) assert.ok(error.message.includes(path))
     assert.ok(error.message.includes("expected @fontsource-variable/jetbrains-mono ^5.3.0"))
+    assert.ok(error.message.includes("expected @fontsource/actor ^5.3.0"))
     return true
   })
   for (const [index, path] of [...outputs.keys()].entries()) {
